@@ -24,9 +24,9 @@ from . import drive, sheets
 logger = logging.getLogger(__name__)
 
 
-async def notify_applicant(bot: Bot, user_id: int, text: str) -> None:
+async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") -> None:
     try:
-        await bot.send_message(user_id, text, reply_markup=keyboards.main_menu_keyboard())
+        await bot.send_message(user_id, text, reply_markup=keyboards.main_menu_keyboard(lang))
     except TelegramForbiddenError:
         # User blocked the bot; nothing we can do.
         logger.warning("Could not notify user %s (bot blocked?)", user_id)
@@ -66,7 +66,9 @@ async def approve_application(
     if number is None:
         return None
     app = await db.get_application(app_id)
-    await notify_applicant(bot, app.user_id, texts.APPROVED.format(number=number))
+    await notify_applicant(
+        bot, app.user_id, texts.T(app.language).APPROVED.format(number=number), app.language
+    )
     # Export in the background so the caller's UI stays responsive.
     asyncio.create_task(export_to_google(config, app))
     return number
@@ -80,5 +82,5 @@ async def reject_application(
     if not ok:
         return False
     app = await db.get_application(app_id)
-    await notify_applicant(bot, app.user_id, texts.REJECTED)
+    await notify_applicant(bot, app.user_id, texts.T(app.language).REJECTED, app.language)
     return True
