@@ -42,6 +42,7 @@ class Config:
     admin_password: str
     panel_port: int
     admin_user_ids: frozenset[int]
+    channel_url: str
 
     @property
     def panel_enabled(self) -> bool:
@@ -103,6 +104,7 @@ def load_config() -> Config:
         admin_password=_get("ADMIN_PASSWORD"),
         panel_port=int(_get("PORT", default="8080") or "8080"),
         admin_user_ids=_parse_ids(_get("ADMIN_USER_IDS")),
+        channel_url=_get("CHANNEL_URL"),
     )
 
 

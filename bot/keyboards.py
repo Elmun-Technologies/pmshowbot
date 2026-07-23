@@ -21,7 +21,10 @@ CB_CHECK_SUB = "checksub"
 
 def subscription_keyboard(channel_url: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text=texts.BTN_SUBSCRIBE, url=channel_url))
+    # Only add the link button when we have a usable URL (numeric-id channels
+    # without a CHANNEL_URL override have none).
+    if channel_url:
+        builder.row(InlineKeyboardButton(text=texts.BTN_SUBSCRIBE, url=channel_url))
     builder.row(
         InlineKeyboardButton(text=texts.BTN_CHECK_SUBSCRIPTION, callback_data=CB_CHECK_SUB)
     )
