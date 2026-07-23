@@ -7,7 +7,11 @@
 # IMPORTANT: run exactly ONE machine. Two instances would both call Telegram
 # getUpdates and conflict. After the first deploy: `fly scale count 1`.
 #
-# Change `app` to your chosen name before deploying (or let `fly launch` set it).
+# NOTE (temporary): no Fly volume has been created yet for this app, so DB_PATH
+# and MEDIA_DIR below point at the container's local ephemeral disk (created by
+# the Dockerfile). Data will reset on every restart/redeploy until a volume
+# named pmshow_data is created (fly volumes create pmshow_data --region ams
+# --size 1 -a pmshowbot) and the [mounts] block is restored.
 
 app = "pmshowbot"
 primary_region = "ams"
@@ -15,28 +19,21 @@ primary_region = "ams"
 [build]
   dockerfile = "Dockerfile"
 
-[env]
-  # Persist the SQLite DB and downloaded photos on the mounted volume so the
-  # registration-number counter and data survive restarts/redeploys.
-  DB_PATH = "/data/pmshow.db"
-  MEDIA_DIR = "/data/media"
-  PORT = "8080"
+  [env]
+    DB_PATH = "/app/data/pmshow.db"
+      MEDIA_DIR = "/app/media"
+        PORT = "8080"
 
-# Admin panel over HTTPS. auto_stop_machines = false + min_machines_running = 1
-# keep the single machine always-on (the bot must never be stopped).
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
+        # Admin panel over HTTPS. auto_stop_machines = false + min_machines_running = 1
+        # keep the single machine always-on (the bot must never be stopped).
+        [http_service]
+          internal_port = 8080
+            force_https = true
+              auto_stop_machines = false
+                auto_start_machines = true
+                  min_machines_running = 1
 
-# Persistent volume. Create it once with:
-#   fly volumes create pmshow_data --region ams --size 1
-[mounts]
-  source = "pmshow_data"
-  destination = "/data"
-
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+                  [[vm]]
+                    size = "shared-cpu-1x"
+                      memory = "512mb"
+                      
