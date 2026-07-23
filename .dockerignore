@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+credentials.json
+data/
+media/
+tests/
+deploy/
+**/__pycache__/
+*.pyc
+*.db
+*.sqlite3
+.venv/
+venv/
+README.md

@@ -38,6 +38,7 @@ class Config:
     drive_folder_id: str
     db_path: str
     media_dir: str
+    require_subscription: bool
 
     @property
     def sheets_enabled(self) -> bool:
@@ -46,6 +47,25 @@ class Config:
     @property
     def drive_enabled(self) -> bool:
         return bool(self.drive_folder_id and self.google_credentials_file)
+
+
+def _materialize_google_credentials(path: str) -> None:
+    """If GOOGLE_CREDENTIALS_JSON is set, write it to ``path``.
+
+    Lets platforms like Fly.io (which store secrets as env vars, not files)
+    provide the service-account key inline. A real file at ``path`` still wins.
+    """
+    inline = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
+    if inline and not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(inline)
+
+
+def _get_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"false", "0", "no", "off"}
 
 
 def load_config() -> Config:
@@ -60,15 +80,19 @@ def load_config() -> Config:
 
     required_channel = _get("REQUIRED_CHANNEL", required=True)
 
+    google_credentials_file = _get("GOOGLE_CREDENTIALS_FILE", default="credentials.json")
+    _materialize_google_credentials(google_credentials_file)
+
     return Config(
         bot_token=_get("BOT_TOKEN", required=True),
         required_channel=required_channel,
         admin_chat_id=admin_chat_id,
-        google_credentials_file=_get("GOOGLE_CREDENTIALS_FILE", default="credentials.json"),
+        google_credentials_file=google_credentials_file,
         spreadsheet_id=_get("SPREADSHEET_ID"),
         drive_folder_id=_get("DRIVE_FOLDER_ID"),
         db_path=_get("DB_PATH", default="data/pmshow.db"),
         media_dir=_get("MEDIA_DIR", default="media"),
+        require_subscription=_get_bool("REQUIRE_SUBSCRIPTION", default=True),
     )
 
 
@@ -83,6 +107,7 @@ def _check() -> int:
     print("[config] OK: required Telegram settings present.")
     print(f"[config]   REQUIRED_CHANNEL = {config.required_channel}")
     print(f"[config]   ADMIN_CHAT_ID    = {config.admin_chat_id}")
+    print(f"[config]   Subscription     = {'required' if config.require_subscription else 'not required'}")
     print(f"[config]   Sheets export    = {'enabled' if config.sheets_enabled else 'disabled'}")
     print(f"[config]   Drive photos     = {'enabled' if config.drive_enabled else 'disabled'}")
 

@@ -49,15 +49,18 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
         await show_status(message, active)
         return
 
-    if await subscription.is_subscribed(bot, config.required_channel, message.from_user.id):
-        await _start_form(message, state)
-    else:
+    if config.require_subscription and not await subscription.is_subscribed(
+        bot, config.required_channel, message.from_user.id
+    ):
         await message.answer(
             texts.SUBSCRIBE_REQUIRED,
             reply_markup=keyboards.subscription_keyboard(
                 subscription.channel_url(config.required_channel)
             ),
         )
+        return
+
+    await _start_form(message, state)
 
 
 @router.callback_query(F.data == keyboards.CB_CHECK_SUB)

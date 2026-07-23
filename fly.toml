@@ -1,23 +1,31 @@
-# fly.toml app configuration file generated for pmshowbot on 2026-07-23T16:41:15Z
+# Fly.io deployment config for the Promotors Show registration bot.
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# This is a worker (Telegram long polling) — it has NO inbound HTTP service,
+# so there is no [http_service] block and the machine stays always-on.
 #
+# IMPORTANT: run exactly ONE machine. Two instances would both call Telegram
+# getUpdates and conflict. After the first deploy: `fly scale count 1`.
+#
+# Change `app` to your chosen name before deploying (or let `fly launch` set it).
 
-app = 'pmshowbot'
-primary_region = 'ams'
+app = "pmshowbot"
+primary_region = "fra"
 
 [build]
+  dockerfile = "Dockerfile"
 
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
+[env]
+  # Persist the SQLite DB and downloaded photos on the mounted volume so the
+  # registration-number counter and data survive restarts/redeploys.
+  DB_PATH = "/data/pmshow.db"
+  MEDIA_DIR = "/data/media"
+
+# Persistent volume. Create it once with:
+#   fly volumes create pmshow_data --region fra --size 1
+[mounts]
+  source = "pmshow_data"
+  destination = "/data"
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 256
+  size = "shared-cpu-1x"
+  memory = "512mb"
