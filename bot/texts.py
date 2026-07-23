@@ -131,6 +131,14 @@ def T(lang: str) -> SimpleNamespace:
     return _LANGS.get(lang, RU)
 
 
+def localize_direction(canonical: str, lang: str) -> str:
+    """Map a canonical (Russian) direction to its label in ``lang``."""
+    try:
+        return T(lang).DIRECTIONS[DIRECTIONS_CANON.index(canonical)]
+    except (ValueError, IndexError):
+        return canonical
+
+
 # --- Language-independent data ---
 # Canonical values stored in the DB / shown to admins, regardless of UI language.
 COUNTRIES_CANON = ["Россия", "Узбекистан", "Таджикистан", "Казахстан", "Киргизия"]

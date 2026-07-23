@@ -14,14 +14,43 @@ from typing import Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import BufferedInputFile
 
 from .. import keyboards, texts
 from ..config import Config
 from ..constants import SIDES, SIDE_LABELS_TRANSLIT
 from ..db import Application, Database
-from . import drive, sheets
+from . import drive, sheets, subscription
+from .ticket import generate_ticket
 
 logger = logging.getLogger(__name__)
+
+
+async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
+    """Render and send the shareable Stories ticket to an approved applicant."""
+    try:
+        qr_url = (
+            config.instagram_url
+            or subscription.channel_url(config.required_channel, config.channel_url)
+            or "https://t.me/fooderaexpo"
+        )
+        png = await asyncio.to_thread(
+            generate_ticket,
+            number=app.reg_number,
+            plate=app.plate,
+            direction=texts.localize_direction(app.direction, app.language),
+            lang=app.language,
+            instagram_handle=config.instagram_handle,
+            qr_url=qr_url,
+        )
+        await bot.send_photo(
+            app.user_id,
+            BufferedInputFile(png, filename=f"ticket_{app.reg_number}.png"),
+        )
+    except TelegramForbiddenError:
+        logger.warning("Could not send ticket to user %s (bot blocked?)", app.user_id)
+    except Exception:  # noqa: BLE001 - a ticket failure must not break approval
+        logger.exception("Failed to generate/send ticket for application %s", app.id)
 
 
 async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") -> None:
@@ -69,6 +98,8 @@ async def approve_application(
     await notify_applicant(
         bot, app.user_id, texts.T(app.language).APPROVED.format(number=number), app.language
     )
+    # Send the shareable Stories ticket right after the approval message.
+    await send_ticket(bot, config, app)
     # Export in the background so the caller's UI stays responsive.
     asyncio.create_task(export_to_google(config, app))
     return number

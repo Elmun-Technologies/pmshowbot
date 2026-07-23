@@ -43,6 +43,8 @@ class Config:
     panel_port: int
     admin_user_ids: frozenset[int]
     channel_url: str
+    instagram_handle: str
+    instagram_url: str
 
     @property
     def panel_enabled(self) -> bool:
@@ -105,6 +107,8 @@ def load_config() -> Config:
         panel_port=int(_get("PORT", default="8080") or "8080"),
         admin_user_ids=_parse_ids(_get("ADMIN_USER_IDS")),
         channel_url=_get("CHANNEL_URL"),
+        instagram_handle=_get("INSTAGRAM_HANDLE"),
+        instagram_url=_get("INSTAGRAM_URL"),
     )
 
 
