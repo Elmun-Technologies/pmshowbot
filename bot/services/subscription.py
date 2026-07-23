@@ -15,6 +15,19 @@ logger = logging.getLogger(__name__)
 _SUBSCRIBED_STATUSES = {"member", "administrator", "creator"}
 
 
+def normalize_channel(channel: str):
+    """Return an int chat id for numeric channels, else the string as-is.
+
+    Telegram accepts both, but passing a real int avoids any string/int
+    ambiguity for ids like ``-1002078702028``.
+    """
+    c = channel.strip()
+    body = c[1:] if c.startswith("-") else c
+    if body.isdigit():
+        return int(c)
+    return c
+
+
 async def is_subscribed(bot: Bot, channel: str, user_id: int) -> bool:
     """Return True if ``user_id`` is a member of ``channel``.
 
@@ -23,10 +36,13 @@ async def is_subscribed(bot: Bot, channel: str, user_id: int) -> bool:
     being let through silently.
     """
     try:
-        member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+        member = await bot.get_chat_member(
+            chat_id=normalize_channel(channel), user_id=user_id
+        )
     except (TelegramBadRequest, TelegramForbiddenError) as exc:
         logger.warning(
-            "Subscription check failed for channel %s (is the bot an admin there?): %s",
+            "Subscription check failed for channel %s — the bot is most likely "
+            "NOT an admin of that channel (or the id is wrong): %s",
             channel,
             exc,
         )
