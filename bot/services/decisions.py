@@ -10,18 +10,63 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import BufferedInputFile
 
 from .. import keyboards, texts
 from ..config import Config
 from ..constants import SIDES, SIDE_LABELS_TRANSLIT
 from ..db import Application, Database
-from . import drive, sheets
+from . import drive, sheets, subscription
+from .ticket import generate_ticket
 
 logger = logging.getLogger(__name__)
+
+
+def _pick_hero(photo_paths: list[str]) -> Optional[str]:
+    """Choose the poster background: prefer the front shot, then back, then any.
+
+    SIDES order is left, right, front, back → indices 2, 3, 0, 1.
+    """
+    for idx in (2, 3, 0, 1):
+        if idx < len(photo_paths):
+            p = photo_paths[idx]
+            if p and os.path.exists(p):
+                return p
+    return None
+
+
+async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
+    """Render and send the shareable Stories ticket, then a short share message."""
+    try:
+        png = await asyncio.to_thread(
+            generate_ticket,
+            number=app.reg_number,
+            plate=app.plate,
+            direction=texts.localize_direction(app.direction, app.language),
+            lang=app.language,
+            hero_image_path=_pick_hero(app.photo_paths),
+        )
+        await bot.send_photo(
+            app.user_id,
+            BufferedInputFile(png, filename=f"ticket_{app.reg_number}.png"),
+        )
+        t = texts.T(app.language)
+        if config.instagram_handle:
+            handle = config.instagram_handle
+            if not handle.startswith("@"):
+                handle = f"@{handle}"
+            await bot.send_message(app.user_id, t.SHARE_CTA.format(handle=handle))
+        else:
+            await bot.send_message(app.user_id, t.SHARE_CTA_PLAIN)
+    except TelegramForbiddenError:
+        logger.warning("Could not send ticket to user %s (bot blocked?)", app.user_id)
+    except Exception:  # noqa: BLE001 - a ticket failure must not break approval
+        logger.exception("Failed to generate/send ticket for application %s", app.id)
 
 
 async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") -> None:
@@ -69,6 +114,8 @@ async def approve_application(
     await notify_applicant(
         bot, app.user_id, texts.T(app.language).APPROVED.format(number=number), app.language
     )
+    # Send the shareable Stories ticket right after the approval message.
+    await send_ticket(bot, config, app)
     # Export in the background so the caller's UI stays responsive.
     asyncio.create_task(export_to_google(config, app))
     return number

@@ -43,7 +43,7 @@ _RU = dict(
     APPROVED=(
         "Поздравляем, вы прошли регистрацию! 🎉\n\n"
         "Ваш регистрационный номер — <b>№{number}</b>.\n"
-        "Заезд участников начнётся <b>11 сентября с 10:00 до 19:00</b>.\n\n"
+        "Заезд участников начнётся <b>11 сентября 2026 с 10:00 до 19:00</b>.\n\n"
         "Обязательно подпишитесь на канал https://t.me/fooderaexpo — там мы публикуем:\n"
         "1) Время заезда\n"
         "2) Правила участия на фестивале\n"
@@ -56,6 +56,8 @@ _RU = dict(
         "оно пройдёт <b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
     ),
     STATUS_PENDING="Ваша заявка на рассмотрении. В ближайшее время вы получите ответ.",
+    SHARE_CTA="📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на Promotors Show!",
+    SHARE_CTA_PLAIN="📸 Опубликуй свой билет в Stories — увидимся на Promotors Show!",
     BTN_SUBSCRIBE="Подписаться на канал",
     BTN_CHECK_SUBSCRIPTION="Я подписался ✅",
     BTN_SEND_PHONE="Отправить номер телефона ☎️",
@@ -99,7 +101,7 @@ _UZ = dict(
     APPROVED=(
         "Tabriklaymiz, ro‘yxatdan o‘tdingiz! 🎉\n\n"
         "Sizning ro‘yxat raqamingiz — <b>№{number}</b>.\n"
-        "Ishtirokchilar kirishi <b>11-sentyabr, 10:00 dan 19:00 gacha</b> boshlanadi.\n\n"
+        "Ishtirokchilar kirishi <b>11-sentyabr 2026, 10:00 dan 19:00 gacha</b> boshlanadi.\n\n"
         "Albatta kanalga obuna bo‘ling: https://t.me/fooderaexpo — u yerda quyidagilarni e’lon qilamiz:\n"
         "1) Kirish vaqti\n"
         "2) Festivalda ishtirok etish qoidalari\n"
@@ -112,6 +114,8 @@ _UZ = dict(
         "<b>12 va 13-sentyabr, 10:00 dan</b> <b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
     ),
     STATUS_PENDING="Arizangiz ko‘rib chiqilmoqda. Tez orada javob olasiz.",
+    SHARE_CTA="📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — Promotors Show’da ko‘rishguncha!",
+    SHARE_CTA_PLAIN="📸 Biletingizni Storiesda ulashing — Promotors Show’da ko‘rishguncha!",
     BTN_SUBSCRIBE="Kanalga obuna bo‘lish",
     BTN_CHECK_SUBSCRIPTION="Obuna bo‘ldim ✅",
     BTN_SEND_PHONE="Telefon raqamni yuborish ☎️",
@@ -129,6 +133,14 @@ _LANGS = {"ru": RU, "uz": UZ}
 def T(lang: str) -> SimpleNamespace:
     """Return the text namespace for a language (falls back to Russian)."""
     return _LANGS.get(lang, RU)
+
+
+def localize_direction(canonical: str, lang: str) -> str:
+    """Map a canonical (Russian) direction to its label in ``lang``."""
+    try:
+        return T(lang).DIRECTIONS[DIRECTIONS_CANON.index(canonical)]
+    except (ValueError, IndexError):
+        return canonical
 
 
 # --- Language-independent data ---

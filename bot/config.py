@@ -43,6 +43,8 @@ class Config:
     panel_port: int
     admin_user_ids: frozenset[int]
     channel_url: str
+    instagram_handle: str
+    instagram_url: str
 
     @property
     def panel_enabled(self) -> bool:
@@ -69,6 +71,28 @@ def _materialize_google_credentials(path: str) -> None:
             fh.write(inline)
 
 
+def _materialize_logo() -> None:
+    """If LOGO_BASE64 is set, write it to bot/assets/logo.png.
+
+    Lets platforms that store secrets as env vars (Fly.io) provide the ticket
+    logo without committing a binary. A real file already there wins.
+    """
+    b64 = os.getenv("LOGO_BASE64", "").strip()
+    if not b64:
+        return
+    path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+    if os.path.exists(path):
+        return
+    import base64
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(base64.b64decode(b64))
+    except Exception:  # noqa: BLE001 - a bad LOGO_BASE64 must not crash startup
+        pass
+
+
 def _get_bool(name: str, *, default: bool) -> bool:
     raw = os.getenv(name, "").strip().lower()
     if not raw:
@@ -90,6 +114,7 @@ def load_config() -> Config:
 
     google_credentials_file = _get("GOOGLE_CREDENTIALS_FILE", default="credentials.json")
     _materialize_google_credentials(google_credentials_file)
+    _materialize_logo()
 
     return Config(
         bot_token=_get("BOT_TOKEN", required=True),
@@ -105,6 +130,8 @@ def load_config() -> Config:
         panel_port=int(_get("PORT", default="8080") or "8080"),
         admin_user_ids=_parse_ids(_get("ADMIN_USER_IDS")),
         channel_url=_get("CHANNEL_URL"),
+        instagram_handle=_get("INSTAGRAM_HANDLE"),
+        instagram_url=_get("INSTAGRAM_URL"),
     )
 
 
