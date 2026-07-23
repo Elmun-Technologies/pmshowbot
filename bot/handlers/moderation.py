@@ -5,16 +5,18 @@ lives in ``bot.services.decisions`` and is shared with the web admin panel.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from .. import keyboards, texts
 from ..config import Config
 from ..db import Database
 from ..services import decisions, subscription
+from ..services.ticket import generate_ticket
 
 logger = logging.getLogger(__name__)
 router = Router(name="moderation")
@@ -32,11 +34,10 @@ def _is_admin(message: Message, config: Config) -> bool:
 
 
 @router.message(Command("diag"))
-async def diag(message: Message, bot: Bot, config: Config) -> None:
-    """Self-diagnostics for the subscription gate. Run it in the moderation
-    chat (or as an ADMIN_USER_IDS user in private): reports the channel it sees
-    and whether the bot is an admin there — the usual cause of the "you're not
-    subscribed" loop."""
+async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None:
+    """Self-diagnostics. Run it in the moderation chat (or as an ADMIN_USER_IDS
+    user in private): reports the subscription channel + the bot's admin status
+    there, and runs a ticket self-test (posts a test ticket or the exact error)."""
     if not _is_admin(message, config):
         return
 
@@ -66,6 +67,34 @@ async def diag(message: Message, bot: Bot, config: Config) -> None:
         lines.append("➡️ Добавьте бота <b>администратором</b> канала.")
 
     await message.answer("\n".join(lines))
+
+    # --- ticket self-test: reproduce the real generation path and surface errors ---
+    try:
+        apps = await db.list_applications(limit=1)
+        app = apps[0] if apps else None
+        if app is not None:
+            hero = decisions._pick_hero(app.photo_paths)
+            hero_note = "фото участника" if hero else "нет фото → заглушка"
+            png = await asyncio.to_thread(
+                generate_ticket,
+                number=app.reg_number or 1,
+                plate=app.plate or "TEST",
+                direction=texts.localize_direction(app.direction, app.language),
+                lang=app.language,
+                hero_image_path=hero,
+            )
+        else:
+            hero_note = "нет заявок → заглушка"
+            png = await asyncio.to_thread(
+                generate_ticket, number=1, plate="TEST-777", direction="Тюнинг", lang="ru"
+            )
+        await message.answer_photo(
+            BufferedInputFile(png, filename="diag_ticket.png"),
+            caption=f"🎫 Генерация билета OK ({hero_note}).",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ticket self-test failed")
+        await message.answer(f"🎫 <b>Билет: ОШИБКА</b>\n<code>{type(exc).__name__}: {exc}</code>")
 
 
 @router.callback_query(F.data.startswith(f"{keyboards.CB_APPROVE}:"))

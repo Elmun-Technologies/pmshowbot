@@ -124,9 +124,13 @@ def _cinematic(img):
 
 
 def _hero(w, h, photo_path):
+    hero = None
     if photo_path and os.path.exists(photo_path):
-        hero = _cinematic(_cover(Image.open(photo_path), w, h))
-    else:
+        try:
+            hero = _cinematic(_cover(Image.open(photo_path), w, h))
+        except Exception:  # noqa: BLE001 - a bad/corrupt photo falls back to the gradient
+            hero = None
+    if hero is None:
         hero = _vgradient(w, h, [
             (0.0, (10, 10, 16)), (0.42, (58, 26, 24)),
             (0.60, (196, 74, 28)), (0.75, (140, 50, 26)), (1.0, (8, 6, 8)),
