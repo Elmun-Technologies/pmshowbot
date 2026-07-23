@@ -61,8 +61,8 @@ def _font(kind: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 _COPY = {
-    "ru": {"participant": "УЧАСТНИК", "date": "12–13 сентября 2026", "place": "SAMARKAND"},
-    "uz": {"participant": "ISHTIROKCHI", "date": "12–13-sentyabr 2026", "place": "SAMARQAND"},
+    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026", "place": "SAMARKAND"},
+    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026", "place": "SAMARQAND"},
 }
 
 

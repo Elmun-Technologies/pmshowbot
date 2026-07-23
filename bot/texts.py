@@ -43,7 +43,7 @@ _RU = dict(
     APPROVED=(
         "Поздравляем, вы прошли регистрацию! 🎉\n\n"
         "Ваш регистрационный номер — <b>№{number}</b>.\n"
-        "Заезд участников начнётся <b>11 сентября с 10:00 до 19:00</b>.\n\n"
+        "Заезд участников начнётся <b>11 сентября 2026 с 10:00 до 19:00</b>.\n\n"
         "Обязательно подпишитесь на канал https://t.me/fooderaexpo — там мы публикуем:\n"
         "1) Время заезда\n"
         "2) Правила участия на фестивале\n"
@@ -101,7 +101,7 @@ _UZ = dict(
     APPROVED=(
         "Tabriklaymiz, ro‘yxatdan o‘tdingiz! 🎉\n\n"
         "Sizning ro‘yxat raqamingiz — <b>№{number}</b>.\n"
-        "Ishtirokchilar kirishi <b>11-sentyabr, 10:00 dan 19:00 gacha</b> boshlanadi.\n\n"
+        "Ishtirokchilar kirishi <b>11-sentyabr 2026, 10:00 dan 19:00 gacha</b> boshlanadi.\n\n"
         "Albatta kanalga obuna bo‘ling: https://t.me/fooderaexpo — u yerda quyidagilarni e’lon qilamiz:\n"
         "1) Kirish vaqti\n"
         "2) Festivalda ishtirok etish qoidalari\n"
