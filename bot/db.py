@@ -214,10 +214,77 @@ class Database:
             conn.commit()
             return True
 
+    # --- admin panel queries ---
+
+    def _list_applications(
+        self, status: Optional[str] = None, search: Optional[str] = None, limit: int = 500
+    ) -> list[Application]:
+        query = "SELECT * FROM applications"
+        conds: list[str] = []
+        params: list = []
+        if status:
+            conds.append("status = ?")
+            params.append(status)
+        if search:
+            conds.append(
+                "(plate LIKE ? OR phone LIKE ? OR username LIKE ? OR country LIKE ?)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like, like])
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [_row_to_application(r) for r in rows]
+
+    def _stats(self) -> dict:
+        with self._connect() as conn:
+            by_status = {
+                row["status"]: row["n"]
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) AS n FROM applications GROUP BY status"
+                ).fetchall()
+            }
+            by_direction = {
+                row["direction"] or "—": row["n"]
+                for row in conn.execute(
+                    "SELECT direction, COUNT(*) AS n FROM applications GROUP BY direction ORDER BY n DESC"
+                ).fetchall()
+            }
+            by_country = {
+                row["country"] or "—": row["n"]
+                for row in conn.execute(
+                    "SELECT country, COUNT(*) AS n FROM applications GROUP BY country ORDER BY n DESC"
+                ).fetchall()
+            }
+            max_number = conn.execute(
+                "SELECT COALESCE(MAX(reg_number), 0) FROM applications"
+            ).fetchone()[0]
+        total = sum(by_status.values())
+        return {
+            "total": total,
+            "pending": by_status.get(STATUS_PENDING, 0),
+            "approved": by_status.get(STATUS_APPROVED, 0),
+            "rejected": by_status.get(STATUS_REJECTED, 0),
+            "by_direction": by_direction,
+            "by_country": by_country,
+            "max_number": int(max_number),
+        }
+
     # --- async wrappers ---
 
     async def init(self) -> None:
         await asyncio.to_thread(self._init)
+
+    async def list_applications(
+        self, status: Optional[str] = None, search: Optional[str] = None, limit: int = 500
+    ) -> list[Application]:
+        return await asyncio.to_thread(self._list_applications, status, search, limit)
+
+    async def stats(self) -> dict:
+        return await asyncio.to_thread(self._stats)
 
     async def create_application(self, **kwargs) -> int:
         return await asyncio.to_thread(lambda: self._create_application(**kwargs))

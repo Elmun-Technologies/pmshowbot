@@ -12,15 +12,13 @@ from aiogram.utils.media_group import MediaGroupBuilder
 
 from .. import keyboards, texts
 from ..config import Config
+from ..constants import SIDES
 from ..db import Database
 from ..services import subscription
 from ..states import Registration
 
 logger = logging.getLogger(__name__)
 router = Router(name="registration")
-
-# Photo sides, in the order we ask for them (used for filenames + drive names).
-SIDES = ["left", "right", "front", "back"]
 
 
 def _user_label(message_or_query) -> str:
