@@ -39,6 +39,12 @@ class Config:
     db_path: str
     media_dir: str
     require_subscription: bool
+    admin_password: str
+    panel_port: int
+
+    @property
+    def panel_enabled(self) -> bool:
+        return bool(self.admin_password)
 
     @property
     def sheets_enabled(self) -> bool:
@@ -93,6 +99,8 @@ def load_config() -> Config:
         db_path=_get("DB_PATH", default="data/pmshow.db"),
         media_dir=_get("MEDIA_DIR", default="media"),
         require_subscription=_get_bool("REQUIRE_SUBSCRIPTION", default=True),
+        admin_password=_get("ADMIN_PASSWORD"),
+        panel_port=int(_get("PORT", default="8080") or "8080"),
     )
 
 
@@ -108,6 +116,7 @@ def _check() -> int:
     print(f"[config]   REQUIRED_CHANNEL = {config.required_channel}")
     print(f"[config]   ADMIN_CHAT_ID    = {config.admin_chat_id}")
     print(f"[config]   Subscription     = {'required' if config.require_subscription else 'not required'}")
+    print(f"[config]   Admin panel      = {'enabled (port ' + str(config.panel_port) + ')' if config.panel_enabled else 'disabled (set ADMIN_PASSWORD)'}")
     print(f"[config]   Sheets export    = {'enabled' if config.sheets_enabled else 'disabled'}")
     print(f"[config]   Drive photos     = {'enabled' if config.drive_enabled else 'disabled'}")
 

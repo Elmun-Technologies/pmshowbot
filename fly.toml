@@ -1,7 +1,8 @@
 # Fly.io deployment config for the Promotors Show registration bot.
 #
-# This is a worker (Telegram long polling) — it has NO inbound HTTP service,
-# so there is no [http_service] block and the machine stays always-on.
+# The process runs BOTH the Telegram long-polling bot AND the admin web panel
+# in one machine. The http_service below exposes the panel; auto-stop is OFF and
+# min_machines_running = 1 so the bot's polling loop is never stopped.
 #
 # IMPORTANT: run exactly ONE machine. Two instances would both call Telegram
 # getUpdates and conflict. After the first deploy: `fly scale count 1`.
@@ -19,6 +20,16 @@ primary_region = "ams"
   # registration-number counter and data survive restarts/redeploys.
   DB_PATH = "/data/pmshow.db"
   MEDIA_DIR = "/data/media"
+  PORT = "8080"
+
+# Admin panel over HTTPS. auto_stop_machines = false + min_machines_running = 1
+# keep the single machine always-on (the bot must never be stopped).
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
 
 # Persistent volume. Create it once with:
 #   fly volumes create pmshow_data --region ams --size 1

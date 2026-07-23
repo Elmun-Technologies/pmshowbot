@@ -92,6 +92,26 @@ python tests/test_db.py   # sequential registration numbers, status transitions
    the Google Sheet. **Reject** → applicant gets the guest invitation.
 5. "Узнать свой номер" re-shows the applicant's status.
 
+## Admin web panel
+
+The bot process also serves a small web admin panel (same app, same SQLite DB).
+Set `ADMIN_PASSWORD` to enable it; leave it empty to disable. On Fly it's
+reachable at `https://<app>.fly.dev` (e.g. `https://pmshowbot.fly.dev`).
+
+Features:
+- **Login** with the single shared `ADMIN_PASSWORD` (signed-cookie session).
+- **Dashboard** — totals (pending / approved / rejected), last issued number,
+  and breakdowns by direction and country.
+- **Applications** — list with photo thumbnails, filter by status, search by
+  plate / phone / user; a detail page shows all four photos.
+- **Approve / Reject** from the panel — runs the exact same logic as the Telegram
+  buttons (assigns the number, messages the applicant, exports to Google if enabled).
+- **Export CSV** (`/export.csv`, opens cleanly in Excel).
+
+Locally it listens on `PORT` (default `8080`): open `http://localhost:8080`.
+The panel is exposed publicly on Fly, so use a strong password (it is the only
+gate). Traffic is HTTPS on Fly (`force_https`).
+
 ## Editing wording / dates
 
 All user-facing text lives in `bot/texts.py` (greeting, approval/rejection
@@ -134,7 +154,8 @@ fly volumes create pmshow_data --region ams --size 1 -a pmshowbot
 fly secrets set -a pmshowbot \
   BOT_TOKEN="123456:ABC..." \
   REQUIRED_CHANNEL="@promotorsshow" \
-  ADMIN_CHAT_ID="-1001234567890"
+  ADMIN_CHAT_ID="-1001234567890" \
+  ADMIN_PASSWORD="<strong password for the web panel>"
 # For a demo without the subscription gate: also set REQUIRE_SUBSCRIPTION="false"
 # For Google export later: fly secrets set GOOGLE_CREDENTIALS_JSON="$(cat credentials.json)" \
 #   SPREADSHEET_ID="..." DRIVE_FOLDER_ID="..." -a pmshowbot
