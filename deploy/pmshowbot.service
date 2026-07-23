@@ -1,0 +1,17 @@
+[Unit]
+Description=Promotors Show Samarkand registration bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit User and paths to match your host.
+User=pmshow
+WorkingDirectory=/opt/pmshowbot
+ExecStart=/usr/bin/python3 -m bot.main
+Restart=always
+RestartSec=5
+# Config comes from the .env file in WorkingDirectory (loaded by python-dotenv).
+
+[Install]
+WantedBy=multi-user.target
