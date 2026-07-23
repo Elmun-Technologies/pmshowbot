@@ -35,6 +35,7 @@ class Application:
     created_at: str
     processed_at: Optional[str]
     processed_by: Optional[str]
+    language: str = "ru"
 
 
 _SCHEMA = """
@@ -52,10 +53,16 @@ CREATE TABLE IF NOT EXISTS applications (
     reg_number     INTEGER,
     created_at     TEXT NOT NULL,
     processed_at   TEXT,
-    processed_by   TEXT
+    processed_by   TEXT,
+    language       TEXT NOT NULL DEFAULT 'ru'
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 """
+
+# Lightweight migrations: (column, "ALTER ... ADD COLUMN ...") applied if missing.
+_MIGRATIONS = [
+    ("language", "ALTER TABLE applications ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'"),
+]
 
 
 def _now() -> str:
@@ -78,6 +85,7 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         created_at=row["created_at"],
         processed_at=row["processed_at"],
         processed_by=row["processed_by"],
+        language=row["language"] if "language" in row.keys() else "ru",
     )
 
 
@@ -101,6 +109,11 @@ class Database:
     def _init(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Apply migrations for databases created by an older schema.
+            existing = {r["name"] for r in conn.execute("PRAGMA table_info(applications)")}
+            for column, ddl in _MIGRATIONS:
+                if column not in existing:
+                    conn.execute(ddl)
 
     def _create_application(
         self,
@@ -113,14 +126,15 @@ class Database:
         phone: str,
         photo_file_ids: list[str],
         photo_paths: list[str],
+        language: str = "ru",
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO applications
                     (user_id, username, country, plate, direction, phone,
-                     photo_file_ids, photo_paths, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     photo_file_ids, photo_paths, status, created_at, language)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -133,6 +147,7 @@ class Database:
                     json.dumps(photo_paths, ensure_ascii=False),
                     STATUS_PENDING,
                     _now(),
+                    language,
                 ),
             )
             return int(cur.lastrowid)

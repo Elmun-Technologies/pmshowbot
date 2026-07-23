@@ -65,7 +65,51 @@ def test_active_application_lookup():
         assert asyncio.run(db.has_active_application(42)) is None
 
 
+def test_language_roundtrip_and_migration():
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "t.db")
+
+        # Simulate an OLD database created before the `language` column existed.
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """
+            CREATE TABLE applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+                username TEXT DEFAULT '', country TEXT DEFAULT '', plate TEXT DEFAULT '',
+                direction TEXT DEFAULT '', phone TEXT DEFAULT '',
+                photo_file_ids TEXT DEFAULT '[]', photo_paths TEXT DEFAULT '[]',
+                status TEXT DEFAULT 'pending', reg_number INTEGER,
+                created_at TEXT NOT NULL, processed_at TEXT, processed_by TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO applications (user_id, created_at) VALUES (1, '2020-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(path)
+        asyncio.run(db.init())  # should ADD the language column
+
+        # Old row defaults to ru
+        old = asyncio.run(db.get_application(1))
+        assert old.language == "ru"
+
+        # New row can store uz and read it back
+        new_id = asyncio.run(
+            db.create_application(
+                user_id=2, username="@u", country="Узбекистан", plate="X", direction="Дрифт",
+                phone="+998", photo_file_ids=[], photo_paths=[], language="uz",
+            )
+        )
+        assert asyncio.run(db.get_application(new_id)).language == "uz"
+
+
 if __name__ == "__main__":
     test_sequential_numbers_and_rejection_gaps()
     test_active_application_lookup()
+    test_language_roundtrip_and_migration()
     print("All tests passed.")

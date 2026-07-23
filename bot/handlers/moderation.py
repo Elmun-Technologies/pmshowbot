@@ -78,8 +78,9 @@ async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) 
         await query.answer(texts.MODERATION_ALREADY, show_alert=True)
         return
 
-    await query.message.edit_text(
-        texts.MODERATION_APPROVED.format(number=number, moderator=moderator)
+    # Keep all the application details visible; append the decision below them.
+    await _append_status(
+        query, texts.MODERATION_APPROVED.format(number=number, moderator=moderator)
     )
     await query.answer(f"Одобрено, №{number}")
 
@@ -94,5 +95,16 @@ async def reject(query: CallbackQuery, bot: Bot, config: Config, db: Database) -
         await query.answer(texts.MODERATION_ALREADY, show_alert=True)
         return
 
-    await query.message.edit_text(texts.MODERATION_REJECTED.format(moderator=moderator))
+    await _append_status(query, texts.MODERATION_REJECTED.format(moderator=moderator))
     await query.answer("Отклонено")
+
+
+async def _append_status(query: CallbackQuery, status_line: str) -> None:
+    """Append a decision line under the existing card, keeping all the details,
+    and drop the inline buttons."""
+    base = query.message.html_text or query.message.text or ""
+    try:
+        await query.message.edit_text(f"{base}\n\n{status_line}")
+    except Exception:  # noqa: BLE001 - fall back to editing just the markup
+        logger.exception("Could not edit moderation card %s", query.message.message_id)
+        await query.message.edit_reply_markup(reply_markup=None)

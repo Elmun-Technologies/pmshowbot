@@ -1,4 +1,4 @@
-"""Registration flow: /start subscription gate through to the moderation card."""
+"""Registration flow: /start → language → subscription gate → form → moderation."""
 from __future__ import annotations
 
 import logging
@@ -28,11 +28,34 @@ def _user_label(message_or_query) -> str:
     return f"{user.full_name} (id {user.id})"
 
 
-async def _start_form(message: Message, state: FSMContext) -> None:
+async def _lang(state: FSMContext) -> str:
+    return (await state.get_data()).get("lang", "ru")
+
+
+async def _gate_or_start(
+    message: Message, state: FSMContext, bot: Bot, config: Config, user_id: int, lang: str
+) -> None:
+    """After the language is known: subscription gate, then the form."""
+    t = texts.T(lang)
+    if config.require_subscription and not await subscription.is_subscribed(
+        bot, config.required_channel, user_id
+    ):
+        await message.answer(
+            t.SUBSCRIBE_REQUIRED,
+            reply_markup=keyboards.subscription_keyboard(
+                subscription.channel_url(config.required_channel, config.channel_url), lang
+            ),
+        )
+        return
+    await _start_form(message, state, lang)
+
+
+async def _start_form(message: Message, state: FSMContext, lang: str) -> None:
     """Send greeting and move to the first form step (country)."""
+    t = texts.T(lang)
     await state.set_state(Registration.country)
-    await message.answer(texts.GREETING)
-    await message.answer(texts.ASK_COUNTRY, reply_markup=keyboards.country_keyboard())
+    await message.answer(t.GREETING)
+    await message.answer(t.ASK_COUNTRY, reply_markup=keyboards.country_keyboard(lang))
 
 
 @router.message(CommandStart())
@@ -47,18 +70,21 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
         await show_status(message, active)
         return
 
-    if config.require_subscription and not await subscription.is_subscribed(
-        bot, config.required_channel, message.from_user.id
-    ):
-        await message.answer(
-            texts.SUBSCRIBE_REQUIRED,
-            reply_markup=keyboards.subscription_keyboard(
-                subscription.channel_url(config.required_channel, config.channel_url)
-            ),
-        )
-        return
+    # First ask the language (prompt is bilingual).
+    await state.set_state(Registration.language)
+    await message.answer(texts.ASK_LANGUAGE, reply_markup=keyboards.language_keyboard())
 
-    await _start_form(message, state)
+
+@router.callback_query(Registration.language, F.data.startswith(f"{keyboards.CB_LANG}:"))
+async def choose_language(
+    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config
+) -> None:
+    lang = query.data.split(":", 1)[1]
+    if lang not in ("uz", "ru"):
+        lang = "ru"
+    await state.update_data(lang=lang)
+    await query.answer()
+    await _gate_or_start(query.message, state, bot, config, query.from_user.id, lang)
 
 
 @router.callback_query(F.data == keyboards.CB_CHECK_SUB)
@@ -73,49 +99,54 @@ async def check_subscription(
         await query.answer()
         return
 
+    lang = await _lang(state)
     if await subscription.is_subscribed(bot, config.required_channel, query.from_user.id):
         await query.answer()
-        await _start_form(query.message, state)
+        await _start_form(query.message, state, lang)
     else:
-        await query.answer(texts.SUBSCRIBE_STILL_NOT, show_alert=True)
+        await query.answer(texts.T(lang).SUBSCRIBE_STILL_NOT, show_alert=True)
 
 
 # --- Country ---
 @router.callback_query(Registration.country, F.data.startswith(f"{keyboards.CB_COUNTRY}:"))
 async def choose_country(query: CallbackQuery, state: FSMContext) -> None:
+    lang = await _lang(state)
     _, value = query.data.split(":", 1)
     if value == "other":
         await state.set_state(Registration.country_other)
-        await query.message.answer(texts.ASK_COUNTRY_OTHER)
+        await query.message.answer(texts.T(lang).ASK_COUNTRY_OTHER)
         await query.answer()
         return
 
-    country = texts.COUNTRIES[int(value)]
-    await state.update_data(country=country)
+    # Store the canonical (Russian) country name regardless of display language.
+    await state.update_data(country=texts.COUNTRIES_CANON[int(value)])
     await state.set_state(Registration.plate)
-    await query.message.answer(texts.ASK_PLATE)
+    await query.message.answer(texts.T(lang).ASK_PLATE)
     await query.answer()
 
 
 @router.message(Registration.country_other, F.text)
 async def country_other(message: Message, state: FSMContext) -> None:
+    lang = await _lang(state)
     await state.update_data(country=message.text.strip())
     await state.set_state(Registration.plate)
-    await message.answer(texts.ASK_PLATE)
+    await message.answer(texts.T(lang).ASK_PLATE)
 
 
 # --- License plate ---
 @router.message(Registration.plate, F.text)
 async def set_plate(message: Message, state: FSMContext) -> None:
+    lang = await _lang(state)
     await state.update_data(plate=message.text.strip(), photo_file_ids=[], photo_paths=[])
     await state.set_state(Registration.photos)
-    await message.answer(texts.PHOTO_PROMPTS[0])
+    await message.answer(texts.T(lang).PHOTO_PROMPTS[0])
 
 
 # --- Photos (4, one by one) ---
 @router.message(Registration.photos, F.photo)
 async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: Config) -> None:
     data = await state.get_data()
+    lang = data.get("lang", "ru")
     file_ids: list[str] = data.get("photo_file_ids", [])
     paths: list[str] = data.get("photo_paths", [])
 
@@ -133,24 +164,30 @@ async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: C
     await state.update_data(photo_file_ids=file_ids, photo_paths=paths)
 
     if len(file_ids) < len(SIDES):
-        await message.answer(texts.PHOTO_PROMPTS[len(file_ids)])
+        await message.answer(texts.T(lang).PHOTO_PROMPTS[len(file_ids)])
     else:
         await state.set_state(Registration.direction)
-        await message.answer(texts.ASK_DIRECTION, reply_markup=keyboards.direction_keyboard())
+        await message.answer(
+            texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
+        )
 
 
 @router.message(Registration.photos)
-async def photos_not_a_photo(message: Message) -> None:
-    await message.answer(texts.PHOTO_NOT_A_PHOTO)
+async def photos_not_a_photo(message: Message, state: FSMContext) -> None:
+    await message.answer(texts.T(await _lang(state)).PHOTO_NOT_A_PHOTO)
 
 
 # --- Direction ---
 @router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
 async def choose_direction(query: CallbackQuery, state: FSMContext) -> None:
+    lang = await _lang(state)
     _, idx = query.data.split(":", 1)
-    await state.update_data(direction=texts.DIRECTIONS[int(idx)])
+    # Store the canonical (Russian) direction name.
+    await state.update_data(direction=texts.DIRECTIONS_CANON[int(idx)])
     await state.set_state(Registration.phone)
-    await query.message.answer(texts.ASK_PHONE, reply_markup=keyboards.phone_keyboard())
+    await query.message.answer(
+        texts.T(lang).ASK_PHONE, reply_markup=keyboards.phone_keyboard(lang)
+    )
     await query.answer()
 
 
@@ -180,6 +217,7 @@ async def _finalize(
     phone: str,
 ) -> None:
     data = await state.get_data()
+    lang = data.get("lang", "ru")
     app_id = await db.create_application(
         user_id=message.from_user.id,
         username=_user_label(message),
@@ -189,9 +227,10 @@ async def _finalize(
         phone=phone,
         photo_file_ids=data.get("photo_file_ids", []),
         photo_paths=data.get("photo_paths", []),
+        language=lang,
     )
     await state.clear()
-    await message.answer(texts.THANKS, reply_markup=keyboards.main_menu_keyboard())
+    await message.answer(texts.T(lang).THANKS, reply_markup=keyboards.main_menu_keyboard(lang))
 
     await _send_moderation_card(
         bot,

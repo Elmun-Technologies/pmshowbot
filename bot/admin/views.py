@@ -240,6 +240,7 @@ def application_detail_page(app: Application) -> str:
         f'<div class="k">Направление</div><div>{escape(app.direction)}</div>'
         f'<div class="k">Телефон</div><div>{escape(app.phone)}</div>'
         f'<div class="k">Пользователь</div><div>{escape(app.username)}</div>'
+        f'<div class="k">Язык</div><div>{escape(app.language)}</div>'
         f'<div class="k">Подана</div><div>{escape(app.created_at)}</div>'
         + (f'<div class="k">Обработана</div><div>{escape(app.processed_at or "")} '
            f'{escape(app.processed_by or "")}</div>' if app.processed_at else "")

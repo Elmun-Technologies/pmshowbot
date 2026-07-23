@@ -164,12 +164,12 @@ async def _export_csv(request: web.Request) -> web.Response:
     writer = csv.writer(buf)
     writer.writerow(
         ["ID", "Рег. номер", "Статус", "Страна", "Гос. номер", "Направление",
-         "Телефон", "Пользователь", "Подана", "Обработана", "Кто обработал"]
+         "Телефон", "Пользователь", "Язык", "Подана", "Обработана", "Кто обработал"]
     )
     for a in apps:
         writer.writerow(
             [a.id, a.reg_number or "", a.status, a.country, a.plate, a.direction,
-             a.phone, a.username, a.created_at, a.processed_at or "", a.processed_by or ""]
+             a.phone, a.username, a.language, a.created_at, a.processed_at or "", a.processed_by or ""]
         )
     return web.Response(
         body=buf.getvalue().encode("utf-8"),
