@@ -9,7 +9,7 @@
 # Change `app` to your chosen name before deploying (or let `fly launch` set it).
 
 app = "pmshowbot"
-primary_region = "fra"
+primary_region = "ams"
 
 [build]
   dockerfile = "Dockerfile"
@@ -21,7 +21,7 @@ primary_region = "fra"
   MEDIA_DIR = "/data/media"
 
 # Persistent volume. Create it once with:
-#   fly volumes create pmshow_data --region fra --size 1
+#   fly volumes create pmshow_data --region ams --size 1
 [mounts]
   source = "pmshow_data"
   destination = "/data"

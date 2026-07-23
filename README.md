@@ -128,7 +128,7 @@ fly auth login
 fly apps create pmshowbot
 
 # 3. Create the persistent volume (same region as fly.toml's primary_region)
-fly volumes create pmshow_data --region fra --size 1 -a pmshowbot
+fly volumes create pmshow_data --region ams --size 1 -a pmshowbot
 
 # 4. Set secrets (do NOT put these in fly.toml)
 fly secrets set -a pmshowbot \
