@@ -8,18 +8,14 @@ from bot.services.ticket import generate_ticket  # noqa: E402
 
 
 def test_generates_png():
-    png = generate_ticket(
-        number=1, plate="AB789GG", direction="Тюнинг", lang="ru",
-        instagram_handle="promotorsshow", qr_url="https://instagram.com/promotorsshow",
-    )
+    png = generate_ticket(number=1, plate="AB789GG", direction="Тюнинг", lang="ru")
     assert isinstance(png, bytes) and len(png) > 5000
     assert png[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic header
 
 
 def test_handles_long_number_and_uz():
     png = generate_ticket(
-        number=1234, plate="01A123BC VERY LONG", direction="Drift", lang="uz",
-        instagram_handle="@promotorsshow", qr_url="",
+        number=1234, plate="01A123BC VERY LONG", direction="Drift", lang="uz"
     )
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
 

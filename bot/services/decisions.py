@@ -41,27 +41,28 @@ def _pick_hero(photo_paths: list[str]) -> Optional[str]:
 
 
 async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
-    """Render and send the shareable Stories ticket to an approved applicant."""
+    """Render and send the shareable Stories ticket, then a short share message."""
     try:
-        qr_url = (
-            config.instagram_url
-            or subscription.channel_url(config.required_channel, config.channel_url)
-            or "https://t.me/fooderaexpo"
-        )
         png = await asyncio.to_thread(
             generate_ticket,
             number=app.reg_number,
             plate=app.plate,
             direction=texts.localize_direction(app.direction, app.language),
             lang=app.language,
-            instagram_handle=config.instagram_handle,
-            qr_url=qr_url,
             hero_image_path=_pick_hero(app.photo_paths),
         )
         await bot.send_photo(
             app.user_id,
             BufferedInputFile(png, filename=f"ticket_{app.reg_number}.png"),
         )
+        t = texts.T(app.language)
+        if config.instagram_handle:
+            handle = config.instagram_handle
+            if not handle.startswith("@"):
+                handle = f"@{handle}"
+            await bot.send_message(app.user_id, t.SHARE_CTA.format(handle=handle))
+        else:
+            await bot.send_message(app.user_id, t.SHARE_CTA_PLAIN)
     except TelegramForbiddenError:
         logger.warning("Could not send ticket to user %s (bot blocked?)", app.user_id)
     except Exception:  # noqa: BLE001 - a ticket failure must not break approval

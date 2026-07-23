@@ -56,6 +56,8 @@ _RU = dict(
         "оно пройдёт <b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
     ),
     STATUS_PENDING="Ваша заявка на рассмотрении. В ближайшее время вы получите ответ.",
+    SHARE_CTA="📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на Promotors Show!",
+    SHARE_CTA_PLAIN="📸 Опубликуй свой билет в Stories — увидимся на Promotors Show!",
     BTN_SUBSCRIBE="Подписаться на канал",
     BTN_CHECK_SUBSCRIPTION="Я подписался ✅",
     BTN_SEND_PHONE="Отправить номер телефона ☎️",
@@ -112,6 +114,8 @@ _UZ = dict(
         "<b>12 va 13-sentyabr, 10:00 dan</b> <b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
     ),
     STATUS_PENDING="Arizangiz ko‘rib chiqilmoqda. Tez orada javob olasiz.",
+    SHARE_CTA="📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — Promotors Show’da ko‘rishguncha!",
+    SHARE_CTA_PLAIN="📸 Biletingizni Storiesda ulashing — Promotors Show’da ko‘rishguncha!",
     BTN_SUBSCRIBE="Kanalga obuna bo‘lish",
     BTN_CHECK_SUBSCRIPTION="Obuna bo‘ldim ✅",
     BTN_SEND_PHONE="Telefon raqamni yuborish ☎️",
