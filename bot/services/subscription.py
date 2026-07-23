@@ -50,12 +50,18 @@ async def is_subscribed(bot: Bot, channel: str, user_id: int) -> bool:
     return member.status in _SUBSCRIBED_STATUSES
 
 
-def channel_url(channel: str) -> str:
-    """Build a t.me URL from an @username or a numeric channel id."""
+def channel_url(channel: str, override: str = "") -> str:
+    """Build a t.me URL for the subscribe button.
+
+    Priority: explicit ``override`` (CHANNEL_URL) > @username > full http(s) url.
+    For a bare numeric id with no override there is no reliable public link, so
+    this returns "" and the caller omits the link button.
+    """
+    if override and override.strip():
+        return override.strip()
     channel = channel.strip()
     if channel.startswith("@"):
         return f"https://t.me/{channel[1:]}"
     if channel.startswith("https://") or channel.startswith("http://"):
         return channel
-    # Numeric id: cannot build a public link reliably; fall back to a search hint.
-    return "https://t.me/promotorsshow"
+    return ""

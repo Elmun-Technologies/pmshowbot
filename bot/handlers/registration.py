@@ -53,7 +53,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
         await message.answer(
             texts.SUBSCRIBE_REQUIRED,
             reply_markup=keyboards.subscription_keyboard(
-                subscription.channel_url(config.required_channel)
+                subscription.channel_url(config.required_channel, config.channel_url)
             ),
         )
         return
