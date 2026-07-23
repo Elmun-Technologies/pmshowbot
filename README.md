@@ -113,6 +113,46 @@ sudo systemctl enable --now pmshowbot
 sudo journalctl -u pmshowbot -f
 ```
 
+### Fly.io
+
+The bot is a long-polling **worker** (no inbound HTTP), so deploy it with
+`flyctl` using the included `fly.toml` — **not** the "Launch from GitHub" web UI
+(that assumes a web app with a port and won't create the data volume).
+
+```bash
+# 1. Install flyctl and log in
+curl -L https://fly.io/install.sh | sh
+fly auth login
+
+# 2. Create the app (pick a unique name; update `app` in fly.toml to match)
+fly apps create pmshowbot
+
+# 3. Create the persistent volume (same region as fly.toml's primary_region)
+fly volumes create pmshow_data --region fra --size 1 -a pmshowbot
+
+# 4. Set secrets (do NOT put these in fly.toml)
+fly secrets set -a pmshowbot \
+  BOT_TOKEN="123456:ABC..." \
+  REQUIRED_CHANNEL="@promotorsshow" \
+  ADMIN_CHAT_ID="-1001234567890"
+# For a demo without the subscription gate: also set REQUIRE_SUBSCRIPTION="false"
+# For Google export later: fly secrets set GOOGLE_CREDENTIALS_JSON="$(cat credentials.json)" \
+#   SPREADSHEET_ID="..." DRIVE_FOLDER_ID="..." -a pmshowbot
+
+# 5. Deploy, then ensure exactly ONE machine runs (two would conflict on polling)
+fly deploy -a pmshowbot
+fly scale count 1 -a pmshowbot
+
+fly logs -a pmshowbot     # watch it start
+```
+
+Notes:
+- No `[http_service]` / port — the machine stays always-on and is not health-checked.
+- `DB_PATH` / `MEDIA_DIR` point at the mounted volume so data and registration
+  numbers survive restarts and redeploys.
+- Run **only one** machine: a second instance would also call Telegram
+  `getUpdates` and cause a conflict.
+
 ### Docker
 
 ```bash
