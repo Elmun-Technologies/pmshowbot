@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from aiogram import Bot
@@ -24,6 +25,19 @@ from . import drive, sheets, subscription
 from .ticket import generate_ticket
 
 logger = logging.getLogger(__name__)
+
+
+def _pick_hero(photo_paths: list[str]) -> Optional[str]:
+    """Choose the poster background: prefer the front shot, then back, then any.
+
+    SIDES order is left, right, front, back → indices 2, 3, 0, 1.
+    """
+    for idx in (2, 3, 0, 1):
+        if idx < len(photo_paths):
+            p = photo_paths[idx]
+            if p and os.path.exists(p):
+                return p
+    return None
 
 
 async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
@@ -42,6 +56,7 @@ async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
             lang=app.language,
             instagram_handle=config.instagram_handle,
             qr_url=qr_url,
+            hero_image_path=_pick_hero(app.photo_paths),
         )
         await bot.send_photo(
             app.user_id,
