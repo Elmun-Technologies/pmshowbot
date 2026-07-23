@@ -41,6 +41,7 @@ class Config:
     require_subscription: bool
     admin_password: str
     panel_port: int
+    admin_user_ids: frozenset[int]
 
     @property
     def panel_enabled(self) -> bool:
@@ -101,7 +102,17 @@ def load_config() -> Config:
         require_subscription=_get_bool("REQUIRE_SUBSCRIPTION", default=True),
         admin_password=_get("ADMIN_PASSWORD"),
         panel_port=int(_get("PORT", default="8080") or "8080"),
+        admin_user_ids=_parse_ids(_get("ADMIN_USER_IDS")),
     )
+
+
+def _parse_ids(raw: str) -> frozenset[int]:
+    ids = set()
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            ids.add(int(part))
+    return frozenset(ids)
 
 
 def _check() -> int:
