@@ -35,6 +35,7 @@ DUO_HIGH = (255, 176, 96)
 _HERE = os.path.dirname(__file__)
 _ASSET_FONTS = os.path.join(_HERE, "..", "assets", "fonts")
 _LOGO_PATH = os.path.join(_HERE, "..", "assets", "logo.png")
+_ADRENALINE_PATH = os.path.join(_HERE, "..", "assets", "adrenaline.png")
 
 _FONT_CANDIDATES = {
     "bold": ["display.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -170,17 +171,39 @@ def _hero(w, h, photo_path):
 
 
 def _logo_or_wordmark(content, draw, cx, top):
+    sof_logo = None
+    adr_logo = None
+
     if os.path.exists(_LOGO_PATH):
         try:
-            logo = Image.open(_LOGO_PATH).convert("RGBA")
-            target_w = 640
-            logo = logo.resize((target_w, int(logo.height * target_w / logo.width)), Image.LANCZOS)
-            content.paste(logo, (cx - logo.width // 2, top), logo)
-            return
+            sof_logo = Image.open(_LOGO_PATH).convert("RGBA")
+            target_w = 420
+            sof_logo = sof_logo.resize((target_w, int(sof_logo.height * target_w / sof_logo.width)), Image.LANCZOS)
         except Exception:  # noqa: BLE001
             pass
-    _center(draw, cx, top, "PROMOTORS SHOW", _font("bold", 72), WHITE)
-    _center(draw, cx, top + 88, "Samarkand", _font("serif_bold", 60), RED)
+
+    if os.path.exists(_ADRENALINE_PATH):
+        try:
+            adr_logo = Image.open(_ADRENALINE_PATH).convert("RGBA")
+            target_w = 340
+            adr_logo = adr_logo.resize((target_w, int(adr_logo.height * target_w / adr_logo.width)), Image.LANCZOS)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if sof_logo and adr_logo:
+        total_w = sof_logo.width + 40 + adr_logo.width
+        start_x = cx - total_w // 2
+        sof_y = top
+        adr_y = top + (sof_logo.height - adr_logo.height) // 2
+        content.paste(sof_logo, (start_x, sof_y), sof_logo)
+        content.paste(adr_logo, (start_x + sof_logo.width + 40, adr_y), adr_logo)
+    elif sof_logo:
+        content.paste(sof_logo, (cx - sof_logo.width // 2, top), sof_logo)
+    elif adr_logo:
+        content.paste(adr_logo, (cx - adr_logo.width // 2, top), adr_logo)
+    else:
+        _center(draw, cx, top, "PROMOTORS SHOW", _font("bold", 72), WHITE)
+        _center(draw, cx, top + 88, "Samarkand", _font("serif_bold", 60), RED)
 
 
 # ---------- main ----------
