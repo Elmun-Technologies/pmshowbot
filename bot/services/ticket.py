@@ -99,10 +99,10 @@ def _fit_spaced_center(draw, cx, y, text, kind, start_size, max_w, fill, spacing
         x += w + spacing
 
 
-def _fit(draw, text, kind, start, max_w, min_size=90):
+def _fit(draw, text, kind, start, max_w, min_size=16):
     size = start
     while size > min_size and draw.textlength(text, font=_font(kind, size)) > max_w:
-        size -= 8
+        size -= 2
     return _font(kind, size)
 
 
@@ -218,17 +218,17 @@ def generate_ticket(
     date_line = f"{copy['date']}  •  {copy['place']}"
 
     if clean_name:
-        nfont_stub = _fit(draw, clean_name, "bold", 46, cw - 120, min_size=26)
-        _center(draw, W // 2, TEAR_Y + 45, clean_name, nfont_stub, WHITE)
+        nfont_stub = _fit(draw, clean_name, "bold", 42, cw - 140, min_size=24)
+        _center(draw, W // 2, TEAR_Y + 40, clean_name, nfont_stub, WHITE)
 
-        ifont = _fit(draw, info, "bold", 38, cw - 120, min_size=22)
-        _center(draw, W // 2, TEAR_Y + 115, info, ifont, WHITE)
+        ifont = _fit(draw, info, "bold", 34, cw - 140, min_size=20)
+        _center(draw, W // 2, TEAR_Y + 110, info, ifont, WHITE)
 
-        _fit_spaced_center(draw, W // 2, TEAR_Y + 185, date_line, "regular", 26, cw - 100, MUTED, spacing=2)
+        _fit_spaced_center(draw, W // 2, TEAR_Y + 180, date_line, "regular", 22, cw - 120, MUTED, spacing=1)
     else:
-        ifont = _fit(draw, info, "bold", 50, cw - 120, min_size=28)
-        _center(draw, W // 2, TEAR_Y + 65, info, ifont, WHITE)
-        _fit_spaced_center(draw, W // 2, TEAR_Y + 155, date_line, "regular", 28, cw - 100, MUTED, spacing=2)
+        ifont = _fit(draw, info, "bold", 44, cw - 140, min_size=24)
+        _center(draw, W // 2, TEAR_Y + 60, info, ifont, WHITE)
+        _fit_spaced_center(draw, W // 2, TEAR_Y + 150, date_line, "regular", 24, cw - 120, MUTED, spacing=1)
 
     # --- ticket mask: rounded card + tear notches + perforation ---
     mask = Image.new("L", (W, H), 0)

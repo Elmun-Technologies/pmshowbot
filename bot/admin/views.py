@@ -86,7 +86,8 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
             '<span class="brand">🚗 Promotors Show — Admin</span>'
             f'<nav>{link("/", "Дашборд", "home")} '
             f'{link("/applications", "Заявки", "apps")} '
-            f'{link("/export.csv", "Экспорт CSV", "export")}</nav>'
+            f'{link("/export.xlsx", "📊 Экспорт Excel (.xlsx)", "export")} '
+            f'{link("/export.csv", "CSV", "export_csv")}</nav>'
             '<span class="spacer"></span>'
             '<a href="/logout" style="color:#ddd6fe">Выйти</a>'
             '</header>'
@@ -136,9 +137,9 @@ def _distribution(title: str, data: dict) -> str:
     for name, n in data.items():
         pct = round(n * 100 / total)
         rows += (
-            f'<div class="bar"><div style="width:130px">{escape(str(name))}</div>'
+            f'<div class="bar"><div style="width:150px; font-weight:500">{escape(str(name))}</div>'
             f'<div class="track"><div class="fill" style="width:{pct}%"></div></div>'
-            f'<div class="muted" style="width:60px;text-align:right">{n} ({pct}%)</div></div>'
+            f'<div class="muted" style="width:70px;text-align:right">{n} ({pct}%)</div></div>'
         )
     return f'<div class="section"><h2>{escape(title)}</h2>{rows}</div>'
 
@@ -153,10 +154,22 @@ def dashboard_page(stats: dict) -> str:
         + _stat_card(f'№{stats["max_number"]}', "Последний номер")
         + '</div>'
     )
+    
+    excel_btn = (
+        '<div style="margin:20px 0; text-align:right">'
+        '<a class="btn btn-primary" href="/export.xlsx" style="padding:10px 20px; font-size:15px">'
+        '📥 Скачать Excel (.xlsx)'
+        '</a>'
+        '</div>'
+    )
+
     body = (
         cards
-        + _distribution("По направлениям", stats["by_direction"])
-        + _distribution("По странам", stats["by_country"])
+        + excel_btn
+        + _distribution("📊 По направлениям", stats.get("by_direction", {}))
+        + _distribution("🌍 По странам", stats.get("by_country", {}))
+        + _distribution("🌐 По языкам", stats.get("by_language", {}))
+        + _distribution("📅 Заявки по дням (сост. 14 дней)", stats.get("by_date", {}))
     )
     return _page("Дашборд", body, active="home")
 

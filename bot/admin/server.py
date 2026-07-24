@@ -40,6 +40,7 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_post("/application/{id}/reject", _reject)
     app.router.add_get("/photo/{id}/{idx}", _photo)
     app.router.add_get("/export.csv", _export_csv)
+    app.router.add_get("/export.xlsx", _export_excel)
     return app
 
 
@@ -176,6 +177,21 @@ async def _export_csv(request: web.Request) -> web.Response:
         headers={
             "Content-Type": "text/csv; charset=utf-8",
             "Content-Disposition": 'attachment; filename="applications.csv"',
+        },
+    )
+
+
+async def _export_excel(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    apps = await db.list_applications(limit=100000)
+    from ..services.excel import generate_excel
+
+    xlsx_bytes = generate_excel(apps)
+    return web.Response(
+        body=xlsx_bytes,
+        headers={
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "Content-Disposition": 'attachment; filename="promotors_applications.xlsx"',
         },
     )
 

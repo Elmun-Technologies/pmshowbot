@@ -98,6 +98,64 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
         await message.answer(f"🎫 <b>Билет: ОШИБКА</b>\n<code>{type(exc).__name__}: {exc}</code>")
 
 
+@router.message(Command("stats"))
+async def cmd_stats(message: Message, config: Config, db: Database) -> None:
+    """Show detailed bot analytics in Telegram."""
+    if not _is_admin(message, config):
+        return
+
+    st = await db.stats()
+    lines = [
+        "📊 <b>Promotors Show — Statistika & Analitika</b>\n",
+        f"📋 <b>Jami arizalar:</b> <code>{st['total']}</code> ta",
+        f"⏳ <b>Kutilmoqda (Pending):</b> <code>{st['pending']}</code> ta",
+        f"✅ <b>Tasdiqlangan (Approved):</b> <code>{st['approved']}</code> ta",
+        f"❌ <b>Rad etilgan (Rejected):</b> <code>{st['rejected']}</code> ta",
+        f"🔢 <b>Oxirgi berilgan raqam:</b> <code>№{st['max_number']}</code>\n",
+    ]
+
+    if st.get("by_direction"):
+        lines.append("🏎 <b>Yo'nalishlar bo'yicha:</b>")
+        for k, v in st["by_direction"].items():
+            lines.append(f"  • {k}: <b>{v}</b>")
+        lines.append("")
+
+    if st.get("by_country"):
+        lines.append("🌍 <b>Mamlakatlar bo'yicha:</b>")
+        for k, v in st["by_country"].items():
+            lines.append(f"  • {k}: <b>{v}</b>")
+        lines.append("")
+
+    if st.get("by_language"):
+        lines.append("🌐 <b>Tillar bo'yicha:</b>")
+        for k, v in st["by_language"].items():
+            lines.append(f"  • {k.upper()}: <b>{v}</b>")
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("export"))
+async def cmd_export(message: Message, config: Config, db: Database) -> None:
+    """Send formatted Excel (.xlsx) file in Telegram."""
+    if not _is_admin(message, config):
+        return
+
+    msg = await message.answer("⏳ Excel fayli tayyorlanmoqda...")
+    apps = await db.list_applications(limit=100000)
+
+    from ..services.excel import generate_excel
+
+    xlsx_bytes = await asyncio.to_thread(generate_excel, apps)
+    await message.answer_document(
+        BufferedInputFile(xlsx_bytes, filename="promotors_applications.xlsx"),
+        caption=f"📊 Jami {len(apps)} ta ariza bo'yicha Excel fayli tayyor.",
+    )
+    try:
+        await msg.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.callback_query(F.data.startswith(f"{keyboards.CB_APPROVE}:"))
 async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
     app_id = int(query.data.split(":", 1)[1])

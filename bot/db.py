@@ -281,6 +281,18 @@ class Database:
                     "SELECT country, COUNT(*) AS n FROM applications GROUP BY country ORDER BY n DESC"
                 ).fetchall()
             }
+            by_language = {
+                row["language"] or "ru": row["n"]
+                for row in conn.execute(
+                    "SELECT language, COUNT(*) AS n FROM applications GROUP BY language ORDER BY n DESC"
+                ).fetchall()
+            }
+            by_date = {
+                row["dt"]: row["n"]
+                for row in conn.execute(
+                    "SELECT SUBSTR(created_at, 1, 10) AS dt, COUNT(*) AS n FROM applications GROUP BY dt ORDER BY dt DESC LIMIT 14"
+                ).fetchall()
+            }
             max_number = conn.execute(
                 "SELECT COALESCE(MAX(reg_number), 0) FROM applications"
             ).fetchone()[0]
@@ -292,6 +304,8 @@ class Database:
             "rejected": by_status.get(STATUS_REJECTED, 0),
             "by_direction": by_direction,
             "by_country": by_country,
+            "by_language": by_language,
+            "by_date": by_date,
             "max_number": int(max_number),
         }
 
