@@ -221,6 +221,7 @@ async def _finalize(
     app_id = await db.create_application(
         user_id=message.from_user.id,
         username=_user_label(message),
+        full_name=message.from_user.full_name or "",
         country=data.get("country", ""),
         plate=data.get("plate", ""),
         direction=data.get("direction", ""),

@@ -61,8 +61,8 @@ def _font(kind: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 _COPY = {
-    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026", "place": "SAMARKAND"},
-    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026", "place": "SAMARQAND"},
+    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026, 10:00", "place": "SOF EXPO · SAMARKAND"},
+    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026, 10:00", "place": "SOF EXPO · SAMARQAND"},
 }
 
 
@@ -171,6 +171,7 @@ def generate_ticket(
     number: int,
     plate: str,
     direction: str,
+    name: str = "",
     lang: str = "ru",
     hero_image_path: Optional[str] = None,
 ) -> bytes:
@@ -193,12 +194,23 @@ def generate_ticket(
     draw.text((W / 2 - nw / 2 + 5, ny + 5), num, font=nfont, fill=(0, 0, 0))
     draw.text((W / 2 - nw / 2, ny), num, font=nfont, fill=WHITE)
 
-    # --- slim stub: details + date ---
+    # --- slim stub: name + details + date ---
+    clean_name = name.strip()
     info = f"{plate}  ·  {direction}".strip(" ·")
-    ifont = _fit(draw, info, "bold", 54, cw - 120, min_size=30)
-    _center(draw, W // 2, TEAR_Y + 70, info, ifont, WHITE)
     date_line = f"{copy['date']}  ·  {copy['place']}"
-    _spaced_center(draw, W // 2, TEAR_Y + 158, date_line, _font("regular", 34), MUTED, 4)
+
+    if clean_name:
+        nfont_stub = _fit(draw, clean_name, "bold", 48, cw - 120, min_size=28)
+        _center(draw, W // 2, TEAR_Y + 45, clean_name, nfont_stub, WHITE)
+
+        ifont = _fit(draw, info, "bold", 40, cw - 120, min_size=24)
+        _center(draw, W // 2, TEAR_Y + 115, info, ifont, WHITE)
+
+        _spaced_center(draw, W // 2, TEAR_Y + 185, date_line, _font("regular", 30), MUTED, 3)
+    else:
+        ifont = _fit(draw, info, "bold", 54, cw - 120, min_size=30)
+        _center(draw, W // 2, TEAR_Y + 70, info, ifont, WHITE)
+        _spaced_center(draw, W // 2, TEAR_Y + 158, date_line, _font("regular", 34), MUTED, 4)
 
     # --- ticket mask: rounded card + tear notches + perforation ---
     mask = Image.new("L", (W, H), 0)

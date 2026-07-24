@@ -36,6 +36,7 @@ class Application:
     processed_at: Optional[str]
     processed_by: Optional[str]
     language: str = "ru"
+    full_name: str = ""
 
 
 _SCHEMA = """
@@ -54,7 +55,8 @@ CREATE TABLE IF NOT EXISTS applications (
     created_at     TEXT NOT NULL,
     processed_at   TEXT,
     processed_by   TEXT,
-    language       TEXT NOT NULL DEFAULT 'ru'
+    language       TEXT NOT NULL DEFAULT 'ru',
+    full_name      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 """
@@ -62,6 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 # Lightweight migrations: (column, "ALTER ... ADD COLUMN ...") applied if missing.
 _MIGRATIONS = [
     ("language", "ALTER TABLE applications ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'"),
+    ("full_name", "ALTER TABLE applications ADD COLUMN full_name TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -70,6 +73,7 @@ def _now() -> str:
 
 
 def _row_to_application(row: sqlite3.Row) -> Application:
+    keys = row.keys()
     return Application(
         id=row["id"],
         user_id=row["user_id"],
@@ -85,7 +89,8 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         created_at=row["created_at"],
         processed_at=row["processed_at"],
         processed_by=row["processed_by"],
-        language=row["language"] if "language" in row.keys() else "ru",
+        language=row["language"] if "language" in keys else "ru",
+        full_name=row["full_name"] if "full_name" in keys else "",
     )
 
 
@@ -127,14 +132,15 @@ class Database:
         photo_file_ids: list[str],
         photo_paths: list[str],
         language: str = "ru",
+        full_name: str = "",
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO applications
                     (user_id, username, country, plate, direction, phone,
-                     photo_file_ids, photo_paths, status, created_at, language)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     photo_file_ids, photo_paths, status, created_at, language, full_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -148,6 +154,7 @@ class Database:
                     STATUS_PENDING,
                     _now(),
                     language,
+                    full_name,
                 ),
             )
             return int(cur.lastrowid)
@@ -242,10 +249,10 @@ class Database:
             params.append(status)
         if search:
             conds.append(
-                "(plate LIKE ? OR phone LIKE ? OR username LIKE ? OR country LIKE ?)"
+                "(plate LIKE ? OR phone LIKE ? OR username LIKE ? OR country LIKE ? OR full_name LIKE ?)"
             )
             like = f"%{search}%"
-            params.extend([like, like, like, like])
+            params.extend([like, like, like, like, like])
         if conds:
             query += " WHERE " + " AND ".join(conds)
         query += " ORDER BY id DESC LIMIT ?"

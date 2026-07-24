@@ -94,18 +94,19 @@ def test_language_roundtrip_and_migration():
         db = Database(path)
         asyncio.run(db.init())  # should ADD the language column
 
-        # Old row defaults to ru
+        # Old row defaults to ru and empty full_name
         old = asyncio.run(db.get_application(1))
-        assert old.language == "ru"
+        assert old.language == "ru" and old.full_name == ""
 
-        # New row can store uz and read it back
+        # New row can store uz and full_name and read it back
         new_id = asyncio.run(
             db.create_application(
-                user_id=2, username="@u", country="Узбекистан", plate="X", direction="Дрифт",
+                user_id=2, username="@u", full_name="Nazir Elmurodov", country="Узбекистан", plate="X", direction="Дрифт",
                 phone="+998", photo_file_ids=[], photo_paths=[], language="uz",
             )
         )
-        assert asyncio.run(db.get_application(new_id)).language == "uz"
+        app = asyncio.run(db.get_application(new_id))
+        assert app.language == "uz" and app.full_name == "Nazir Elmurodov"
 
 
 if __name__ == "__main__":

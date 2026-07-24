@@ -40,6 +40,17 @@ def _pick_hero(photo_paths: list[str]) -> Optional[str]:
     return None
 
 
+def _get_display_name(app: Application) -> str:
+    if getattr(app, "full_name", "") and app.full_name.strip():
+        return app.full_name.strip()
+    if app.username:
+        u = app.username.split(" (id ")[0].strip()
+        if u.startswith("@"):
+            u = u[1:]
+        return u
+    return ""
+
+
 async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
     """Render and send the shareable Stories ticket, then a short share message."""
     try:
@@ -48,6 +59,7 @@ async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
             number=app.reg_number,
             plate=app.plate,
             direction=texts.localize_direction(app.direction, app.language),
+            name=_get_display_name(app),
             lang=app.language,
             hero_image_path=_pick_hero(app.photo_paths),
         )

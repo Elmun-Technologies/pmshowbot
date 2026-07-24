@@ -80,13 +80,14 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
                 number=app.reg_number or 1,
                 plate=app.plate or "TEST",
                 direction=texts.localize_direction(app.direction, app.language),
+                name=decisions._get_display_name(app),
                 lang=app.language,
                 hero_image_path=hero,
             )
         else:
             hero_note = "нет заявок → заглушка"
             png = await asyncio.to_thread(
-                generate_ticket, number=1, plate="TEST-777", direction="Тюнинг", lang="ru"
+                generate_ticket, number=1, plate="TEST-777", direction="Тюнинг", name="Иван Иванов", lang="ru"
             )
         await message.answer_photo(
             BufferedInputFile(png, filename="diag_ticket.png"),
