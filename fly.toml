@@ -7,11 +7,17 @@
 # IMPORTANT: run exactly ONE machine. Two instances would both call Telegram
 # getUpdates and conflict. After the first deploy: `fly scale count 1`.
 #
-# NOTE (temporary): no Fly volume has been created yet for this app, so DB_PATH
-# and MEDIA_DIR below point at the container's local ephemeral disk (created by
-# the Dockerfile). Data will reset on every restart/redeploy until a volume
-# named pmshow_data is created (fly volumes create pmshow_data --region ams
-# --size 1 -a pmshowbot) and the [mounts] block is restored.
+# The persistent volume below MUST exist before the first deploy with this
+# config, otherwise the deploy fails. Create it once:
+#
+#   fly volumes create pmshow_data --region ams --size 3 -a pmshowbot
+#
+# Sizing: ~4 photos per participant at a few hundred KB each, so 200
+# participants is well under 1 GB; 3 GB leaves comfortable headroom.
+#
+# Without it the SQLite database and the uploaded photos live on the machine's
+# ephemeral disk and are WIPED on every restart/redeploy — which would restart
+# registration numbering from №1 and hand out duplicate numbers.
 
 app = "pmshowbot"
 primary_region = "ams"
@@ -19,21 +25,27 @@ primary_region = "ams"
 [build]
   dockerfile = "Dockerfile"
 
-  [env]
-    DB_PATH = "/app/data/pmshow.db"
-      MEDIA_DIR = "/app/media"
-        PORT = "8080"
+[env]
+  # Both paths sit on the mounted volume so applications, registration numbers
+  # and photos survive restarts and redeploys.
+  DB_PATH = "/data/pmshow.db"
+  MEDIA_DIR = "/data/media"
+  PORT = "8080"
 
-        # Admin panel over HTTPS. auto_stop_machines = false + min_machines_running = 1
-        # keep the single machine always-on (the bot must never be stopped).
-        [http_service]
-          internal_port = 8080
-            force_https = true
-              auto_stop_machines = false
-                auto_start_machines = true
-                  min_machines_running = 1
+# Persistent storage for the SQLite DB + participant photos.
+[mounts]
+  source = "pmshow_data"
+  destination = "/data"
 
-                  [[vm]]
-                    size = "shared-cpu-1x"
-                      memory = "512mb"
-                      
+# Admin panel over HTTPS. auto_stop_machines = false + min_machines_running = 1
+# keep the single machine always-on (the bot must never be stopped).
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
