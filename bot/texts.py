@@ -35,6 +35,7 @@ _RU = dict(
     ],
     PHOTO_NOT_A_PHOTO="Пожалуйста, пришлите именно фотографию (как изображение).",
     ASK_DIRECTION="Выберите направление для участия:",
+    DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
     THANKS=(
         "Спасибо! Ваша заявка принята. В ближайшее время вы получите ответ.\n\n"
@@ -93,6 +94,7 @@ _UZ = dict(
     ],
     PHOTO_NOT_A_PHOTO="Iltimos, aynan surat yuboring (rasm sifatida).",
     ASK_DIRECTION="Ishtirok yo‘nalishini tanlang:",
+    DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
     THANKS=(
         "Rahmat! Arizangiz qabul qilindi. Tez orada javob olasiz.\n\n"
