@@ -18,6 +18,8 @@ from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+from . import assets
+
 W, H = 1080, 1920
 MARGIN = 34
 X0, Y0, X1, Y1 = MARGIN, MARGIN, W - MARGIN, H - MARGIN
@@ -36,7 +38,6 @@ _HERE = os.path.dirname(__file__)
 _ASSET_FONTS = os.path.join(_HERE, "..", "assets", "fonts")
 _LOGO_PATH = os.path.join(_HERE, "..", "assets", "logo.png")
 _ADRENALINE_PATH = os.path.join(_HERE, "..", "assets", "adrenaline.png")
-_SPONSORS_DIR = os.path.join(_HERE, "..", "assets", "sponsors")
 
 _FONT_CANDIDATES = {
     "bold": ["display.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -208,17 +209,16 @@ def _logo_or_wordmark(content, draw, cx, top):
 
 
 def _load_sponsor_logos(max_n: int = 6) -> list:
-    """Load partner/sponsor logos from bot/assets/sponsors/ (any .png/.jpg),
-    sorted by filename (prefix with a number to control order). Missing
-    directory or unreadable files are ignored."""
-    if not os.path.isdir(_SPONSORS_DIR):
-        return []
+    """Load partner/sponsor logos in filename order.
+
+    Sources, highest priority first: logos uploaded by an admin through the
+    bot (stored on the volume) and logos bundled in bot/assets/sponsors/.
+    Unreadable files are skipped rather than breaking ticket generation.
+    """
     logos = []
-    for name in sorted(os.listdir(_SPONSORS_DIR)):
-        if not name.lower().endswith((".png", ".jpg", ".jpeg")):
-            continue
+    for path in assets.sponsor_files():
         try:
-            im = Image.open(os.path.join(_SPONSORS_DIR, name)).convert("RGBA")
+            im = Image.open(path).convert("RGBA")
             bbox = im.getbbox()
             if bbox:
                 im = im.crop(bbox)

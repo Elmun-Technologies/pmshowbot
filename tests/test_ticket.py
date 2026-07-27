@@ -6,9 +6,24 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import bot.services.assets as assets  # noqa: E402
 import bot.services.ticket as ticket  # noqa: E402
 from bot.services.ticket import generate_ticket  # noqa: E402
 from PIL import Image  # noqa: E402
+
+
+def _use_sponsor_dir(directory):
+    """Point the assets module at a temp dir holding sponsor logos.
+
+    assets stores runtime uploads under "<root>/_sponsors", so hand it a root
+    whose _sponsors subdirectory is the directory the test populated.
+    """
+    root = os.path.join(directory, "root")
+    os.makedirs(root, exist_ok=True)
+    link = os.path.join(root, "_sponsors")
+    if not os.path.exists(link):
+        os.symlink(directory, link)
+    assets.configure(root)
 
 
 def test_generates_png():
@@ -26,13 +41,12 @@ def test_handles_long_number_and_uz():
 
 def test_no_sponsors_directory_is_fine():
     with tempfile.TemporaryDirectory() as tmp:
-        original = ticket._SPONSORS_DIR
-        ticket._SPONSORS_DIR = os.path.join(tmp, "does-not-exist")
+        assets.configure(os.path.join(tmp, "does-not-exist"))
         try:
             png = generate_ticket(number=1, plate="AB789GG", direction="Тюнинг", lang="ru")
             assert png[:8] == b"\x89PNG\r\n\x1a\n"
         finally:
-            ticket._SPONSORS_DIR = original
+            assets.configure(None)
 
 
 def test_sponsor_strip_renders_and_fits_many_logos():
@@ -44,9 +58,9 @@ def test_sponsor_strip_renders_and_fits_many_logos():
                 os.path.join(tmp, f"{i}_sponsor.png")
             )
 
-        original = ticket._SPONSORS_DIR
+        assets.configure(os.path.join(tmp, "empty"))
         baseline = generate_ticket(number=1, plate="AB789GG", direction="Тюнинг", lang="ru")
-        ticket._SPONSORS_DIR = tmp
+        _use_sponsor_dir(tmp)
         try:
             with_sponsors = generate_ticket(
                 number=1, plate="AB789GG", direction="Тюнинг", lang="ru"
@@ -59,7 +73,7 @@ def test_sponsor_strip_renders_and_fits_many_logos():
             img = Image.open(io.BytesIO(with_sponsors))
             assert img.size == (ticket.W, ticket.H)
         finally:
-            ticket._SPONSORS_DIR = original
+            assets.configure(None)
 
 
 def test_sponsor_logo_loader_ignores_corrupt_files():
@@ -70,13 +84,12 @@ def test_sponsor_logo_loader_ignores_corrupt_files():
         with open(os.path.join(tmp, "2_bad.png"), "wb") as fh:
             fh.write(b"not a real png")
 
-        original = ticket._SPONSORS_DIR
-        ticket._SPONSORS_DIR = tmp
+        _use_sponsor_dir(tmp)
         try:
             logos = ticket._load_sponsor_logos()
             assert len(logos) == 1
         finally:
-            ticket._SPONSORS_DIR = original
+            assets.configure(None)
 
 
 if __name__ == "__main__":

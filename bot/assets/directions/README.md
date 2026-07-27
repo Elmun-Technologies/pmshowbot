@@ -3,22 +3,44 @@
 When a participant picks a direction, the bot sends that direction's promo
 banner so they see the category they just joined.
 
-Drop one image per direction here, named **exactly** as below (`.png`, `.jpg`,
-`.jpeg` or `.webp` all work):
+## Easiest way: send them to the bot (no git needed)
 
-| Direction (Тюнинг / Автозвук / Дрифт / Ретро) | Filename          |
-| --------------------------------------------- | ----------------- |
-| Тюнинг                                         | `tuning.png`      |
-| Автозвук                                       | `autosound.png`   |
-| Дрифт                                          | `drift.png`       |
-| Ретро                                          | `retro.png`       |
+In the moderation chat, send the image **with a caption**:
+
+```
+/banner drift
+```
+
+Uploads are stored on the Fly volume, so they survive restarts and redeploys.
+Send as a **file** (uncompressed) for the best quality.
+
+- `/assets` — see what's currently loaded
+- `/delasset banner drift` — remove one
+- `/help_assets` — short reminder of the commands
+
+## Slug per direction
+
+The slug comes from the `DIRECTIONS` table in `bot/constants.py` — the single
+place a direction is defined. Current slugs:
+
+| Direction | Slug / filename |
+| --------- | --------------- |
+| Тюнинг    | `tuning`        |
+| Автозвук  | `autosound`     |
+| Дрифт     | `drift`         |
+| Ретро     | `retro`         |
+
+Renaming a direction (e.g. Тюнинг → SPL) is a one-line change in that table;
+the button labels, the stored value, the exports and this filename all follow
+from it.
+
+## Alternative: commit them here
+
+Drop `<slug>.png` (or `.jpg` / `.jpeg` / `.webp`) in this folder and redeploy.
+Files uploaded through the bot take priority over anything committed here.
 
 Notes:
 - Square (1:1) images look best in Telegram; the sponsor logos are already
   baked into the banners themselves.
-- A missing file simply means no banner is sent for that direction — the
+- A missing banner simply means none is sent for that direction — the
   registration flow continues normally, nothing breaks.
-- Telegram caps photos at 10 MB; keep each banner well under that.
-
-After adding files: `git add bot/assets/directions/*.png && git commit`, then
-redeploy (`fly deploy`).

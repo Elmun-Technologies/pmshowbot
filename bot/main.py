@@ -13,6 +13,7 @@ from aiohttp import web
 from .admin.server import create_admin_app
 from .config import Config, load_config
 from .db import Database
+from .services import assets
 from .handlers import moderation, mynumber, registration
 
 logging.basicConfig(
@@ -27,6 +28,10 @@ async def main() -> None:
 
     db = Database(config.db_path)
     await db.init()
+
+    # Brand assets uploaded by admins land next to the participant photos, so
+    # they live on the persistent volume and survive restarts/redeploys.
+    assets.configure(config.media_dir)
 
     bot = Bot(
         token=config.bot_token,

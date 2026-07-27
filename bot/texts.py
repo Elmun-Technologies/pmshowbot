@@ -9,6 +9,8 @@ Dates confirmed with the client:
 """
 from types import SimpleNamespace
 
+from .constants import DIRECTION_LABELS, DIRECTIONS_CANON, direction_label
+
 # --- Russian ---
 _RU = dict(
     SUBSCRIBE_REQUIRED=(
@@ -65,7 +67,7 @@ _RU = dict(
     BTN_MY_NUMBER="Узнать свой номер",
     COUNTRY_OTHER="Другая",
     COUNTRIES=["Россия", "Узбекистан", "Таджикистан", "Казахстан", "Киргизия"],
-    DIRECTIONS=["Тюнинг", "Автозвук", "Дрифт", "Ретро"],
+    DIRECTIONS=DIRECTION_LABELS["ru"],
 )
 
 # --- Uzbek ---
@@ -124,7 +126,7 @@ _UZ = dict(
     BTN_MY_NUMBER="Raqamimni bilish",
     COUNTRY_OTHER="Boshqa",
     COUNTRIES=["Rossiya", "O‘zbekiston", "Tojikiston", "Qozog‘iston", "Qirg‘iziston"],
-    DIRECTIONS=["Tuning", "Avtozvuk", "Drift", "Retro"],
+    DIRECTIONS=DIRECTION_LABELS["uz"],
 )
 
 RU = SimpleNamespace(**_RU)
@@ -138,17 +140,18 @@ def T(lang: str) -> SimpleNamespace:
 
 
 def localize_direction(canonical: str, lang: str) -> str:
-    """Map a canonical (Russian) direction to its label in ``lang``."""
-    try:
-        return T(lang).DIRECTIONS[DIRECTIONS_CANON.index(canonical)]
-    except (ValueError, IndexError):
-        return canonical
+    """Map a canonical direction to its label in ``lang``.
+
+    Delegates to the DIRECTIONS table in constants.py, which is the single
+    place a direction's names are defined.
+    """
+    return direction_label(canonical, lang)
 
 
 # --- Language-independent data ---
 # Canonical values stored in the DB / shown to admins, regardless of UI language.
 COUNTRIES_CANON = ["Россия", "Узбекистан", "Таджикистан", "Казахстан", "Киргизия"]
-DIRECTIONS_CANON = ["Тюнинг", "Автозвук", "Дрифт", "Ретро"]
+# DIRECTIONS_CANON is imported from constants.py (single source of truth).
 
 # --- Language picker (shown before the language is known) ---
 ASK_LANGUAGE = "Tilni tanlang / Выберите язык:"
