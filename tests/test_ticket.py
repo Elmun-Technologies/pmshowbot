@@ -92,10 +92,38 @@ def test_sponsor_logo_loader_ignores_corrupt_files():
             assets.configure(None)
 
 
+def test_flat_background_is_stripped_for_light_marks():
+    # A light logo on a grey plate: the plate must go, the mark must stay.
+    im = Image.new("RGBA", (200, 200), (128, 128, 133, 255))
+    Image.Image.paste(im, Image.new("RGBA", (80, 80), (255, 255, 255, 255)), (60, 60))
+    out = ticket._strip_flat_background(im)
+    assert out.getpixel((2, 2))[3] == 0, "backdrop should be transparent"
+    assert out.getpixel((100, 100))[3] > 200, "the mark itself must survive"
+
+
+def test_dark_mark_keeps_its_light_plate():
+    # Black lettering on white would vanish on the black header band, so the
+    # original (with its plate) is kept instead.
+    im = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
+    Image.Image.paste(im, Image.new("RGBA", (120, 60), (0, 0, 0, 255)), (40, 70))
+    out = ticket._strip_flat_background(im)
+    assert out.getpixel((2, 2))[3] > 200, "light plate must be preserved"
+
+
+def test_transparent_logo_is_left_alone():
+    im = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    Image.Image.paste(im, Image.new("RGBA", (60, 60), (255, 0, 0, 255)), (70, 70))
+    out = ticket._strip_flat_background(im)
+    assert out.getpixel((100, 100))[:3] == (255, 0, 0)
+
+
 if __name__ == "__main__":
     test_generates_png()
     test_handles_long_number_and_uz()
     test_no_sponsors_directory_is_fine()
     test_sponsor_strip_renders_and_fits_many_logos()
     test_sponsor_logo_loader_ignores_corrupt_files()
+    test_flat_background_is_stripped_for_light_marks()
+    test_dark_mark_keeps_its_light_plate()
+    test_transparent_logo_is_left_alone()
     print("All ticket tests passed.")
