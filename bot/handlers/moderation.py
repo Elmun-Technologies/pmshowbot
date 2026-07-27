@@ -47,7 +47,9 @@ _ASSETS_HELP = (
     "• <code>/logo 1_pride</code> — логотип спонсора (наверху билета).\n"
     "  Порядок задаётся цифрой в начале: 1_, 2_, 3_…\n"
     "• <code>/banner drift</code> — баннер направления.\n"
-    "  Доступные: {slugs}\n\n"
+    "  Доступные: {slugs}\n"
+    "• <code>/brand adrenaline</code> — главный логотип наверху постера.\n"
+    "  Доступные: {brands}\n\n"
     "Лучше отправлять <b>файлом</b> (без сжатия) — качество выше.\n\n"
     "<code>/assets</code> — что уже загружено\n"
     "<code>/delasset logo 1_pride</code> — удалить"
@@ -131,6 +133,9 @@ async def cmd_assets(message: Message, config: Config) -> None:
         "",
         "<b>Баннеры направлений</b>:",
         _fmt(inv["directions_runtime"], inv["directions_bundled"]),
+        "",
+        "<b>Главные логотипы</b> (верх постера):",
+        "\n".join(f"  • {k}: {v}" for k, v in inv["brand"].items()),
     ]
     if not inv["storage_configured"]:
         lines.append("\n⚠️ Хранилище не настроено — загрузка недоступна.")
@@ -143,7 +148,12 @@ async def cmd_assets(message: Message, config: Config) -> None:
 async def cmd_help_assets(message: Message, config: Config) -> None:
     if not _is_admin(message, config):
         return
-    await message.answer(_ASSETS_HELP.format(slugs=", ".join(_direction_slugs())))
+    await message.answer(
+        _ASSETS_HELP.format(
+            slugs=", ".join(_direction_slugs()),
+            brands=", ".join(assets.BRAND_LOGOS),
+        )
+    )
 
 
 @router.message(Command("delasset"))
@@ -152,13 +162,13 @@ async def cmd_delasset(message: Message, config: Config) -> None:
     if not _is_admin(message, config):
         return
     parts = (message.text or "").split()
-    if len(parts) != 3 or parts[1] not in ("logo", "banner"):
+    if len(parts) != 3 or parts[1] not in ("logo", "banner", "brand"):
         await message.answer(
             "Использование: <code>/delasset logo 1_pride</code> или "
             "<code>/delasset banner drift</code>"
         )
         return
-    kind = "sponsors" if parts[1] == "logo" else "directions"
+    kind = {"logo": "sponsors", "banner": "directions", "brand": "brand"}[parts[1]]
     if assets.delete_asset(kind, parts[2]):
         await message.answer(f"🗑 Удалено: <code>{parts[2]}</code>")
     else:
@@ -172,7 +182,7 @@ async def receive_brand_asset(message: Message, bot: Bot, config: Config) -> Non
         return
 
     caption = (message.caption or "").strip()
-    if not caption.startswith(("/logo", "/banner")):
+    if not caption.startswith(("/logo", "/banner", "/brand")):
         return
 
     parts = caption.split()
@@ -180,12 +190,18 @@ async def receive_brand_asset(message: Message, bot: Bot, config: Config) -> Non
     name = parts[1] if len(parts) > 1 else ""
 
     if not name:
-        await message.answer(
-            "Укажите имя в подписи, например: <code>/logo 1_pride</code>"
-            if command == "/logo"
-            else f"Укажите направление: <code>/banner drift</code>\n"
-                 f"Доступные: {', '.join(_direction_slugs())}"
-        )
+        hints = {
+            "/logo": "Укажите имя в подписи, например: <code>/logo 1_pride</code>",
+            "/banner": (
+                f"Укажите направление: <code>/banner drift</code>\n"
+                f"Доступные: {', '.join(_direction_slugs())}"
+            ),
+            "/brand": (
+                f"Укажите логотип: <code>/brand adrenaline</code>\n"
+                f"Доступные: {', '.join(assets.BRAND_LOGOS)}"
+            ),
+        }
+        await message.answer(hints.get(command, hints["/logo"]))
         return
 
     if not assets.is_safe_name(name):
@@ -202,12 +218,25 @@ async def receive_brand_asset(message: Message, bot: Bot, config: Config) -> Non
         )
         return
 
+    if command == "/brand" and name not in assets.BRAND_LOGOS:
+        await message.answer(
+            f"Неизвестный логотип: <code>{name}</code>\n"
+            f"Доступные: {', '.join(assets.BRAND_LOGOS)}"
+        )
+        return
+
     try:
         data = await _download_incoming_image(message, bot)
         if data is None:
             await message.answer("Пришлите именно картинку (фото или файл-изображение).")
             return
-        if command == "/logo":
+        if command == "/brand":
+            assets.save_brand(name, data)
+            await message.answer(
+                f"✅ Главный логотип <code>{name}</code> обновлён — "
+                f"появится на билетах сразу.\nПроверить: /diag"
+            )
+        elif command == "/logo":
             assets.save_sponsor(name, data)
             await message.answer(
                 f"✅ Логотип <code>{name}</code> сохранён — появится на билетах сразу.\n"

@@ -107,6 +107,50 @@ def test_every_direction_slug_is_uploadable():
     assert len(DIRECTIONS) == len(DIRECTIONS_CANON)
 
 
+def test_brand_logo_upload_overrides_bundled():
+    with tempfile.TemporaryDirectory() as tmp:
+        assets.configure(tmp)
+        try:
+            # Nothing uploaded yet -> falls back to whatever is bundled.
+            before = assets.brand_logo("adrenaline")
+            assets.save_brand("adrenaline", _png())
+            after = assets.brand_logo("adrenaline")
+            assert after is not None
+            assert after != before, "an upload must take priority over the bundled file"
+            assert after.startswith(tmp)
+            # Reported as uploaded in the inventory.
+            assert assets.inventory()["brand"]["adrenaline"] == "загружен"
+        finally:
+            assets.configure(None)
+
+
+def test_unknown_brand_logo_is_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        assets.configure(tmp)
+        try:
+            assert assets.brand_logo("nope") is None
+            try:
+                assets.save_brand("nope", _png())
+                raise AssertionError("unknown brand name was accepted")
+            except ValueError:
+                pass
+        finally:
+            assets.configure(None)
+
+
+def test_brand_logo_can_be_deleted_back_to_bundled():
+    with tempfile.TemporaryDirectory() as tmp:
+        assets.configure(tmp)
+        try:
+            assets.save_brand("logo", _png())
+            assert assets.brand_logo("logo").startswith(tmp)
+            assert assets.delete_asset("brand", "logo") is True
+            path = assets.brand_logo("logo")
+            assert path is None or not path.startswith(tmp)
+        finally:
+            assets.configure(None)
+
+
 if __name__ == "__main__":
     test_sponsor_upload_roundtrip_and_order()
     test_direction_banner_roundtrip()
@@ -115,4 +159,7 @@ if __name__ == "__main__":
     test_delete_asset()
     test_without_storage_configured_nothing_breaks()
     test_every_direction_slug_is_uploadable()
+    test_brand_logo_upload_overrides_bundled()
+    test_unknown_brand_logo_is_rejected()
+    test_brand_logo_can_be_deleted_back_to_bundled()
     print("All asset tests passed.")

@@ -90,6 +90,36 @@ def direction_banner(slug: str) -> Optional[str]:
     return None
 
 
+# The two marks shown at the top of the ticket poster, keyed by the bundled
+# filename they override.
+BRAND_LOGOS = {
+    "logo": "logo.png",            # PROMOTORS SHOW · Samarkand
+    "adrenaline": "adrenaline.png",  # Adrenaline Rush (main sponsor)
+}
+
+
+def brand_logo(name: str) -> Optional[str]:
+    """Path to a main brand logo (runtime upload wins), or None."""
+    bundled_name = BRAND_LOGOS.get(name)
+    if not bundled_name:
+        return None
+    runtime = _runtime_dir("brand")
+    if runtime:
+        for ext in _IMAGE_EXTS:
+            path = os.path.join(runtime, name + ext)
+            if os.path.exists(path):
+                return path
+    path = os.path.join(_BUNDLED_ROOT, bundled_name)
+    return path if os.path.exists(path) else None
+
+
+def save_brand(name: str, data: bytes) -> str:
+    """Persist a main brand logo under the runtime directory."""
+    if name not in BRAND_LOGOS:
+        raise ValueError(f"unknown brand logo: {name!r}")
+    return _save("brand", name, data)
+
+
 def save_sponsor(name: str, data: bytes) -> str:
     """Persist a sponsor logo under the runtime directory. Returns its path."""
     return _save("sponsors", name, data)
@@ -120,7 +150,7 @@ def _save(kind: str, name: str, data: bytes) -> str:
 
 def delete_asset(kind: str, name: str) -> bool:
     """Remove a runtime-uploaded asset. Returns True if something was deleted."""
-    if kind not in ("sponsors", "directions") or not is_safe_name(name):
+    if kind not in ("sponsors", "directions", "brand") or not is_safe_name(name):
         return False
     directory = _runtime_dir(kind)
     if not directory:
@@ -146,10 +176,21 @@ def inventory() -> dict:
             n for n in os.listdir(directory) if n.lower().endswith(_IMAGE_EXTS)
         )
 
+    brand = {}
+    for name in BRAND_LOGOS:
+        path = brand_logo(name)
+        if not path:
+            brand[name] = "—"
+        elif _runtime_dir("brand") and path.startswith(_runtime_dir("brand")):
+            brand[name] = "загружен"
+        else:
+            brand[name] = "из репозитория"
+
     return {
         "sponsors_runtime": _listing(runtime_sponsors),
         "sponsors_bundled": _listing(_BUNDLED_SPONSORS),
         "directions_runtime": _listing(runtime_directions),
         "directions_bundled": _listing(_BUNDLED_DIRECTIONS),
+        "brand": brand,
         "storage_configured": bool(_runtime_root),
     }

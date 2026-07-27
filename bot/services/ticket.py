@@ -12,6 +12,7 @@ a typographic wordmark is drawn.
 from __future__ import annotations
 
 import io
+import logging
 import os
 from functools import lru_cache
 from typing import Optional
@@ -19,6 +20,8 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from . import assets
+
+logger = logging.getLogger(__name__)
 
 W, H = 1080, 1920
 MARGIN = 34
@@ -36,8 +39,6 @@ DUO_HIGH = (255, 176, 96)
 
 _HERE = os.path.dirname(__file__)
 _ASSET_FONTS = os.path.join(_HERE, "..", "assets", "fonts")
-_LOGO_PATH = os.path.join(_HERE, "..", "assets", "logo.png")
-_ADRENALINE_PATH = os.path.join(_HERE, "..", "assets", "adrenaline.png")
 
 _FONT_CANDIDATES = {
     "bold": ["display.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -172,25 +173,57 @@ def _hero(w, h, photo_path):
     return Image.composite(black, hero, ov.resize((w, h)))
 
 
+def _plate_dark_mark(im: Image.Image, pad: int = 12, radius: int = 10) -> Image.Image:
+    """Put a dark logo on a white rounded plate so it reads on the dark poster.
+
+    Brands ship their marks in the version made for light backgrounds (dark
+    ink on white). Dropped straight onto the ticket's dark photo they'd be
+    invisible, so give them the plate they were designed for.
+    """
+    w, h = im.size
+    plate = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+    mask = Image.new("L", plate.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, plate.width, plate.height], radius=radius, fill=255
+    )
+    white = Image.new("RGBA", plate.size, (255, 255, 255, 255))
+    plate.paste(white, (0, 0), mask)
+    plate.paste(im, (pad, pad), im)
+    return plate
+
+
+def _load_brand_logo(name: str, target_h: int, max_w: int):
+    """Load a main brand logo (runtime upload wins), cleaned up for dark use.
+
+    Sized by height so the two marks share a baseline regardless of their
+    aspect ratios, then capped by width so a very wide mark can't run off the
+    card. A dark mark gets a white plate, which is measured as part of the
+    final size rather than inflating it.
+    """
+    path = assets.brand_logo(name)
+    if not path:
+        return None
+    try:
+        im = _strip_flat_background(Image.open(path))
+        bbox = im.getbbox()
+        if bbox:
+            im = im.crop(bbox)
+        if _is_dark_on_light(im):
+            im = _plate_dark_mark(im)
+        w = int(im.width * target_h / im.height)
+        h = target_h
+        if w > max_w:
+            w, h = max_w, max(1, int(im.height * max_w / im.width))
+        return im.resize((max(1, w), max(1, h)), Image.LANCZOS)
+    except Exception:  # noqa: BLE001 - a bad logo file falls back to the wordmark
+        logger.exception("Could not load brand logo %s", name)
+        return None
+
+
 def _logo_or_wordmark(content, draw, cx, top):
-    sof_logo = None
-    adr_logo = None
-
-    if os.path.exists(_LOGO_PATH):
-        try:
-            sof_logo = Image.open(_LOGO_PATH).convert("RGBA")
-            target_w = 420
-            sof_logo = sof_logo.resize((target_w, int(sof_logo.height * target_w / sof_logo.width)), Image.LANCZOS)
-        except Exception:  # noqa: BLE001
-            pass
-
-    if os.path.exists(_ADRENALINE_PATH):
-        try:
-            adr_logo = Image.open(_ADRENALINE_PATH).convert("RGBA")
-            target_w = 340
-            adr_logo = adr_logo.resize((target_w, int(adr_logo.height * target_w / adr_logo.width)), Image.LANCZOS)
-        except Exception:  # noqa: BLE001
-            pass
+    # Sized by height so both marks share a baseline.
+    sof_logo = _load_brand_logo("logo", target_h=108, max_w=430)
+    adr_logo = _load_brand_logo("adrenaline", target_h=96, max_w=330)
 
     if sof_logo and adr_logo:
         total_w = sof_logo.width + 40 + adr_logo.width
