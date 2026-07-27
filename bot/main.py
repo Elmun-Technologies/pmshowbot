@@ -8,6 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiohttp import web
 
 from .admin.server import create_admin_app
@@ -50,6 +51,8 @@ async def main() -> None:
     # Start the admin web panel (same process → shares the DB and bot).
     web_runner = await _start_admin_panel(bot, config, db)
 
+    await _publish_commands(bot, config)
+
     logger.info("Starting bot (long polling)...")
     await bot.delete_webhook(drop_pending_updates=True)
     try:
@@ -57,6 +60,42 @@ async def main() -> None:
     finally:
         if web_runner is not None:
             await web_runner.cleanup()
+
+
+# Shown to participants in the "/" menu.
+_PUBLIC_COMMANDS = [
+    ("start", "Начать регистрацию / Ro‘yxatdan o‘tish"),
+    ("mynumber", "Узнать свой номер / Raqamimni bilish"),
+]
+
+# Additionally shown inside the moderation chat, so admins can discover the
+# tools instead of having to remember them.
+_ADMIN_COMMANDS = _PUBLIC_COMMANDS + [
+    ("assets", "Логотипы и баннеры: что загружено"),
+    ("help_assets", "Как загрузить логотип / баннер"),
+    ("delasset", "Удалить логотип или баннер"),
+    ("stats", "Статистика заявок"),
+    ("export", "Выгрузить заявки в Excel"),
+    ("diag", "Диагностика: канал, подписка, билет"),
+    ("whoami", "Мои id и права доступа"),
+]
+
+
+async def _publish_commands(bot: Bot, config: Config) -> None:
+    """Register the "/" menu with Telegram: public commands everywhere, plus
+    the admin tools inside the moderation chat."""
+    try:
+        await bot.set_my_commands(
+            [BotCommand(command=c, description=d) for c, d in _PUBLIC_COMMANDS],
+            scope=BotCommandScopeDefault(),
+        )
+        await bot.set_my_commands(
+            [BotCommand(command=c, description=d) for c, d in _ADMIN_COMMANDS],
+            scope=BotCommandScopeChat(chat_id=config.admin_chat_id),
+        )
+        logger.info("Command menu published (public + admin chat).")
+    except Exception:  # noqa: BLE001 - a menu failure must not stop the bot
+        logger.exception("Could not publish the command menu")
 
 
 async def _start_admin_panel(bot: Bot, config: Config, db: Database):
