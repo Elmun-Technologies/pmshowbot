@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 W, H = 1080, 1920
 MARGIN = 34
 X0, Y0, X1, Y1 = MARGIN, MARGIN, W - MARGIN, H - MARGIN
-TEAR_Y = 1520          # poster above, slim info stub (+ optional sponsor strip) below
+TEAR_Y = 1560          # poster above, slim info stub below
 CORNER = 46
 
 RED = (214, 34, 44)
@@ -63,10 +63,8 @@ def _font(kind: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 _COPY = {
-    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026, 10:00", "place": "SOF EXPO · SAMARKAND",
-           "sponsors": "ПРИ ПОДДЕРЖКЕ"},
-    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026, 10:00", "place": "SOF EXPO · SAMARQAND",
-           "sponsors": "HAMKORLAR"},
+    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026, 10:00", "place": "SOF EXPO · SAMARKAND"},
+    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026, 10:00", "place": "SOF EXPO · SAMARQAND"},
 }
 
 
@@ -232,20 +230,18 @@ def _load_sponsor_logos(max_n: int = 6) -> list:
     return logos
 
 
-def _draw_sponsor_strip(content, draw, cx, y, logos, label, max_bar_w=None):
-    """Draw a white rounded 'partners' bar with each logo, divided by thin
-    lines, below a small label. Each logo sits on its own white background so
-    any source background (red, white, transparent, ...) reads cleanly.
-    Shrinks logo height as needed to keep the bar within ``max_bar_w``.
-    Returns the y just below the bar (or the input y if there are no logos)."""
+def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
+    """Draw the partner logos in a single centred row across the top of the
+    ticket, straight on the dark background with thin vertical dividers —
+    matching the header strip used on the event's own promo artwork.
+
+    Logo height shrinks automatically so the row always fits ``max_bar_w``.
+    Returns the y just below the row (or the input y if there are no logos)."""
     if not logos:
         return y
 
-    _spaced_center(draw, cx, y, label, _font("regular", 20), MUTED, 4)
-    bar_y = y + 32
-
-    max_bar_w = max_bar_w or (W - 2 * MARGIN - 40)
-    hpad, vpad, gap, max_w = 24, 12, 28, 130
+    max_bar_w = max_bar_w or (W - 2 * MARGIN - 36)
+    gap, max_w = 34, 210
 
     def _scale(target_h):
         out = []
@@ -257,38 +253,29 @@ def _draw_sponsor_strip(content, draw, cx, y, logos, label, max_bar_w=None):
             out.append((max(1, w), max(1, h)))
         return out
 
-    target_h = 44
+    target_h = 66
     sizes = _scale(target_h)
     while target_h > 22:
         sizes = _scale(target_h)
-        content_w = sum(w for w, _ in sizes) + gap * (len(sizes) - 1)
-        if content_w + hpad * 2 <= max_bar_w:
+        row_w = sum(w for w, _ in sizes) + gap * (len(sizes) - 1)
+        if row_w <= max_bar_w:
             break
         target_h -= 4
     scaled = [im.resize(sz, Image.LANCZOS) for im, sz in zip(logos, sizes)]
 
-    content_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
-    bar_w = content_w + hpad * 2
-    bar_h = target_h + vpad * 2
-    bx0 = cx - bar_w // 2
+    row_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
+    row_h = max(s.height for s in scaled)
+    x = cx - row_w // 2
 
-    bar = Image.new("RGB", (bar_w, bar_h), WHITE)
-    bd = ImageDraw.Draw(bar)
-    x = hpad
     for i, s in enumerate(scaled):
-        by = (bar_h - s.height) // 2
-        bar.paste(s, (x, by), s)
+        content.paste(s, (x, y + (row_h - s.height) // 2), s)
         x += s.width
         if i < len(scaled) - 1:
             div_x = x + gap // 2
-            bd.line([(div_x, 10), (div_x, bar_h - 10)], fill=(214, 214, 220), width=2)
+            draw.line([(div_x, y + 4), (div_x, y + row_h - 4)], fill=(96, 96, 106), width=2)
             x += gap
 
-    mask = Image.new("L", (bar_w, bar_h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, bar_w, bar_h], radius=16, fill=255)
-    content.paste(bar, (bx0, bar_y), mask)
-
-    return bar_y + bar_h
+    return y + row_h
 
 
 # ---------- main ----------
@@ -308,8 +295,10 @@ def generate_ticket(
     content.paste(_hero(cw, ch, hero_image_path), (X0, Y0))
     draw = ImageDraw.Draw(content)
 
-    # --- logo (top) ---
-    _logo_or_wordmark(content, draw, W // 2, Y0 + 96)
+    # --- partner logo strip across the very top, then the event branding ---
+    strip_bottom = _draw_sponsor_strip(content, draw, W // 2, Y0 + 30, _load_sponsor_logos())
+    logo_top = (strip_bottom + 52) if strip_bottom > Y0 + 30 else (Y0 + 96)
+    _logo_or_wordmark(content, draw, W // 2, logo_top)
 
     # --- participant label + big number (over the poster) ---
     num = f"№{number}"
@@ -333,15 +322,10 @@ def generate_ticket(
         _center(draw, W // 2, TEAR_Y + 110, info, ifont, WHITE)
 
         _fit_spaced_center(draw, W // 2, TEAR_Y + 180, date_line, "regular", 22, cw - 120, MUTED, spacing=1)
-        sponsors_y = TEAR_Y + 224
     else:
         ifont = _fit(draw, info, "bold", 44, cw - 140, min_size=24)
         _center(draw, W // 2, TEAR_Y + 60, info, ifont, WHITE)
         _fit_spaced_center(draw, W // 2, TEAR_Y + 150, date_line, "regular", 24, cw - 120, MUTED, spacing=1)
-        sponsors_y = TEAR_Y + 196
-
-    # --- optional sponsor/partner strip (only drawn if logos are present) ---
-    _draw_sponsor_strip(content, draw, W // 2, sponsors_y, _load_sponsor_logos(), copy["sponsors"])
 
     # --- ticket mask: rounded card + tear notches + perforation ---
     mask = Image.new("L", (W, H), 0)
