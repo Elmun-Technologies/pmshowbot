@@ -7,12 +7,12 @@ import os
 from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from .. import keyboards, texts
 from ..config import Config
-from ..constants import SIDES
+from ..constants import SIDES, direction_image_path
 from ..db import Database
 from ..services import subscription
 from ..states import Registration
@@ -183,8 +183,24 @@ async def choose_direction(query: CallbackQuery, state: FSMContext) -> None:
     lang = await _lang(state)
     _, idx = query.data.split(":", 1)
     # Store the canonical (Russian) direction name.
-    await state.update_data(direction=texts.DIRECTIONS_CANON[int(idx)])
+    canonical = texts.DIRECTIONS_CANON[int(idx)]
+    await state.update_data(direction=canonical)
     await state.set_state(Registration.phone)
+
+    # Show the direction's promo banner so the participant sees the category
+    # they just joined (skipped silently if the asset isn't bundled).
+    banner = direction_image_path(canonical)
+    if banner:
+        try:
+            await query.message.answer_photo(
+                FSInputFile(banner),
+                caption=texts.T(lang).DIRECTION_PICKED.format(
+                    direction=texts.localize_direction(canonical, lang)
+                ),
+            )
+        except Exception:  # noqa: BLE001 - a banner must never block registration
+            logger.exception("Could not send direction banner for %s", canonical)
+
     await query.message.answer(
         texts.T(lang).ASK_PHONE, reply_markup=keyboards.phone_keyboard(lang)
     )

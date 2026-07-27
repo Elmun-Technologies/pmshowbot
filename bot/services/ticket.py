@@ -36,6 +36,7 @@ _HERE = os.path.dirname(__file__)
 _ASSET_FONTS = os.path.join(_HERE, "..", "assets", "fonts")
 _LOGO_PATH = os.path.join(_HERE, "..", "assets", "logo.png")
 _ADRENALINE_PATH = os.path.join(_HERE, "..", "assets", "adrenaline.png")
+_SPONSORS_DIR = os.path.join(_HERE, "..", "assets", "sponsors")
 
 _FONT_CANDIDATES = {
     "bold": ["display.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -206,6 +207,77 @@ def _logo_or_wordmark(content, draw, cx, top):
         _center(draw, cx, top + 88, "Samarkand", _font("serif_bold", 60), RED)
 
 
+def _load_sponsor_logos(max_n: int = 6) -> list:
+    """Load partner/sponsor logos from bot/assets/sponsors/ (any .png/.jpg),
+    sorted by filename (prefix with a number to control order). Missing
+    directory or unreadable files are ignored."""
+    if not os.path.isdir(_SPONSORS_DIR):
+        return []
+    logos = []
+    for name in sorted(os.listdir(_SPONSORS_DIR)):
+        if not name.lower().endswith((".png", ".jpg", ".jpeg")):
+            continue
+        try:
+            im = Image.open(os.path.join(_SPONSORS_DIR, name)).convert("RGBA")
+            bbox = im.getbbox()
+            if bbox:
+                im = im.crop(bbox)
+            logos.append(im)
+        except Exception:  # noqa: BLE001 - one bad file must not break the ticket
+            continue
+        if len(logos) >= max_n:
+            break
+    return logos
+
+
+def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
+    """Draw the partner logos in a single centred row across the top of the
+    ticket, straight on the dark background with thin vertical dividers —
+    matching the header strip used on the event's own promo artwork.
+
+    Logo height shrinks automatically so the row always fits ``max_bar_w``.
+    Returns the y just below the row (or the input y if there are no logos)."""
+    if not logos:
+        return y
+
+    max_bar_w = max_bar_w or (W - 2 * MARGIN - 36)
+    gap, max_w = 34, 210
+
+    def _scale(target_h):
+        out = []
+        for im in logos:
+            w = int(im.width * target_h / im.height)
+            h = target_h
+            if w > max_w:
+                w, h = max_w, int(im.height * max_w / im.width)
+            out.append((max(1, w), max(1, h)))
+        return out
+
+    target_h = 66
+    sizes = _scale(target_h)
+    while target_h > 22:
+        sizes = _scale(target_h)
+        row_w = sum(w for w, _ in sizes) + gap * (len(sizes) - 1)
+        if row_w <= max_bar_w:
+            break
+        target_h -= 4
+    scaled = [im.resize(sz, Image.LANCZOS) for im, sz in zip(logos, sizes)]
+
+    row_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
+    row_h = max(s.height for s in scaled)
+    x = cx - row_w // 2
+
+    for i, s in enumerate(scaled):
+        content.paste(s, (x, y + (row_h - s.height) // 2), s)
+        x += s.width
+        if i < len(scaled) - 1:
+            div_x = x + gap // 2
+            draw.line([(div_x, y + 4), (div_x, y + row_h - 4)], fill=(96, 96, 106), width=2)
+            x += gap
+
+    return y + row_h
+
+
 # ---------- main ----------
 def generate_ticket(
     *,
@@ -223,8 +295,10 @@ def generate_ticket(
     content.paste(_hero(cw, ch, hero_image_path), (X0, Y0))
     draw = ImageDraw.Draw(content)
 
-    # --- logo (top) ---
-    _logo_or_wordmark(content, draw, W // 2, Y0 + 96)
+    # --- partner logo strip across the very top, then the event branding ---
+    strip_bottom = _draw_sponsor_strip(content, draw, W // 2, Y0 + 30, _load_sponsor_logos())
+    logo_top = (strip_bottom + 52) if strip_bottom > Y0 + 30 else (Y0 + 96)
+    _logo_or_wordmark(content, draw, W // 2, logo_top)
 
     # --- participant label + big number (over the poster) ---
     num = f"№{number}"
