@@ -7,6 +7,6 @@ class Registration(StatesGroup):
     country = State()
     country_other = State()
     plate = State()
-    photos = State()
     direction = State()
+    photos = State()
     phone = State()
