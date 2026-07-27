@@ -138,8 +138,38 @@ async def country_other(message: Message, state: FSMContext) -> None:
 async def set_plate(message: Message, state: FSMContext) -> None:
     lang = await _lang(state)
     await state.update_data(plate=message.text.strip(), photo_file_ids=[], photo_paths=[])
+    await state.set_state(Registration.direction)
+    await message.answer(
+        texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
+    )
+
+
+# --- Direction (right after the plate, before photos) ---
+@router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
+async def choose_direction(query: CallbackQuery, state: FSMContext) -> None:
+    lang = await _lang(state)
+    _, idx = query.data.split(":", 1)
+    # Store the canonical (Russian) direction name.
+    canonical = texts.DIRECTIONS_CANON[int(idx)]
+    await state.update_data(direction=canonical)
     await state.set_state(Registration.photos)
-    await message.answer(texts.T(lang).PHOTO_PROMPTS[0])
+
+    # Show the direction's promo banner so the participant sees the category
+    # they just joined (skipped silently if the asset isn't bundled).
+    banner = direction_image_path(canonical)
+    if banner:
+        try:
+            await query.message.answer_photo(
+                FSInputFile(banner),
+                caption=texts.T(lang).DIRECTION_PICKED.format(
+                    direction=texts.localize_direction(canonical, lang)
+                ),
+            )
+        except Exception:  # noqa: BLE001 - a banner must never block registration
+            logger.exception("Could not send direction banner for %s", canonical)
+
+    await query.message.answer(texts.T(lang).PHOTO_PROMPTS[0])
+    await query.answer()
 
 
 # --- Photos (4, one by one) ---
@@ -166,45 +196,15 @@ async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: C
     if len(file_ids) < len(SIDES):
         await message.answer(texts.T(lang).PHOTO_PROMPTS[len(file_ids)])
     else:
-        await state.set_state(Registration.direction)
+        await state.set_state(Registration.phone)
         await message.answer(
-            texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
+            texts.T(lang).ASK_PHONE, reply_markup=keyboards.phone_keyboard(lang)
         )
 
 
 @router.message(Registration.photos)
 async def photos_not_a_photo(message: Message, state: FSMContext) -> None:
     await message.answer(texts.T(await _lang(state)).PHOTO_NOT_A_PHOTO)
-
-
-# --- Direction ---
-@router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
-async def choose_direction(query: CallbackQuery, state: FSMContext) -> None:
-    lang = await _lang(state)
-    _, idx = query.data.split(":", 1)
-    # Store the canonical (Russian) direction name.
-    canonical = texts.DIRECTIONS_CANON[int(idx)]
-    await state.update_data(direction=canonical)
-    await state.set_state(Registration.phone)
-
-    # Show the direction's promo banner so the participant sees the category
-    # they just joined (skipped silently if the asset isn't bundled).
-    banner = direction_image_path(canonical)
-    if banner:
-        try:
-            await query.message.answer_photo(
-                FSInputFile(banner),
-                caption=texts.T(lang).DIRECTION_PICKED.format(
-                    direction=texts.localize_direction(canonical, lang)
-                ),
-            )
-        except Exception:  # noqa: BLE001 - a banner must never block registration
-            logger.exception("Could not send direction banner for %s", canonical)
-
-    await query.message.answer(
-        texts.T(lang).ASK_PHONE, reply_markup=keyboards.phone_keyboard(lang)
-    )
-    await query.answer()
 
 
 # --- Phone ---
