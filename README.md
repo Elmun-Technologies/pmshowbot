@@ -147,8 +147,9 @@ fly auth login
 # 2. Create the app (pick a unique name; update `app` in fly.toml to match)
 fly apps create pmshowbot
 
-# 3. Create the persistent volume (same region as fly.toml's primary_region)
-fly volumes create pmshow_data --region ams --size 1 -a pmshowbot
+# 3. Create the persistent volume (same region as fly.toml's primary_region).
+#    REQUIRED before the first deploy, or the deploy fails (fly.toml expects it).
+fly volumes create pmshow_data --region ams --size 3 -a pmshowbot
 
 # 4. Set secrets (do NOT put these in fly.toml)
 fly secrets set -a pmshowbot \
@@ -157,6 +158,7 @@ fly secrets set -a pmshowbot \
   ADMIN_CHAT_ID="-1001234567890" \
   ADMIN_PASSWORD="<strong password for the web panel>"
 # For a demo without the subscription gate: also set REQUIRE_SUBSCRIPTION="false"
+# For the ticket's Instagram CTA: also set INSTAGRAM_HANDLE="promotorsshow"
 # For Google export later: fly secrets set GOOGLE_CREDENTIALS_JSON="$(cat credentials.json)" \
 #   SPREADSHEET_ID="..." DRIVE_FOLDER_ID="..." -a pmshowbot
 
