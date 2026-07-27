@@ -14,8 +14,9 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from .. import keyboards, texts
 from ..config import Config
+from ..constants import DIRECTIONS
 from ..db import Database
-from ..services import decisions, subscription
+from ..services import assets, decisions, subscription
 from ..services.ticket import generate_ticket
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,157 @@ def _is_admin(message: Message, config: Config) -> bool:
     return message.chat.id == config.admin_chat_id or (
         message.from_user is not None and message.from_user.id in config.admin_user_ids
     )
+
+
+# --- Brand assets uploaded straight from Telegram -------------------------
+#
+# Sponsor logos and direction banners would otherwise have to be committed to
+# the repo, which is impractical mid-event. An admin can instead send the image
+# to the bot with a caption, and it is stored on the volume (surviving
+# redeploys) and used immediately.
+
+_ASSETS_HELP = (
+    "🖼 <b>Логотипы и баннеры</b>\n\n"
+    "Отправьте картинку <b>с подписью</b>:\n\n"
+    "• <code>/logo 1_pride</code> — логотип спонсора (наверху билета).\n"
+    "  Порядок задаётся цифрой в начале: 1_, 2_, 3_…\n"
+    "• <code>/banner drift</code> — баннер направления.\n"
+    "  Доступные: {slugs}\n\n"
+    "Лучше отправлять <b>файлом</b> (без сжатия) — качество выше.\n\n"
+    "<code>/assets</code> — что уже загружено\n"
+    "<code>/delasset logo 1_pride</code> — удалить"
+)
+
+
+def _direction_slugs() -> list[str]:
+    return [d["slug"] for d in DIRECTIONS]
+
+
+async def _download_incoming_image(message: Message, bot: Bot) -> bytes | None:
+    """Bytes of an image sent as a photo or as an uncompressed document."""
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document and (message.document.mime_type or "").startswith("image/"):
+        file_id = message.document.file_id
+    else:
+        return None
+    buf = await bot.download(file_id)
+    return buf.read() if buf else None
+
+
+@router.message(Command("assets"))
+async def cmd_assets(message: Message, config: Config) -> None:
+    """Show which brand assets are currently in use."""
+    if not _is_admin(message, config):
+        return
+
+    inv = assets.inventory()
+
+    def _fmt(runtime: list[str], bundled: list[str]) -> str:
+        if runtime:
+            return "\n".join(f"  • {n} (загружен)" for n in runtime)
+        if bundled:
+            return "\n".join(f"  • {n} (из репозитория)" for n in bundled)
+        return "  — пусто —"
+
+    lines = [
+        "🖼 <b>Текущие ассеты</b>\n",
+        "<b>Логотипы спонсоров</b> (верх билета):",
+        _fmt(inv["sponsors_runtime"], inv["sponsors_bundled"]),
+        "",
+        "<b>Баннеры направлений</b>:",
+        _fmt(inv["directions_runtime"], inv["directions_bundled"]),
+    ]
+    if not inv["storage_configured"]:
+        lines.append("\n⚠️ Хранилище не настроено — загрузка недоступна.")
+    else:
+        lines.append("\nЗагрузить: /help_assets")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("help_assets"))
+async def cmd_help_assets(message: Message, config: Config) -> None:
+    if not _is_admin(message, config):
+        return
+    await message.answer(_ASSETS_HELP.format(slugs=", ".join(_direction_slugs())))
+
+
+@router.message(Command("delasset"))
+async def cmd_delasset(message: Message, config: Config) -> None:
+    """/delasset logo 1_pride  |  /delasset banner drift"""
+    if not _is_admin(message, config):
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3 or parts[1] not in ("logo", "banner"):
+        await message.answer(
+            "Использование: <code>/delasset logo 1_pride</code> или "
+            "<code>/delasset banner drift</code>"
+        )
+        return
+    kind = "sponsors" if parts[1] == "logo" else "directions"
+    if assets.delete_asset(kind, parts[2]):
+        await message.answer(f"🗑 Удалено: <code>{parts[2]}</code>")
+    else:
+        await message.answer(f"Не найдено: <code>{parts[2]}</code>")
+
+
+@router.message(F.photo | F.document)
+async def receive_brand_asset(message: Message, bot: Bot, config: Config) -> None:
+    """Store an image sent with a /logo or /banner caption."""
+    if not _is_admin(message, config):
+        return
+
+    caption = (message.caption or "").strip()
+    if not caption.startswith(("/logo", "/banner")):
+        return
+
+    parts = caption.split()
+    command = parts[0].split("@")[0]  # tolerate /logo@BotName in groups
+    name = parts[1] if len(parts) > 1 else ""
+
+    if not name:
+        await message.answer(
+            "Укажите имя в подписи, например: <code>/logo 1_pride</code>"
+            if command == "/logo"
+            else f"Укажите направление: <code>/banner drift</code>\n"
+                 f"Доступные: {', '.join(_direction_slugs())}"
+        )
+        return
+
+    if not assets.is_safe_name(name):
+        await message.answer(
+            "Имя может содержать только латинские буквы, цифры, «_» и «-». "
+            "Например: <code>1_pride</code>"
+        )
+        return
+
+    if command == "/banner" and name not in _direction_slugs():
+        await message.answer(
+            f"Неизвестное направление: <code>{name}</code>\n"
+            f"Доступные: {', '.join(_direction_slugs())}"
+        )
+        return
+
+    try:
+        data = await _download_incoming_image(message, bot)
+        if data is None:
+            await message.answer("Пришлите именно картинку (фото или файл-изображение).")
+            return
+        if command == "/logo":
+            assets.save_sponsor(name, data)
+            await message.answer(
+                f"✅ Логотип <code>{name}</code> сохранён — появится на билетах сразу.\n"
+                f"Проверить: /assets, затем /diag"
+            )
+        else:
+            assets.save_direction(name, data)
+            await message.answer(
+                f"✅ Баннер направления <code>{name}</code> сохранён — "
+                f"будет показан при выборе этого направления."
+            )
+    except Exception as exc:  # noqa: BLE001 - report the reason to the admin
+        logger.exception("Failed to store brand asset %s", name)
+        await message.answer(f"❌ Не удалось сохранить: <code>{exc}</code>")
 
 
 @router.message(Command("diag"))
