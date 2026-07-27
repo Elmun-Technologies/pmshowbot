@@ -20,10 +20,10 @@ SIDES = ["left", "right", "front", "back"]
 # applications already in the database keep their stored canonical name.
 # ---------------------------------------------------------------------------
 DIRECTIONS = [
-    {"canonical": "Тюнинг",   "ru": "Тюнинг",   "uz": "Tuning",   "slug": "tuning"},
-    {"canonical": "Автозвук", "ru": "Автозвук", "uz": "Avtozvuk", "slug": "autosound"},
-    {"canonical": "Дрифт",    "ru": "Дрифт",    "uz": "Drift",    "slug": "drift"},
-    {"canonical": "Ретро",    "ru": "Ретро",    "uz": "Retro",    "slug": "retro"},
+    {"canonical": "SPL Тюнинг",   "ru": "SPL Тюнинг",   "uz": "SPL Tuning",   "slug": "tuning"},
+    {"canonical": "SPL Автозвук", "ru": "SPL Автозвук", "uz": "SPL Avtozvuk", "slug": "autosound"},
+    {"canonical": "Дрифт",        "ru": "Дрифт",        "uz": "Drift",        "slug": "drift"},
+    {"canonical": "Ретро",        "ru": "Ретро",        "uz": "Retro",        "slug": "retro"},
 ]
 
 DIRECTIONS_CANON = [d["canonical"] for d in DIRECTIONS]
