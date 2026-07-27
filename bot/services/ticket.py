@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 W, H = 1080, 1920
 MARGIN = 34
 X0, Y0, X1, Y1 = MARGIN, MARGIN, W - MARGIN, H - MARGIN
-TEAR_Y = 1560          # poster above, slim info stub below
+TEAR_Y = 1520          # poster above, slim info stub (+ optional sponsor strip) below
 CORNER = 46
 
 RED = (214, 34, 44)
@@ -36,6 +36,7 @@ _HERE = os.path.dirname(__file__)
 _ASSET_FONTS = os.path.join(_HERE, "..", "assets", "fonts")
 _LOGO_PATH = os.path.join(_HERE, "..", "assets", "logo.png")
 _ADRENALINE_PATH = os.path.join(_HERE, "..", "assets", "adrenaline.png")
+_SPONSORS_DIR = os.path.join(_HERE, "..", "assets", "sponsors")
 
 _FONT_CANDIDATES = {
     "bold": ["display.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -62,8 +63,10 @@ def _font(kind: str, size: int) -> ImageFont.FreeTypeFont:
 
 
 _COPY = {
-    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026, 10:00", "place": "SOF EXPO · SAMARKAND"},
-    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026, 10:00", "place": "SOF EXPO · SAMARQAND"},
+    "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026, 10:00", "place": "SOF EXPO · SAMARKAND",
+           "sponsors": "ПРИ ПОДДЕРЖКЕ"},
+    "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026, 10:00", "place": "SOF EXPO · SAMARQAND",
+           "sponsors": "HAMKORLAR"},
 }
 
 
@@ -206,6 +209,88 @@ def _logo_or_wordmark(content, draw, cx, top):
         _center(draw, cx, top + 88, "Samarkand", _font("serif_bold", 60), RED)
 
 
+def _load_sponsor_logos(max_n: int = 6) -> list:
+    """Load partner/sponsor logos from bot/assets/sponsors/ (any .png/.jpg),
+    sorted by filename (prefix with a number to control order). Missing
+    directory or unreadable files are ignored."""
+    if not os.path.isdir(_SPONSORS_DIR):
+        return []
+    logos = []
+    for name in sorted(os.listdir(_SPONSORS_DIR)):
+        if not name.lower().endswith((".png", ".jpg", ".jpeg")):
+            continue
+        try:
+            im = Image.open(os.path.join(_SPONSORS_DIR, name)).convert("RGBA")
+            bbox = im.getbbox()
+            if bbox:
+                im = im.crop(bbox)
+            logos.append(im)
+        except Exception:  # noqa: BLE001 - one bad file must not break the ticket
+            continue
+        if len(logos) >= max_n:
+            break
+    return logos
+
+
+def _draw_sponsor_strip(content, draw, cx, y, logos, label, max_bar_w=None):
+    """Draw a white rounded 'partners' bar with each logo, divided by thin
+    lines, below a small label. Each logo sits on its own white background so
+    any source background (red, white, transparent, ...) reads cleanly.
+    Shrinks logo height as needed to keep the bar within ``max_bar_w``.
+    Returns the y just below the bar (or the input y if there are no logos)."""
+    if not logos:
+        return y
+
+    _spaced_center(draw, cx, y, label, _font("regular", 20), MUTED, 4)
+    bar_y = y + 32
+
+    max_bar_w = max_bar_w or (W - 2 * MARGIN - 40)
+    hpad, vpad, gap, max_w = 24, 12, 28, 130
+
+    def _scale(target_h):
+        out = []
+        for im in logos:
+            w = int(im.width * target_h / im.height)
+            h = target_h
+            if w > max_w:
+                w, h = max_w, int(im.height * max_w / im.width)
+            out.append((max(1, w), max(1, h)))
+        return out
+
+    target_h = 44
+    sizes = _scale(target_h)
+    while target_h > 22:
+        sizes = _scale(target_h)
+        content_w = sum(w for w, _ in sizes) + gap * (len(sizes) - 1)
+        if content_w + hpad * 2 <= max_bar_w:
+            break
+        target_h -= 4
+    scaled = [im.resize(sz, Image.LANCZOS) for im, sz in zip(logos, sizes)]
+
+    content_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
+    bar_w = content_w + hpad * 2
+    bar_h = target_h + vpad * 2
+    bx0 = cx - bar_w // 2
+
+    bar = Image.new("RGB", (bar_w, bar_h), WHITE)
+    bd = ImageDraw.Draw(bar)
+    x = hpad
+    for i, s in enumerate(scaled):
+        by = (bar_h - s.height) // 2
+        bar.paste(s, (x, by), s)
+        x += s.width
+        if i < len(scaled) - 1:
+            div_x = x + gap // 2
+            bd.line([(div_x, 10), (div_x, bar_h - 10)], fill=(214, 214, 220), width=2)
+            x += gap
+
+    mask = Image.new("L", (bar_w, bar_h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, bar_w, bar_h], radius=16, fill=255)
+    content.paste(bar, (bx0, bar_y), mask)
+
+    return bar_y + bar_h
+
+
 # ---------- main ----------
 def generate_ticket(
     *,
@@ -248,10 +333,15 @@ def generate_ticket(
         _center(draw, W // 2, TEAR_Y + 110, info, ifont, WHITE)
 
         _fit_spaced_center(draw, W // 2, TEAR_Y + 180, date_line, "regular", 22, cw - 120, MUTED, spacing=1)
+        sponsors_y = TEAR_Y + 224
     else:
         ifont = _fit(draw, info, "bold", 44, cw - 140, min_size=24)
         _center(draw, W // 2, TEAR_Y + 60, info, ifont, WHITE)
         _fit_spaced_center(draw, W // 2, TEAR_Y + 150, date_line, "regular", 24, cw - 120, MUTED, spacing=1)
+        sponsors_y = TEAR_Y + 196
+
+    # --- optional sponsor/partner strip (only drawn if logos are present) ---
+    _draw_sponsor_strip(content, draw, W // 2, sponsors_y, _load_sponsor_logos(), copy["sponsors"])
 
     # --- ticket mask: rounded card + tear notches + perforation ---
     mask = Image.new("L", (W, H), 0)
