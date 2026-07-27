@@ -70,6 +70,45 @@ async def _download_incoming_image(message: Message, bot: Bot) -> bytes | None:
     return buf.read() if buf else None
 
 
+@router.message(Command("whoami"))
+async def cmd_whoami(message: Message, config: Config) -> None:
+    """Report the caller's ids and whether the bot treats them as an admin.
+
+    Deliberately available to everyone: Telegram user/chat ids aren't secret,
+    and this is how an admin finds the id to put in ADMIN_USER_IDS.
+    """
+    user = message.from_user
+    lines = [
+        "🪪 <b>Ваши данные</b>\n",
+        f"Ваш user id: <code>{user.id if user else '—'}</code>",
+        f"Этот чат id: <code>{message.chat.id}</code>",
+        f"Чат модерации (ADMIN_CHAT_ID): <code>{config.admin_chat_id}</code>",
+    ]
+
+    in_admin_chat = message.chat.id == config.admin_chat_id
+    by_user_id = user is not None and user.id in config.admin_user_ids
+
+    if in_admin_chat:
+        lines.append("\n✅ Здесь вы <b>админ</b> — потому что это чат модерации.")
+        lines.append("⚠️ Админом здесь считается <b>каждый участник этого чата</b>.")
+    elif by_user_id:
+        lines.append("\n✅ Вы <b>админ</b> — ваш id есть в ADMIN_USER_IDS.")
+    else:
+        lines.append("\n❌ Здесь вы <b>не админ</b>.")
+        lines.append(
+            "Чтобы получить доступ в личном чате, добавьте свой id в секрет "
+            "<code>ADMIN_USER_IDS</code>."
+        )
+
+    if config.admin_user_ids:
+        ids = ", ".join(str(i) for i in sorted(config.admin_user_ids))
+        lines.append(f"\nADMIN_USER_IDS: <code>{ids}</code>")
+    else:
+        lines.append("\nADMIN_USER_IDS: <i>не задан</i> (только чат модерации)")
+
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("assets"))
 async def cmd_assets(message: Message, config: Config) -> None:
     """Show which brand assets are currently in use."""
