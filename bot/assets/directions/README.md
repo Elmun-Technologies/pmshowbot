@@ -23,12 +23,12 @@ Send as a **file** (uncompressed) for the best quality.
 The slug comes from the `DIRECTIONS` table in `bot/constants.py` — the single
 place a direction is defined. Current slugs:
 
-| Direction     | Slug / filename |
-| ------------- | --------------- |
-| SPL Тюнинг    | `tuning`        |
-| SPL Автозвук  | `autosound`     |
-| Дрифт         | `drift`         |
-| Ретро         | `retro`         |
+| Direction        | Slug / filename |
+| ---------------- | --------------- |
+| SPL Тюнинг       | `tuning`        |
+| SPL Автозвук     | `autosound`     |
+| Adrenaline Drift | `drift`         |
+| Ретро            | `retro`         |
 
 Renaming a direction is a one-line change in that table;
 the button labels, the stored value, the exports and this filename all follow
