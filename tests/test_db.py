@@ -101,7 +101,7 @@ def test_language_roundtrip_and_migration():
         # New row can store uz and full_name and read it back
         new_id = asyncio.run(
             db.create_application(
-                user_id=2, username="@u", full_name="Nazir Elmurodov", country="Узбекистан", plate="X", direction="Дрифт",
+                user_id=2, username="@u", full_name="Nazir Elmurodov", country="Узбекистан", plate="X", direction="Adrenaline Drift",
                 phone="+998", photo_file_ids=[], photo_paths=[], language="uz",
             )
         )
@@ -109,8 +109,31 @@ def test_language_roundtrip_and_migration():
         assert app.language == "uz" and app.full_name == "Nazir Elmurodov"
 
 
+def test_renamed_direction_is_migrated():
+    # Applications registered under the old name follow the rename, so the
+    # admin panel and the stats keep them in one category.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "t.db")
+        db = Database(path)
+        asyncio.run(db.init())
+
+        app_id = asyncio.run(
+            db.create_application(
+                user_id=7, username="@u", full_name="Old Row", country="Узбекистан",
+                plate="01A123BC", direction="Дрифт", phone="+998",
+                photo_file_ids=[], photo_paths=[],
+            )
+        )
+
+        # Restarting the bot applies the rename.
+        asyncio.run(Database(path).init())
+        assert asyncio.run(db.get_application(app_id)).direction == "Adrenaline Drift"
+        assert asyncio.run(db.stats())["by_direction"].get("Adrenaline Drift") == 1
+
+
 if __name__ == "__main__":
     test_sequential_numbers_and_rejection_gaps()
     test_active_application_lookup()
     test_language_roundtrip_and_migration()
+    test_renamed_direction_is_migrated()
     print("All tests passed.")

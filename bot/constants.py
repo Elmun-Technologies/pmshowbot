@@ -22,7 +22,7 @@ SIDES = ["left", "right", "front", "back"]
 DIRECTIONS = [
     {"canonical": "SPL Тюнинг",   "ru": "SPL Тюнинг",   "uz": "SPL Tuning",   "slug": "tuning"},
     {"canonical": "SPL Автозвук", "ru": "SPL Автозвук", "uz": "SPL Avtozvuk", "slug": "autosound"},
-    {"canonical": "Дрифт",        "ru": "Дрифт",        "uz": "Drift",        "slug": "drift"},
+    {"canonical": "Adrenaline Drift", "ru": "Adrenaline Drift", "uz": "Adrenaline Drift", "slug": "drift"},
     {"canonical": "Ретро",        "ru": "Ретро",        "uz": "Retro",        "slug": "retro"},
 ]
 

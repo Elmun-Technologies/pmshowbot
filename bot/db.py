@@ -67,6 +67,14 @@ _MIGRATIONS = [
     ("full_name", "ALTER TABLE applications ADD COLUMN full_name TEXT NOT NULL DEFAULT ''"),
 ]
 
+# Renamed directions: applications stored under the old name are moved to the
+# new one so the admin panel and the stats keep counting them as one category.
+# Each entry is idempotent — re-running it on an already-renamed database is a
+# no-op.
+_DIRECTION_RENAMES = [
+    ("Дрифт", "Adrenaline Drift"),
+]
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -119,6 +127,11 @@ class Database:
             for column, ddl in _MIGRATIONS:
                 if column not in existing:
                     conn.execute(ddl)
+            for old, new in _DIRECTION_RENAMES:
+                conn.execute(
+                    "UPDATE applications SET direction = ? WHERE direction = ?",
+                    (new, old),
+                )
 
     def _create_application(
         self,

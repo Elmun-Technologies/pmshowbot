@@ -36,9 +36,9 @@ def test_direction_banner_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         assets.configure(tmp)
         try:
-            assert direction_image_path("Дрифт") is None
+            assert direction_image_path("Adrenaline Drift") is None
             assets.save_direction("drift", _png())
-            path = direction_image_path("Дрифт")
+            path = direction_image_path("Adrenaline Drift")
             assert path is not None and os.path.basename(path) == "drift.png"
             # An unrelated direction is unaffected.
             assert direction_image_path("Ретро") is None
@@ -92,8 +92,8 @@ def test_without_storage_configured_nothing_breaks():
     assets.configure(None)
     # Falls back to bundled assets (currently none committed) without raising.
     assert isinstance(assets.sponsor_files(), list)
-    assert direction_image_path("Дрифт") is None or isinstance(
-        direction_image_path("Дрифт"), str
+    assert direction_image_path("Adrenaline Drift") is None or isinstance(
+        direction_image_path("Adrenaline Drift"), str
     )
     inv = assets.inventory()
     assert inv["storage_configured"] is False

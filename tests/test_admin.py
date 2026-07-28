@@ -36,7 +36,7 @@ def _seed_db(path: str, photo_path: str) -> int:
             username="@tester",
             country="Узбекистан",
             plate="01A777AA",
-            direction="Дрифт",
+            direction="Adrenaline Drift",
             phone="+998901112233",
             photo_file_ids=["f0"],
             photo_paths=[photo_path],
@@ -83,7 +83,7 @@ def test_routes():
                 assert r.status == 200 and "01A777AA" in body
 
                 r = await client.get(f"/application/{app_id}", headers=hdr)
-                assert r.status == 200 and "Дрифт" in await r.text()
+                assert r.status == 200 and "Adrenaline Drift" in await r.text()
 
                 r = await client.get(f"/photo/{app_id}/0", headers=hdr)
                 assert r.status == 200 and (await r.read()).startswith(b"\xff\xd8")
