@@ -16,6 +16,7 @@ from ..constants import MAX_MOD_PHOTOS, SIDES, direction_image_path
 from ..db import Database
 from ..services import subscription
 from ..states import Registration
+from ..validation import clean_country, clean_phone, clean_plate
 
 logger = logging.getLogger(__name__)
 router = Router(name="registration")
@@ -128,7 +129,11 @@ async def choose_country(query: CallbackQuery, state: FSMContext) -> None:
 @router.message(Registration.country_other, F.text)
 async def country_other(message: Message, state: FSMContext) -> None:
     lang = await _lang(state)
-    await state.update_data(country=message.text.strip())
+    country = clean_country(message.text)
+    if country is None:
+        await message.answer(texts.T(lang).BAD_COUNTRY)
+        return
+    await state.update_data(country=country)
     await state.set_state(Registration.plate)
     await message.answer(texts.T(lang).ASK_PLATE)
 
@@ -137,8 +142,12 @@ async def country_other(message: Message, state: FSMContext) -> None:
 @router.message(Registration.plate, F.text)
 async def set_plate(message: Message, state: FSMContext) -> None:
     lang = await _lang(state)
+    plate = clean_plate(message.text)
+    if plate is None:
+        await message.answer(texts.T(lang).BAD_PLATE)
+        return
     await state.update_data(
-        plate=message.text.strip(),
+        plate=plate,
         photo_file_ids=[],
         photo_paths=[],
         mod_file_ids=[],
@@ -284,15 +293,26 @@ async def _ask_phone(message: Message, state: FSMContext, lang: str) -> None:
 async def set_phone_contact(
     message: Message, state: FSMContext, bot: Bot, config: Config, db: Database
 ) -> None:
-    await _finalize(message, state, bot, config, db, phone=message.contact.phone_number)
+    # Telegram's own number, so it needs no validation — only normalising.
+    phone = clean_phone(message.contact.phone_number) or message.contact.phone_number
+    await _finalize(message, state, bot, config, db, phone=phone)
 
 
 @router.message(Registration.phone, F.text)
 async def set_phone_text(
     message: Message, state: FSMContext, bot: Bot, config: Config, db: Database
 ) -> None:
-    # Accept a typed number too, in case the user doesn't use the button.
-    await _finalize(message, state, bot, config, db, phone=message.text.strip())
+    # Accept a typed number too, in case the user doesn't use the button — but
+    # only if it can actually be one, so a stray "/mynumber" or "salom" doesn't
+    # get filed as somebody's phone number.
+    phone = clean_phone(message.text)
+    if phone is None:
+        lang = await _lang(state)
+        await message.answer(
+            texts.T(lang).BAD_PHONE, reply_markup=keyboards.phone_keyboard(lang)
+        )
+        return
+    await _finalize(message, state, bot, config, db, phone=phone)
 
 
 async def _finalize(

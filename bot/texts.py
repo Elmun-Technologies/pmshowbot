@@ -29,6 +29,11 @@ _RU = dict(
     ASK_COUNTRY="Выберите страну:",
     ASK_COUNTRY_OTHER="Впишите название вашей страны:",
     ASK_PLATE="Напишите государственный номер автомобиля полностью:",
+    BAD_PLATE=(
+        "Это не похоже на государственный номер. Напишите его полностью, "
+        "например <b>01A123BC</b> или <b>30X577XX</b>:"
+    ),
+    BAD_COUNTRY="Впишите, пожалуйста, название страны буквами:",
     PHOTO_PROMPTS=[
         "Пришлите фотографию <b>левой</b> стороны автомобиля (1 из 4):",
         "Отлично! Теперь <b>правую</b> сторону (2 из 4):",
@@ -55,6 +60,10 @@ _RU = dict(
     ASK_DIRECTION="Выберите направление для участия:",
     DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
+    BAD_PHONE=(
+        "Это не похоже на номер телефона. Нажмите кнопку ниже или напишите "
+        "номер, например <b>+998 90 123 45 67</b>:"
+    ),
     THANKS=(
         "Спасибо! Ваша заявка принята. В ближайшее время вы получите ответ.\n\n"
         "Узнать статус можно кнопкой «Узнать свой номер»."
@@ -104,6 +113,11 @@ _UZ = dict(
     ASK_COUNTRY="Davlatni tanlang:",
     ASK_COUNTRY_OTHER="Davlatingiz nomini yozing:",
     ASK_PLATE="Avtomobilingizning davlat raqamini to‘liq yozing:",
+    BAD_PLATE=(
+        "Bu davlat raqamiga o‘xshamaydi. To‘liq yozing, masalan "
+        "<b>01A123BC</b> yoki <b>30X577XX</b>:"
+    ),
+    BAD_COUNTRY="Iltimos, davlat nomini harflar bilan yozing:",
     PHOTO_PROMPTS=[
         "Avtomobilning <b>chap</b> tomoni suratini yuboring (1 dan 4):",
         "Zo‘r! Endi <b>o‘ng</b> tomonini (2 dan 4):",
@@ -131,6 +145,10 @@ _UZ = dict(
     ASK_DIRECTION="Ishtirok yo‘nalishini tanlang:",
     DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
+    BAD_PHONE=(
+        "Bu telefon raqamiga o‘xshamaydi. Pastdagi tugmani bosing yoki raqamni "
+        "yozing, masalan <b>+998 90 123 45 67</b>:"
+    ),
     THANKS=(
         "Rahmat! Arizangiz qabul qilindi. Tez orada javob olasiz.\n\n"
         "Holatni «Raqamimni bilish» tugmasi orqali bilib olishingiz mumkin."

@@ -16,6 +16,7 @@ from .config import Config, load_config
 from .db import Database
 from .services import assets
 from .handlers import moderation, mynumber, registration
+from .middlewares import SerializePerUserMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +40,10 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
+
+    # One update at a time per participant: an album of photos would otherwise
+    # be processed concurrently and overwrite itself (see middlewares.py).
+    dp.update.outer_middleware(SerializePerUserMiddleware())
 
     # Contextual data injected into handlers by parameter name.
     dp["config"] = config
