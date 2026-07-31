@@ -36,6 +36,22 @@ _RU = dict(
         "И последнее — <b>заднюю</b> сторону (4 из 4):",
     ],
     PHOTO_NOT_A_PHOTO="Пожалуйста, пришлите именно фотографию (как изображение).",
+    ASK_MODS=(
+        "А что вы изменили в автомобиле после этих фотографий?\n\n"
+        "Пришлите фото тех мест, где есть изменения — например <b>капот</b>, "
+        "<b>багажник</b>, <b>аудиосистема</b> и так далее.\n\n"
+        "Можно прислать несколько фото (до {max}). Если изменений нет — "
+        "нажмите кнопку ниже."
+    ),
+    MODS_ADDED=(
+        "Принято ({n} из {max}). Пришлите ещё фото изменений или нажмите «Готово»."
+    ),
+    MODS_LIMIT="Достаточно фотографий ({max} из {max}) — идём дальше.",
+    MODS_NOT_A_PHOTO=(
+        "Пожалуйста, пришлите фотографию изменения — или нажмите кнопку ниже."
+    ),
+    BTN_MODS_DONE="Готово ✅",
+    BTN_MODS_NONE="Изменений нет ➡️",
     ASK_DIRECTION="Выберите направление для участия:",
     DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
@@ -95,6 +111,23 @@ _UZ = dict(
         "Va oxirgisi — <b>orqa</b> tomonini (4 dan 4):",
     ],
     PHOTO_NOT_A_PHOTO="Iltimos, aynan surat yuboring (rasm sifatida).",
+    ASK_MODS=(
+        "Bu suratlardan keyin avtomobilda yana nima o‘zgardi?\n\n"
+        "O‘zgarish kiritilgan joylarning suratini yuboring — masalan <b>kapot</b>, "
+        "<b>bagaj</b>, <b>ovoz tizimi</b> va hokazo.\n\n"
+        "Bir nechta surat yuborishingiz mumkin ({max} tagacha). O‘zgarish bo‘lmasa — "
+        "pastdagi tugmani bosing."
+    ),
+    MODS_ADDED=(
+        "Qabul qilindi ({n} dan {max}). Yana o‘zgarish suratini yuboring yoki "
+        "«Tayyor» tugmasini bosing."
+    ),
+    MODS_LIMIT="Suratlar yetarli ({max} dan {max}) — davom etamiz.",
+    MODS_NOT_A_PHOTO=(
+        "Iltimos, o‘zgarish suratini yuboring — yoki pastdagi tugmani bosing."
+    ),
+    BTN_MODS_DONE="Tayyor ✅",
+    BTN_MODS_NONE="O‘zgarish yo‘q ➡️",
     ASK_DIRECTION="Ishtirok yo‘nalishini tanlang:",
     DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
@@ -174,8 +207,11 @@ MODERATION_CARD = (
     "Гос. номер: {plate}\n"
     "Направление: {direction}\n"
     "Телефон: {phone}\n"
+    "Изменения в авто: {mods}\n"
     "Пользователь: {user}"
 )
+MODERATION_MODS_NONE = "не указаны"
+MODERATION_MODS_COUNT = "{n} фото (последние в альбоме)"
 MODERATION_APPROVED = "✅ Принято — №{number} ({moderator})"
 MODERATION_REJECTED = "❌ Отклонено ({moderator})"
 MODERATION_ALREADY = "Эта заявка уже обработана."

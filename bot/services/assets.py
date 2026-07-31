@@ -98,6 +98,38 @@ BRAND_LOGOS = {
 }
 
 
+# The partner logos the ticket's top strip is designed around, in the order
+# they should appear. Naming them here means an admin never has to invent a
+# filename: /logo 1_mcs_sherdor puts that club's mark in the first slot.
+#
+# The strip is not limited to these — any extra sponsor file still shows up —
+# but /assets reports these four as a checklist so it's obvious what's missing
+# before the tickets go out.
+PARTNER_LOGOS = [
+    {"name": "1_mcs_sherdor", "title": "Мотоклуб MCS «Sherdor» (Самарканд)"},
+    {"name": "2_retro_tashkent", "title": "Авто-Ретро Клуб (Ташкент)"},
+    {"name": "3_drift_show", "title": "Uzbekistan Drift Show"},
+    {"name": "4_sof_expo", "title": "SOF EXPO Samarkand"},
+]
+
+
+def partner_status() -> list[dict]:
+    """Each expected partner logo with where (if anywhere) its file was found."""
+    loaded = {os.path.splitext(os.path.basename(p))[0]: p for p in sponsor_files()}
+    runtime = _runtime_dir("sponsors")
+    out = []
+    for slot in PARTNER_LOGOS:
+        path = loaded.get(slot["name"])
+        if not path:
+            source = None
+        elif runtime and path.startswith(runtime):
+            source = "runtime"
+        else:
+            source = "bundled"
+        out.append({**slot, "source": source})
+    return out
+
+
 def brand_logo(name: str) -> Optional[str]:
     """Path to a main brand logo (runtime upload wins), or None."""
     bundled_name = BRAND_LOGOS.get(name)
@@ -187,6 +219,7 @@ def inventory() -> dict:
             brand[name] = "из репозитория"
 
     return {
+        "partners": partner_status(),
         "sponsors_runtime": _listing(runtime_sponsors),
         "sponsors_bundled": _listing(_BUNDLED_SPONSORS),
         "directions_runtime": _listing(runtime_directions),

@@ -138,6 +138,36 @@ def test_unknown_brand_logo_is_rejected():
             assets.configure(None)
 
 
+def test_partner_slots_are_uploadable_and_ordered():
+    # /logo validates the name, so every expected partner slot must be a safe
+    # filename, and the leading digits must give the intended strip order.
+    names = [p["name"] for p in assets.PARTNER_LOGOS]
+    for name in names:
+        assert assets.is_safe_name(name), name
+    assert names == sorted(names), "slot names must sort into the strip order"
+    assert len(set(names)) == len(names)
+
+
+def test_partner_status_tracks_what_is_still_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        assets.configure(tmp)
+        try:
+            status = assets.partner_status()
+            assert len(status) == len(assets.PARTNER_LOGOS)
+            assert all(p["source"] is None for p in status), "nothing uploaded yet"
+
+            first = assets.PARTNER_LOGOS[0]["name"]
+            assets.save_sponsor(first, _png())
+            status = {p["name"]: p["source"] for p in assets.partner_status()}
+            assert status[first] == "runtime"
+            assert status[assets.PARTNER_LOGOS[1]["name"]] is None
+
+            # The same checklist is exposed to the /assets admin command.
+            assert assets.inventory()["partners"][0]["source"] == "runtime"
+        finally:
+            assets.configure(None)
+
+
 def test_brand_logo_can_be_deleted_back_to_bundled():
     with tempfile.TemporaryDirectory() as tmp:
         assets.configure(tmp)
@@ -161,5 +191,7 @@ if __name__ == "__main__":
     test_every_direction_slug_is_uploadable()
     test_brand_logo_upload_overrides_bundled()
     test_unknown_brand_logo_is_rejected()
+    test_partner_slots_are_uploadable_and_ordered()
+    test_partner_status_tracks_what_is_still_missing()
     test_brand_logo_can_be_deleted_back_to_bundled()
     print("All asset tests passed.")

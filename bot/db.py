@@ -10,7 +10,7 @@ import asyncio
 import json
 import os
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -37,6 +37,9 @@ class Application:
     processed_by: Optional[str]
     language: str = "ru"
     full_name: str = ""
+    # Close-ups of what the participant changed on the car (hood, trunk, audio…).
+    mod_file_ids: list[str] = field(default_factory=list)
+    mod_paths: list[str] = field(default_factory=list)
 
 
 _SCHEMA = """
@@ -56,7 +59,9 @@ CREATE TABLE IF NOT EXISTS applications (
     processed_at   TEXT,
     processed_by   TEXT,
     language       TEXT NOT NULL DEFAULT 'ru',
-    full_name      TEXT NOT NULL DEFAULT ''
+    full_name      TEXT NOT NULL DEFAULT '',
+    mod_file_ids   TEXT NOT NULL DEFAULT '[]',
+    mod_paths      TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 """
@@ -65,6 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 _MIGRATIONS = [
     ("language", "ALTER TABLE applications ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'"),
     ("full_name", "ALTER TABLE applications ADD COLUMN full_name TEXT NOT NULL DEFAULT ''"),
+    ("mod_file_ids", "ALTER TABLE applications ADD COLUMN mod_file_ids TEXT NOT NULL DEFAULT '[]'"),
+    ("mod_paths", "ALTER TABLE applications ADD COLUMN mod_paths TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 # Renamed directions: applications stored under the old name are moved to the
@@ -99,6 +106,8 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         processed_by=row["processed_by"],
         language=row["language"] if "language" in keys else "ru",
         full_name=row["full_name"] if "full_name" in keys else "",
+        mod_file_ids=json.loads(row["mod_file_ids"]) if "mod_file_ids" in keys else [],
+        mod_paths=json.loads(row["mod_paths"]) if "mod_paths" in keys else [],
     )
 
 
@@ -146,14 +155,17 @@ class Database:
         photo_paths: list[str],
         language: str = "ru",
         full_name: str = "",
+        mod_file_ids: list[str] | None = None,
+        mod_paths: list[str] | None = None,
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO applications
                     (user_id, username, country, plate, direction, phone,
-                     photo_file_ids, photo_paths, status, created_at, language, full_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     photo_file_ids, photo_paths, status, created_at, language, full_name,
+                     mod_file_ids, mod_paths)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -168,6 +180,8 @@ class Database:
                     _now(),
                     language,
                     full_name,
+                    json.dumps(mod_file_ids or [], ensure_ascii=False),
+                    json.dumps(mod_paths or [], ensure_ascii=False),
                 ),
             )
             return int(cur.lastrowid)

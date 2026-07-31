@@ -3,16 +3,32 @@
 These logos are shown in a single row **across the very top of the ticket** —
 the same header-strip layout used on the event's own promo artwork.
 
+## The four partner logos for this event
+
+The strip is built around these four, in this order. Use exactly these names so
+the order and the `/assets` checklist line up:
+
+| Slot | Name | Logo |
+| --- | --- | --- |
+| 1 | `1_mcs_sherdor` | Мотоклуб MCS «Sherdor» (Самарканд) |
+| 2 | `2_retro_tashkent` | Авто-Ретро Клуб (Ташкент) |
+| 3 | `3_drift_show` | Uzbekistan Drift Show |
+| 4 | `4_sof_expo` | SOF EXPO Samarkand |
+
+`/assets` in the moderation chat shows which of the four are already in place
+and which are still missing, with the exact command to send for each.
+
 ## Easiest way: send them to the bot (no git needed)
 
 In the moderation chat, send the image **with a caption**:
 
 ```
-/logo 1_pride
+/logo 1_mcs_sherdor
 ```
 
 The number at the start sets the order: `1_`, `2_`, `3_`, `4_`… Send it as a
-**file** (uncompressed) for the best quality.
+**file** (uncompressed) for the best quality. Any extra sponsor beyond the four
+above just gets its own name (`5_partner`, …) and joins the end of the strip.
 
 Uploads are stored on the Fly volume, so they survive restarts and redeploys.
 
@@ -22,8 +38,10 @@ Uploads are stored on the Fly volume, so they survive restarts and redeploys.
 
 ## Alternative: commit them here
 
-Drop `.png` / `.jpg` files in this folder and redeploy. Files uploaded through
-the bot take priority over anything committed here.
+Drop `.png` / `.jpg` files in this folder (named as in the table above) and
+redeploy. Files uploaded through the bot take priority over anything committed
+here — as soon as one logo is uploaded, the uploaded set replaces the committed
+set entirely, so upload all four rather than mixing the two sources.
 
 ## Design notes
 

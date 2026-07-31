@@ -15,6 +15,7 @@ from . import texts
 CB_LANG = "lang"
 CB_COUNTRY = "country"
 CB_DIRECTION = "direction"
+CB_MODS_DONE = "modsdone"
 CB_APPROVE = "approve"
 CB_REJECT = "reject"
 CB_CHECK_SUB = "checksub"
@@ -57,6 +58,21 @@ def direction_keyboard(lang: str) -> InlineKeyboardMarkup:
     for idx, name in enumerate(t.DIRECTIONS):
         builder.button(text=name, callback_data=f"{CB_DIRECTION}:{idx}")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def mods_keyboard(lang: str, has_photos: bool) -> InlineKeyboardMarkup:
+    """Finish the "what did you change?" step.
+
+    The label changes with what the participant has already sent, so the same
+    button reads as "done" after a photo and as "nothing changed" before one.
+    """
+    t = texts.T(lang)
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=t.BTN_MODS_DONE if has_photos else t.BTN_MODS_NONE,
+        callback_data=CB_MODS_DONE,
+    )
     return builder.as_markup()
 
 

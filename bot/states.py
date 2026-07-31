@@ -9,4 +9,5 @@ class Registration(StatesGroup):
     plate = State()
     direction = State()
     photos = State()
+    mods = State()
     phone = State()

@@ -44,6 +44,7 @@ def generate_excel(apps: Iterable[Application]) -> bytes:
         "Telefon / Телефон",
         "Davlat raqami / Гос. номер",
         "Yo'nalish / Направление",
+        "O'zgarishlar / Изменения (foto)",
         "Mamlakat / Страна",
         "Til / Язык",
         "Topshirilgan vaqt / Подана",
@@ -86,6 +87,7 @@ def generate_excel(apps: Iterable[Application]) -> bytes:
             app.phone or "—",
             app.plate or "—",
             app.direction or "—",
+            len(getattr(app, "mod_paths", []) or []),
             app.country or "—",
             app.language.upper(),
             app.created_at,
@@ -99,7 +101,7 @@ def generate_excel(apps: Iterable[Application]) -> bytes:
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.font = body_font
             cell.border = thin_border
-            cell.alignment = align_left if c_idx not in (1, 2, 3, 6, 11) else align_center
+            cell.alignment = align_left if c_idx not in (1, 2, 3, 6, 10, 12) else align_center
 
             # Highlight status column
             if c_idx == 3 and app.status in status_fills:

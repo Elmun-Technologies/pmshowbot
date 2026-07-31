@@ -39,6 +39,7 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_post("/application/{id}/approve", _approve)
     app.router.add_post("/application/{id}/reject", _reject)
     app.router.add_get("/photo/{id}/{idx}", _photo)
+    app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
     app.router.add_get("/export.csv", _export_csv)
     app.router.add_get("/export.xlsx", _export_excel)
     return app
@@ -145,13 +146,23 @@ async def _reject(request: web.Request) -> web.Response:
 
 
 async def _photo(request: web.Request) -> web.StreamResponse:
+    return await _serve_photo(request, "photo_paths")
+
+
+async def _mod_photo(request: web.Request) -> web.StreamResponse:
+    """Serve one of the "what did you change?" close-ups."""
+    return await _serve_photo(request, "mod_paths")
+
+
+async def _serve_photo(request: web.Request, attr: str) -> web.StreamResponse:
     db: Database = request.app["db"]
     app_id = _int_or_404(request.match_info["id"])
     idx = _int_or_404(request.match_info["idx"])
     app = await db.get_application(app_id)
-    if app is None or idx < 0 or idx >= len(app.photo_paths):
+    paths = getattr(app, attr, []) if app is not None else []
+    if app is None or idx < 0 or idx >= len(paths):
         raise web.HTTPNotFound()
-    path = app.photo_paths[idx]
+    path = paths[idx]
     if not os.path.exists(path):
         raise web.HTTPNotFound(text="Фото не найдено на диске")
     return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
