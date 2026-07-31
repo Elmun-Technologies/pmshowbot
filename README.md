@@ -3,9 +3,10 @@
 Telegram bot for registering cars for the **Promotors Show Samarkand** event.
 
 **Flow:** `/start` (with a channel-subscription gate) → country → license plate →
-4 car photos (left / right / front / back) → direction → phone number → "Thank
-you". Each finished application is sent to a moderation chat with **Accept /
-Reject** buttons. On approval the applicant gets a sequential registration number
+direction → 4 car photos (left / right / front / back) → photos of what was
+changed on the car (hood, trunk, audio, … — optional, up to 6) → phone number →
+"Thank you". Each finished application is sent to a moderation chat with
+**Accept / Reject** buttons. On approval the applicant gets a sequential registration number
 and a confirmation message, and the full application — with photos embedded via
 Google Drive — is appended to a Google Sheet. On rejection they get a guest
 invitation. An **"Узнать свой номер"** button lets people re-check their status.
@@ -86,10 +87,12 @@ python tests/test_db.py   # sequential registration numbers, status transitions
 
 1. `/start` while **not** subscribed → prompted to subscribe; after subscribing,
    "Я подписался" starts the form.
-2. Complete the form (country → plate → 4 photos → direction → phone) → "Спасибо".
-3. Moderation chat receives the 4 photos + summary with Accept / Reject.
-4. **Accept** → applicant gets "№1 …"; a new row (with 4 inline photos) appears in
-   the Google Sheet. **Reject** → applicant gets the guest invitation.
+2. Complete the form (country → plate → direction → 4 photos → modification
+   photos → phone) → "Спасибо".
+3. Moderation chat receives the photos (4 sides, then the modification close-ups)
+   + a summary with Accept / Reject.
+4. **Accept** → applicant gets "№1 …"; a new row (with the photos inline) appears
+   in the Google Sheet. **Reject** → applicant gets the guest invitation.
 5. "Узнать свой номер" re-shows the applicant's status.
 
 ## Admin web panel
@@ -103,7 +106,8 @@ Features:
 - **Dashboard** — totals (pending / approved / rejected), last issued number,
   and breakdowns by direction and country.
 - **Applications** — list with photo thumbnails, filter by status, search by
-  plate / phone / user; a detail page shows all four photos.
+  plate / phone / user; a detail page shows all four sides plus the
+  modification close-ups.
 - **Approve / Reject** from the panel — runs the exact same logic as the Telegram
   buttons (assigns the number, messages the applicant, exports to Google if enabled).
 - **Export CSV** (`/export.csv`, opens cleanly in Excel).
@@ -111,6 +115,24 @@ Features:
 Locally it listens on `PORT` (default `8080`): open `http://localhost:8080`.
 The panel is exposed publicly on Fly, so use a strong password (it is the only
 gate). Traffic is HTTPS on Fly (`force_https`).
+
+## Ticket logos
+
+The generated ticket carries a strip of partner logos across its top. The four
+the strip is built around are:
+
+| Slot | Upload as | Logo |
+| --- | --- | --- |
+| 1 | `/logo 1_mcs_sherdor` | Мотоклуб MCS «Sherdor» (Самарканд) |
+| 2 | `/logo 2_retro_tashkent` | Авто-Ретро Клуб (Ташкент) |
+| 3 | `/logo 3_drift_show` | Uzbekistan Drift Show |
+| 4 | `/logo 4_sof_expo` | SOF EXPO Samarkand |
+
+Send each logo to the moderation chat **as a file** with that caption — uploads
+land on the Fly volume and appear on tickets immediately, no redeploy needed.
+`/assets` shows which of the four are still missing, `/diag` renders a test
+ticket. They can also be committed to `bot/assets/sponsors/` under the same
+names — see [`bot/assets/sponsors/README.md`](bot/assets/sponsors/README.md).
 
 ## Editing wording / dates
 

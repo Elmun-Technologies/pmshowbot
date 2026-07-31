@@ -12,7 +12,7 @@ from aiogram.utils.media_group import MediaGroupBuilder
 
 from .. import keyboards, texts
 from ..config import Config
-from ..constants import SIDES, direction_image_path
+from ..constants import MAX_MOD_PHOTOS, SIDES, direction_image_path
 from ..db import Database
 from ..services import subscription
 from ..states import Registration
@@ -137,7 +137,13 @@ async def country_other(message: Message, state: FSMContext) -> None:
 @router.message(Registration.plate, F.text)
 async def set_plate(message: Message, state: FSMContext) -> None:
     lang = await _lang(state)
-    await state.update_data(plate=message.text.strip(), photo_file_ids=[], photo_paths=[])
+    await state.update_data(
+        plate=message.text.strip(),
+        photo_file_ids=[],
+        photo_paths=[],
+        mod_file_ids=[],
+        mod_paths=[],
+    )
     await state.set_state(Registration.direction)
     await message.answer(
         texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
@@ -196,15 +202,81 @@ async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: C
     if len(file_ids) < len(SIDES):
         await message.answer(texts.T(lang).PHOTO_PROMPTS[len(file_ids)])
     else:
-        await state.set_state(Registration.phone)
-        await message.answer(
-            texts.T(lang).ASK_PHONE, reply_markup=keyboards.phone_keyboard(lang)
-        )
+        await _ask_mods(message, state, lang)
 
 
 @router.message(Registration.photos)
 async def photos_not_a_photo(message: Message, state: FSMContext) -> None:
     await message.answer(texts.T(await _lang(state)).PHOTO_NOT_A_PHOTO)
+
+
+# --- Modifications: close-ups of what was changed on the car ---
+async def _ask_mods(message: Message, state: FSMContext, lang: str) -> None:
+    await state.set_state(Registration.mods)
+    await message.answer(
+        texts.T(lang).ASK_MODS.format(max=MAX_MOD_PHOTOS),
+        reply_markup=keyboards.mods_keyboard(lang, has_photos=False),
+    )
+
+
+@router.message(Registration.mods, F.photo)
+async def collect_mod_photo(message: Message, state: FSMContext, bot: Bot, config: Config) -> None:
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    file_ids: list[str] = data.get("mod_file_ids", [])
+    paths: list[str] = data.get("mod_paths", [])
+    t = texts.T(lang)
+
+    user_dir = os.path.join(config.media_dir, str(message.from_user.id))
+    os.makedirs(user_dir, exist_ok=True)
+    path = os.path.join(user_dir, f"mod_{len(file_ids) + 1}.jpg")
+
+    photo = message.photo[-1]  # highest resolution
+    await bot.download(photo, destination=path)
+
+    file_ids.append(photo.file_id)
+    paths.append(path)
+    await state.update_data(mod_file_ids=file_ids, mod_paths=paths)
+
+    # The cap keeps the moderation album within Telegram's media-group limit.
+    if len(file_ids) >= MAX_MOD_PHOTOS:
+        await message.answer(t.MODS_LIMIT.format(max=MAX_MOD_PHOTOS))
+        await _ask_phone(message, state, lang)
+        return
+
+    await message.answer(
+        t.MODS_ADDED.format(n=len(file_ids), max=MAX_MOD_PHOTOS),
+        reply_markup=keyboards.mods_keyboard(lang, has_photos=True),
+    )
+
+
+@router.callback_query(Registration.mods, F.data == keyboards.CB_MODS_DONE)
+async def mods_done(query: CallbackQuery, state: FSMContext) -> None:
+    lang = await _lang(state)
+    await query.answer()
+    # Drop the button so an old message can't be pressed again mid-form.
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001 - a stale message must not block the form
+        logger.debug("Could not clear the mods keyboard", exc_info=True)
+    await _ask_phone(query.message, state, lang)
+
+
+@router.message(Registration.mods)
+async def mods_not_a_photo(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    await message.answer(
+        texts.T(lang).MODS_NOT_A_PHOTO,
+        reply_markup=keyboards.mods_keyboard(
+            lang, has_photos=bool(data.get("mod_file_ids"))
+        ),
+    )
+
+
+async def _ask_phone(message: Message, state: FSMContext, lang: str) -> None:
+    await state.set_state(Registration.phone)
+    await message.answer(texts.T(lang).ASK_PHONE, reply_markup=keyboards.phone_keyboard(lang))
 
 
 # --- Phone ---
@@ -244,6 +316,8 @@ async def _finalize(
         phone=phone,
         photo_file_ids=data.get("photo_file_ids", []),
         photo_paths=data.get("photo_paths", []),
+        mod_file_ids=data.get("mod_file_ids", []),
+        mod_paths=data.get("mod_paths", []),
         language=lang,
     )
     await state.clear()
@@ -259,6 +333,7 @@ async def _finalize(
         phone=phone,
         user_label=_user_label(message),
         photo_file_ids=data.get("photo_file_ids", []),
+        mod_file_ids=data.get("mod_file_ids", []),
     )
 
 
@@ -273,12 +348,19 @@ async def _send_moderation_card(
     phone: str,
     user_label: str,
     photo_file_ids: list[str],
+    mod_file_ids: list[str] | None = None,
 ) -> None:
-    """Send the 4 photos + a summary card with Accept/Reject to the admin chat."""
+    """Send the car photos + a summary card with Accept/Reject to the admin chat.
+
+    The modification close-ups go into the same album, right after the four
+    sides, so a moderator sees the whole car in one scroll.
+    """
+    mod_file_ids = mod_file_ids or []
     try:
-        if photo_file_ids:
+        all_file_ids = list(photo_file_ids) + list(mod_file_ids)
+        if all_file_ids:
             album = MediaGroupBuilder()
-            for file_id in photo_file_ids:
+            for file_id in all_file_ids:
                 album.add_photo(media=file_id)
             await bot.send_media_group(config.admin_chat_id, media=album.build())
 
@@ -287,6 +369,11 @@ async def _send_moderation_card(
             plate=plate,
             direction=direction,
             phone=phone,
+            mods=(
+                texts.MODERATION_MODS_COUNT.format(n=len(mod_file_ids))
+                if mod_file_ids
+                else texts.MODERATION_MODS_NONE
+            ),
             user=user_label,
         )
         await bot.send_message(

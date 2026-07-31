@@ -5,6 +5,10 @@ from .services import assets
 # Photo sides, in the order we ask for them (used for filenames + drive names).
 SIDES = ["left", "right", "front", "back"]
 
+# After the four sides we ask for close-ups of what the participant changed on
+# the car (hood, trunk, audio, …). The count is open — this is just the cap.
+MAX_MOD_PHOTOS = 6
+
 # ---------------------------------------------------------------------------
 # Participation directions — SINGLE SOURCE OF TRUTH.
 #

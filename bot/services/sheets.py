@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import gspread
 
+from ..constants import MAX_MOD_PHOTOS
 from .google_auth import get_credentials
 
 if TYPE_CHECKING:
@@ -31,7 +32,8 @@ HEADER = [
     "Фото (правая)",
     "Фото (передняя)",
     "Фото (задняя)",
-]
+    "Изменения (кол-во)",
+] + [f"Изменение {i}" for i in range(1, MAX_MOD_PHOTOS + 1)]
 
 
 def _open_worksheet(credentials_file: str, spreadsheet_id: str):
@@ -57,10 +59,12 @@ def _append_application(
     spreadsheet_id: str,
     app: "Application",
     photo_urls: list[str],
+    mod_urls: list[str],
 ) -> None:
     worksheet = _open_worksheet(credentials_file, spreadsheet_id)
-    # Pad/trim to exactly 4 photo cells.
+    # Pad/trim to exactly 4 side-photo cells and MAX_MOD_PHOTOS change cells.
     urls = (list(photo_urls) + ["", "", "", ""])[:4]
+    mods = (list(mod_urls) + [""] * MAX_MOD_PHOTOS)[:MAX_MOD_PHOTOS]
     row = [
         app.processed_at or app.created_at,
         app.reg_number if app.reg_number is not None else "",
@@ -70,6 +74,8 @@ def _append_application(
         app.phone,
         app.username,
         *[_image_cell(u) for u in urls],
+        len(getattr(app, "mod_paths", []) or []),
+        *[_image_cell(u) for u in mods],
     ]
     worksheet.append_row(row, value_input_option="USER_ENTERED")
 
@@ -78,6 +84,7 @@ async def append_application(
     config: "Config",
     app: "Application",
     photo_urls: list[str],
+    mod_urls: list[str] | None = None,
 ) -> None:
     """Append one approved application row. Raises on failure (caller logs)."""
     await asyncio.to_thread(
@@ -86,6 +93,7 @@ async def append_application(
         config.spreadsheet_id,
         app,
         photo_urls,
+        mod_urls or [],
     )
 
 

@@ -46,6 +46,7 @@ _ASSETS_HELP = (
     "Отправьте картинку <b>с подписью</b>:\n\n"
     "• <code>/logo 1_pride</code> — логотип спонсора (наверху билета).\n"
     "  Порядок задаётся цифрой в начале: 1_, 2_, 3_…\n"
+    "  Логотипы партнёров фестиваля:\n{partners}\n"
     "• <code>/banner drift</code> — баннер направления.\n"
     "  Доступные: {slugs}\n"
     "• <code>/brand adrenaline</code> — главный логотип наверху постера.\n"
@@ -126,9 +127,27 @@ async def cmd_assets(message: Message, config: Config) -> None:
             return "\n".join(f"  • {n} (из репозитория)" for n in bundled)
         return "  — пусто —"
 
+    _SOURCE_RU = {"runtime": "загружен", "bundled": "из репозитория", None: "❌ НЕ ЗАГРУЖЕН"}
+    partners = "\n".join(
+        f"  {'✅' if p['source'] else '❌'} <code>{p['name']}</code> — {p['title']} "
+        f"({_SOURCE_RU[p['source']]})"
+        for p in inv["partners"]
+    )
+    missing = [p for p in inv["partners"] if not p["source"]]
+
     lines = [
         "🖼 <b>Текущие ассеты</b>\n",
-        "<b>Логотипы спонсоров</b> (верх билета):",
+        "<b>Логотипы партнёров на билете</b> (полоса наверху):",
+        partners,
+    ]
+    if missing:
+        lines.append(
+            "\n➡️ Отправьте недостающие логотипы файлом с подписью, например:\n"
+            + "\n".join(f"<code>/logo {p['name']}</code>" for p in missing)
+        )
+    lines += [
+        "",
+        "<b>Все файлы логотипов</b>:",
         _fmt(inv["sponsors_runtime"], inv["sponsors_bundled"]),
         "",
         "<b>Баннеры направлений</b>:",
@@ -152,6 +171,10 @@ async def cmd_help_assets(message: Message, config: Config) -> None:
         _ASSETS_HELP.format(
             slugs=", ".join(_direction_slugs()),
             brands=", ".join(assets.BRAND_LOGOS),
+            partners="\n".join(
+                f"    <code>/logo {p['name']}</code> — {p['title']}"
+                for p in assets.PARTNER_LOGOS
+            ),
         )
     )
 

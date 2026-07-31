@@ -243,6 +243,19 @@ def application_detail_page(app: Application) -> str:
         )
     photos_html = f'<div class="photos">{photos}</div>' if photos else '<p class="muted">Нет фотографий</p>'
 
+    mods = ""
+    mod_paths = getattr(app, "mod_paths", []) or []
+    for i, _ in enumerate(mod_paths):
+        mods += (
+            f'<figure><img src="/modphoto/{app.id}/{i}" alt="Изменение {i + 1}">'
+            f'<figcaption>Изменение {i + 1}</figcaption></figure>'
+        )
+    mods_html = (
+        f'<div class="photos">{mods}</div>'
+        if mods
+        else '<p class="muted">Участник не отметил изменений</p>'
+    )
+
     number = f'№{app.reg_number}' if app.reg_number is not None else "—"
     kv = (
         '<div class="kv">'
@@ -251,6 +264,8 @@ def application_detail_page(app: Application) -> str:
         f'<div class="k">Страна</div><div>{escape(app.country)}</div>'
         f'<div class="k">Гос. номер</div><div><b>{escape(app.plate)}</b></div>'
         f'<div class="k">Направление</div><div>{escape(app.direction)}</div>'
+        f'<div class="k">Изменения в авто</div>'
+        f'<div>{len(getattr(app, "mod_paths", []) or []) or "—"}</div>'
         f'<div class="k">Телефон</div><div>{escape(app.phone)}</div>'
         f'<div class="k">Пользователь</div><div>{escape(app.username)}</div>'
         f'<div class="k">Язык</div><div>{escape(app.language)}</div>'
@@ -275,5 +290,6 @@ def application_detail_page(app: Application) -> str:
         '<p><a href="/applications">← Назад к заявкам</a></p>'
         f'<div class="section"><h2>Заявка #{app.id}</h2>{kv}{actions}</div>'
         f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
+        f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
     )
     return _page(f"Заявка #{app.id}", body, active="apps")

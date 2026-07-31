@@ -27,7 +27,7 @@ def test_cookie_signing():
     assert not auth.password_matches(PW, "nope")
 
 
-def _seed_db(path: str, photo_path: str) -> int:
+def _seed_db(path: str, photo_path: str, mod_path: str) -> int:
     db = Database(path)
     asyncio.run(db.init())
     return db, asyncio.run(
@@ -40,6 +40,8 @@ def _seed_db(path: str, photo_path: str) -> int:
             phone="+998901112233",
             photo_file_ids=["f0"],
             photo_paths=[photo_path],
+            mod_file_ids=["m0"],
+            mod_paths=[mod_path],
         )
     )
 
@@ -47,9 +49,11 @@ def _seed_db(path: str, photo_path: str) -> int:
 def test_routes():
     with tempfile.TemporaryDirectory() as tmp:
         photo = os.path.join(tmp, "left.jpg")
-        with open(photo, "wb") as fh:
-            fh.write(b"\xff\xd8\xff\xe0JFIFdummy")  # minimal jpeg-ish bytes
-        db, app_id = _seed_db(os.path.join(tmp, "t.db"), photo)
+        mod = os.path.join(tmp, "mod_1.jpg")
+        for path in (photo, mod):
+            with open(path, "wb") as fh:
+                fh.write(b"\xff\xd8\xff\xe0JFIFdummy")  # minimal jpeg-ish bytes
+        db, app_id = _seed_db(os.path.join(tmp, "t.db"), photo, mod)
         config = SimpleNamespace(admin_password=PW, panel_port=8080)
         admin_app = create_admin_app(bot=None, config=config, db=db)
 
@@ -83,7 +87,11 @@ def test_routes():
                 assert r.status == 200 and "01A777AA" in body
 
                 r = await client.get(f"/application/{app_id}", headers=hdr)
-                assert r.status == 200 and "Adrenaline Drift" in await r.text()
+                body = await r.text()
+                assert r.status == 200 and "Adrenaline Drift" in body
+                # The modification close-ups get their own section.
+                assert "Изменения в автомобиле" in body
+                assert f"/modphoto/{app_id}/0" in body
 
                 r = await client.get(f"/photo/{app_id}/0", headers=hdr)
                 assert r.status == 200 and (await r.read()).startswith(b"\xff\xd8")
@@ -91,8 +99,12 @@ def test_routes():
                 r = await client.get("/export.csv", headers=hdr)
                 assert r.status == 200 and "01A777AA" in await r.text()
 
+                r = await client.get(f"/modphoto/{app_id}/0", headers=hdr)
+                assert r.status == 200 and (await r.read()).startswith(b"\xff\xd8")
+
                 # Out-of-range photo index → 404
                 assert (await client.get(f"/photo/{app_id}/9", headers=hdr)).status == 404
+                assert (await client.get(f"/modphoto/{app_id}/9", headers=hdr)).status == 404
 
         asyncio.run(run())
 

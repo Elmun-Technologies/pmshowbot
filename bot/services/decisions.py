@@ -94,6 +94,7 @@ async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") 
 async def export_to_google(config: Config, app: Application) -> None:
     """Upload photos to Drive and append the row to Sheets. Best-effort."""
     photo_urls: list[str] = []
+    mod_urls: list[str] = []
     try:
         if config.drive_enabled and app.photo_paths:
             files = [
@@ -108,8 +109,21 @@ async def export_to_google(config: Config, app: Application) -> None:
         logger.exception("Drive upload failed for application %s", app.id)
 
     try:
+        mod_paths = getattr(app, "mod_paths", []) or []
+        if config.drive_enabled and mod_paths:
+            files = [
+                (path, f"{app.reg_number}_izmeneniya_{i + 1}.jpg")
+                for i, path in enumerate(mod_paths)
+            ]
+            mod_urls = await drive.upload_photos(
+                config.google_credentials_file, config.drive_folder_id, files
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Drive upload of modification photos failed for %s", app.id)
+
+    try:
         if config.sheets_enabled:
-            await sheets.append_application(config, app, photo_urls)
+            await sheets.append_application(config, app, photo_urls, mod_urls)
     except Exception:  # noqa: BLE001
         logger.exception("Sheets append failed for application %s", app.id)
 
