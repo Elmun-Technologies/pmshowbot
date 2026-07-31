@@ -241,7 +241,7 @@ def _logo_or_wordmark(content, draw, cx, top):
         _center(draw, cx, top + 88, "Samarkand", _font("serif_bold", 60), RED)
 
 
-def _load_sponsor_logos(max_n: int = 6) -> list:
+def _load_sponsor_logos(max_n: int = 10) -> list:
     """Load partner/sponsor logos in filename order.
 
     Sources, highest priority first: logos uploaded by an admin through the
@@ -344,23 +344,8 @@ def _is_dark_on_light(im: Image.Image, cutoff: int = 105) -> bool:
     return (lum / count) < cutoff
 
 
-def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
-    """Draw the partner logos as a solid header band across the top.
-
-    The band is painted black edge to edge so the logos always read the same,
-    whatever photo happens to be behind them — this mirrors the header strip on
-    the event's own promo artwork, and avoids the logos looking like stray
-    stamps floating over the car photo.
-
-    Logos scale down together so the row always fits. Returns the y just below
-    the band (or the input y when there are no logos).
-    """
-    if not logos:
-        return y
-
-    max_bar_w = max_bar_w or (W - 2 * MARGIN - 60)
-    gap, max_w = 40, 230
-
+def _fit_row(logos, max_bar_w, gap, max_w, start_h=88, min_h=30):
+    """Largest height at which this row of logos still fits the card width."""
     def _scale(target_h):
         out = []
         for im in logos:
@@ -371,36 +356,73 @@ def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
             out.append((max(1, w), max(1, h)))
         return out
 
-    target_h = 88
-    sizes = _scale(target_h)
-    while target_h > 30:
+    target_h = start_h
+    while target_h > min_h:
         sizes = _scale(target_h)
-        row_w = sum(w for w, _ in sizes) + gap * (len(sizes) - 1)
-        if row_w <= max_bar_w:
+        if sum(w for w, _ in sizes) + gap * (len(sizes) - 1) <= max_bar_w:
             break
         target_h -= 4
-    scaled = [im.resize(sz, Image.LANCZOS) for im, sz in zip(logos, sizes)]
+    return target_h, _scale(target_h)
 
-    row_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
-    row_h = max(s.height for s in scaled)
-    pad_y = 26
-    band_h = row_h + pad_y * 2
+
+# Below this a logo stops being readable on a phone screen, so the strip wraps
+# to a second row instead of shrinking everything further.
+_MIN_LOGO_H = 56
+
+
+def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
+    """Draw the partner logos as a solid header band across the top.
+
+    The band is painted black edge to edge so the logos always read the same,
+    whatever photo happens to be behind them — this mirrors the header strip on
+    the event's own promo artwork, and avoids the logos looking like stray
+    stamps floating over the car photo.
+
+    Logos in a row scale down together so the row always fits the card. With
+    enough partners a single row would shrink every mark to an illegible
+    sliver, so the strip wraps onto a second row instead. Returns the y just
+    below the band (or the input y when there are no logos).
+    """
+    if not logos:
+        return y
+
+    max_bar_w = max_bar_w or (W - 2 * MARGIN - 60)
+    gap, max_w, pad_y, row_gap = 40, 230, 26, 20
+
+    rows = [list(logos)]
+    height, _ = _fit_row(rows[0], max_bar_w, gap, max_w)
+    if height < _MIN_LOGO_H and len(logos) > 2:
+        # Split into two balanced rows, keeping the filename order left-to-right,
+        # top-to-bottom — so 1_… stays first and 4_… still gets shown.
+        half = (len(logos) + 1) // 2
+        rows = [list(logos[:half]), list(logos[half:])]
+
+    drawn = []
+    for row in rows:
+        _, sizes = _fit_row(row, max_bar_w, gap, max_w)
+        drawn.append([im.resize(sz, Image.LANCZOS) for im, sz in zip(row, sizes)])
+
+    row_heights = [max(s.height for s in row) for row in drawn]
+    band_h = sum(row_heights) + row_gap * (len(drawn) - 1) + pad_y * 2
 
     # Solid band, full card width, flush with the top edge.
     draw.rectangle([X0, y, X1, y + band_h], fill=(0, 0, 0))
 
     row_y = y + pad_y
-    x = cx - row_w // 2
-    for i, s in enumerate(scaled):
-        content.paste(s, (x, row_y + (row_h - s.height) // 2), s)
-        x += s.width
-        if i < len(scaled) - 1:
-            div_x = x + gap // 2
-            draw.line(
-                [(div_x, row_y + 6), (div_x, row_y + row_h - 6)],
-                fill=(78, 78, 88), width=2,
-            )
-            x += gap
+    for scaled, row_h in zip(drawn, row_heights):
+        row_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
+        x = cx - row_w // 2
+        for i, s in enumerate(scaled):
+            content.paste(s, (x, row_y + (row_h - s.height) // 2), s)
+            x += s.width
+            if i < len(scaled) - 1:
+                div_x = x + gap // 2
+                draw.line(
+                    [(div_x, row_y + 6), (div_x, row_y + row_h - 6)],
+                    fill=(78, 78, 88), width=2,
+                )
+                x += gap
+        row_y += row_h + row_gap
 
     return y + band_h
 

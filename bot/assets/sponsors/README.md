@@ -51,6 +51,8 @@ set entirely, so upload all four rather than mixing the two sources.
   coloured block, as it does on the banners.
 - Each logo is auto-cropped to its content and scaled to a consistent height;
   if the row would be too wide, every logo shrinks together until it fits.
-- Up to 6 logos are shown.
+- Up to 10 logos are shown, and none are dropped: when they can't share one row
+  at a readable size the strip wraps onto a second row (filename order runs
+  left-to-right, then top-to-bottom).
 - No logos at all → the strip is simply omitted; the event branding
   (`logo.png` + `adrenaline.png`) then sits at its normal position.
