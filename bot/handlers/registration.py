@@ -61,6 +61,11 @@ async def _start_form(message: Message, state: FSMContext, lang: str) -> None:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Config, db: Database) -> None:
+    await db.touch_user(
+        message.from_user.id,
+        username=_user_label(message),
+        language="ru",
+    )
     await state.clear()
 
     # If the user already has a pending/approved application, show status instead.
@@ -78,12 +83,13 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
 
 @router.callback_query(Registration.language, F.data.startswith(f"{keyboards.CB_LANG}:"))
 async def choose_language(
-    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config
+    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config, db: Database
 ) -> None:
     lang = query.data.split(":", 1)[1]
     if lang not in ("uz", "ru"):
         lang = "ru"
     await state.update_data(lang=lang)
+    await db.touch_user(query.from_user.id, language=lang)
     await query.answer()
     await _gate_or_start(query.message, state, bot, config, query.from_user.id, lang)
 

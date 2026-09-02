@@ -27,6 +27,7 @@ async def show_status(message: Message, app: Application) -> None:
 @router.message(F.text.in_(texts.MY_NUMBER_LABELS))
 @router.message(Command("mynumber"))
 async def my_number(message: Message, db: Database) -> None:
+    await db.touch_user(message.from_user.id)
     app = await db.get_latest_for_user(message.from_user.id)
     if app is None:
         await message.answer(texts.STATUS_NONE)

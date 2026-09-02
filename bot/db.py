@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS applications (
     mod_paths      TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
+
+CREATE TABLE IF NOT EXISTS bot_users (
+    user_id    INTEGER PRIMARY KEY,
+    username   TEXT NOT NULL DEFAULT '',
+    language   TEXT NOT NULL DEFAULT 'ru',
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL
+);
 """
 
 # Lightweight migrations: (column, "ALTER ... ADD COLUMN ...") applied if missing.
@@ -141,6 +149,19 @@ class Database:
                     "UPDATE applications SET direction = ? WHERE direction = ?",
                     (new, old),
                 )
+            # Anyone who already filed an application is a known bot user.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO bot_users (user_id, username, language, first_seen, last_seen)
+                SELECT user_id,
+                       MAX(username),
+                       MAX(language),
+                       MIN(created_at),
+                       MAX(created_at)
+                FROM applications
+                GROUP BY user_id
+                """
+            )
 
     def _create_application(
         self,
@@ -184,7 +205,15 @@ class Database:
                     json.dumps(mod_paths or [], ensure_ascii=False),
                 ),
             )
-            return int(cur.lastrowid)
+            app_id = int(cur.lastrowid)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO bot_users (user_id, username, language, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, username or "", language or "ru", _now(), _now()),
+            )
+            return app_id
 
     def _get_application(self, app_id: int) -> Optional[Application]:
         with self._connect() as conn:
@@ -323,6 +352,13 @@ class Database:
             max_number = conn.execute(
                 "SELECT COALESCE(MAX(reg_number), 0) FROM applications"
             ).fetchone()[0]
+            approved_users = conn.execute(
+                """
+                SELECT COUNT(DISTINCT user_id) AS n
+                FROM applications WHERE status = ?
+                """,
+                (STATUS_APPROVED,),
+            ).fetchone()["n"]
         total = sum(by_status.values())
         return {
             "total": total,
@@ -334,6 +370,7 @@ class Database:
             "by_language": by_language,
             "by_date": by_date,
             "max_number": int(max_number),
+            "approved_users": int(approved_users),
         }
 
     # --- async wrappers ---
@@ -366,3 +403,86 @@ class Database:
 
     async def reject(self, app_id: int, moderator: str) -> bool:
         return await asyncio.to_thread(self._reject, app_id, moderator)
+
+    def _touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO bot_users (user_id, username, language, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (user_id, username or "", language or "ru", now, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE bot_users
+                    SET username = CASE WHEN ? != '' THEN ? ELSE username END,
+                        language = CASE WHEN ? != '' THEN ? ELSE language END,
+                        last_seen = ?
+                    WHERE user_id = ?
+                    """,
+                    (username or "", username or "", language or "", language or "", now, user_id),
+                )
+
+    def _recipients(self, audience: str) -> list[tuple[int, str]]:
+        """Unique (user_id, language) for a broadcast audience."""
+        with self._connect() as conn:
+            if audience == "starters":
+                rows = conn.execute(
+                    "SELECT user_id, language FROM bot_users"
+                ).fetchall()
+            elif audience == "incomplete":
+                rows = conn.execute(
+                    """
+                    SELECT u.user_id, u.language
+                    FROM bot_users u
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM applications a WHERE a.user_id = u.user_id
+                    )
+                    """
+                ).fetchall()
+            elif audience == "all_apps":
+                rows = conn.execute(
+                    """
+                    SELECT user_id, language FROM applications
+                    WHERE id IN (SELECT MAX(id) FROM applications GROUP BY user_id)
+                    """
+                ).fetchall()
+            else:
+                status = {
+                    "approved": STATUS_APPROVED,
+                    "pending": STATUS_PENDING,
+                    "rejected": STATUS_REJECTED,
+                }.get(audience, STATUS_APPROVED)
+                rows = conn.execute(
+                    """
+                    SELECT user_id, language FROM applications
+                    WHERE id IN (
+                        SELECT MAX(id) FROM applications
+                        WHERE status = ?
+                        GROUP BY user_id
+                    )
+                    """,
+                    (status,),
+                ).fetchall()
+            return [(int(r["user_id"]), r["language"] or "ru") for r in rows]
+
+    def _audience_counts(self) -> dict[str, int]:
+        return {key: len(self._recipients(key)) for key in (
+            "approved", "pending", "rejected", "all_apps", "incomplete", "starters"
+        )}
+
+    async def touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
+        await asyncio.to_thread(self._touch_user, user_id, username, language)
+
+    async def recipients(self, audience: str) -> list[tuple[int, str]]:
+        return await asyncio.to_thread(self._recipients, audience)
+
+    async def audience_counts(self) -> dict[str, int]:
+        return await asyncio.to_thread(self._audience_counts)
