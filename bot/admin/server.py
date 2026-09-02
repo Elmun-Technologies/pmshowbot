@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 _VALID_STATUSES = {STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED}
 _PUBLIC_PATHS = {"/login", "/health"}
+_AUDIENCES = {
+    "approved",
+    "pending",
+    "rejected",
+    "incomplete",
+    "all_apps",
+    "starters",
+}
+_AUDIENCE_LABELS = {
+    "approved": "Одобрено",
+    "pending": "На рассмотрении",
+    "rejected": "Отклонено",
+    "incomplete": "Не завершили регистрацию",
+    "all_apps": "Все заявки",
+    "starters": "Все, кого бот знает",
+}
 
 
 def create_admin_app(bot, config: Config, db: Database) -> web.Application:
@@ -212,9 +228,9 @@ async def _export_excel(request: web.Request) -> web.Response:
 
 async def _broadcast_get(request: web.Request) -> web.Response:
     db: Database = request.app["db"]
-    recipients = await db.approved_recipients()
+    counts = await db.audience_counts()
     return web.Response(
-        text=views.broadcast_page(len(recipients)), content_type="text/html"
+        text=views.broadcast_page(counts), content_type="text/html"
     )
 
 
@@ -224,16 +240,22 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     data = await request.post()
     text = str(data.get("text", "")).strip()
     confirm = str(data.get("confirm", "")) == "1"
-    recipients = await db.approved_recipients()
+    audience = str(data.get("audience", "approved"))
+    if audience not in _AUDIENCES:
+        audience = "approved"
+    counts = await db.audience_counts()
     if not text:
         return web.Response(
-            text=views.broadcast_page(len(recipients), error="Введите текст сообщения", last_text=text),
+            text=views.broadcast_page(
+                counts, audience=audience, error="Введите текст сообщения", last_text=text
+            ),
             content_type="text/html",
         )
     if not confirm:
         return web.Response(
             text=views.broadcast_page(
-                len(recipients),
+                counts,
+                audience=audience,
                 error="Подтвердите отправку галочкой",
                 last_text=text,
             ),
@@ -242,13 +264,15 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     if bot is None:
         return web.Response(
             text=views.broadcast_page(
-                len(recipients),
+                counts,
+                audience=audience,
                 error="Бот недоступен — рассылка невозможна",
                 last_text=text,
             ),
             content_type="text/html",
             status=503,
         )
+    recipients = await db.recipients(audience)
     ok = fail = 0
     for user_id, _lang in recipients:
         try:
@@ -258,11 +282,20 @@ async def _broadcast_post(request: web.Request) -> web.Response:
             fail += 1
             logger.warning("broadcast to %s failed: %s", user_id, exc)
         await asyncio.sleep(0.05)
-    logger.info("broadcast done: ok=%s fail=%s total=%s", ok, fail, len(recipients))
+    logger.info(
+        "broadcast audience=%s ok=%s fail=%s total=%s",
+        audience, ok, fail, len(recipients),
+    )
     return web.Response(
         text=views.broadcast_page(
-            len(recipients),
-            result={"ok": ok, "fail": fail, "total": len(recipients)},
+            counts,
+            audience=audience,
+            result={
+                "ok": ok,
+                "fail": fail,
+                "total": len(recipients),
+                "audience_label": _AUDIENCE_LABELS.get(audience, audience),
+            },
             last_text=text,
         ),
         content_type="text/html",

@@ -86,6 +86,7 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
             '<span class="brand">🚗 Promotors Show — Admin</span>'
             f'<nav>{link("/", "Дашборд", "home")} '
             f'{link("/applications", "Заявки", "apps")} '
+            f'{link("/broadcast", "📢 Рассылка", "broadcast")} '
             f'{link("/export.xlsx", "📊 Экспорт Excel (.xlsx)", "export")} '
             f'{link("/export.csv", "CSV", "export_csv")}</nav>'
             '<span class="spacer"></span>'
@@ -297,7 +298,8 @@ def application_detail_page(app: Application) -> str:
 
 
 def broadcast_page(
-    recipient_count: int,
+    counts: dict,
+    audience: str = "approved",
     result: Optional[dict] = None,
     error: str = "",
     last_text: str = "",
@@ -307,21 +309,41 @@ def broadcast_page(
         result_html = (
             '<div class="section" style="background:#ecfdf5;margin-top:0;margin-bottom:16px">'
             "<h2>Рассылка завершена</h2>"
-            f'<p>Отправлено: <b>{result.get("ok", 0)}</b> · '
+            f'<p>Аудитория: <b>{escape(str(result.get("audience_label", "")))}</b><br>'
+            f'Отправлено: <b>{result.get("ok", 0)}</b> · '
             f'ошибки / блок бота: <b>{result.get("fail", 0)}</b> · '
             f'всего адресатов: <b>{result.get("total", 0)}</b></p>'
             "</div>"
         )
     err_html = f'<div class="err">{escape(error)}</div>' if error else ""
+
+    options = [
+        ("approved", "Одобрено — успешная регистрация", counts.get("approved", 0)),
+        ("pending", "На рассмотрении — заявка ещё не решена", counts.get("pending", 0)),
+        ("rejected", "Отклонено — регистрация не принята", counts.get("rejected", 0)),
+        ("incomplete", "Не завершили регистрацию (открыли бота, заявки нет)", counts.get("incomplete", 0)),
+        ("all_apps", "Все, кто подал заявку", counts.get("all_apps", 0)),
+        ("starters", "Все, кого бот уже знает", counts.get("starters", 0)),
+    ]
+    radios = ""
+    for key, label, n in options:
+        checked = " checked" if audience == key else ""
+        radios += (
+            f'<label style="display:flex;gap:10px;align-items:flex-start;margin:8px 0;'
+            f'padding:10px 12px;border:1px solid #eee;border-radius:10px;cursor:pointer">'
+            f'<input type="radio" name="audience" value="{key}"{checked} style="margin-top:4px"> '
+            f'<span><b>{escape(label)}</b>'
+            f'<span class="muted"> — {n} чел.</span></span></label>'
+        )
     body = (
         result_html
         + err_html
         + '<div class="section">'
-        "<h2>Сообщение одобренным участникам</h2>"
-        f'<p class="muted">Получатели — уникальные пользователи со статусом '
-        f'«Одобрено» (сейчас <b>{recipient_count}</b>). Сообщение уйдёт в Telegram '
-        "тем же ботом, которым они регистрировались.</p>"
+        "<h2>Рассылка в Telegram</h2>"
+        '<p class="muted">Выберите аудиторию и напишите текст. Сообщение уйдёт тем же ботом, '
+        "которым они писали. Один пользователь — одно сообщение.</p>"
         '<form method="post" action="/broadcast">'
+        f'<div style="margin:12px 0">{radios}</div>'
         '<div style="margin:12px 0">'
         '<textarea name="text" required maxlength="3500" rows="10" '
         'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
@@ -331,9 +353,14 @@ def broadcast_page(
         "</div>"
         '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
         '<input type="checkbox" name="confirm" value="1" required> '
-        f"Да, отправить {recipient_count} участникам"
+        "Да, отправить выбранной аудитории"
         "</label>"
         '<button class="btn btn-primary" type="submit">📢 Отправить</button>'
-        "</form></div>"
+        "</form>"
+        '<p class="muted" style="margin-top:16px;font-size:13px">'
+        "«Не завершили регистрацию» — те, кто нажал /start после обновления бота, "
+        "но заявку так и не отправил. Старых брошенных анкет в базе нет."
+        "</p>"
+        "</div>"
     )
     return _page("Рассылка", body, active="broadcast")

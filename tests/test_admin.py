@@ -105,6 +105,8 @@ def test_routes():
                 r = await client.get("/broadcast", headers=hdr)
                 body = await r.text()
                 assert r.status == 200 and "Рассылка" in body
+                assert 'name="audience"' in body
+                assert "Одобрено" in body
 
                 # Out-of-range photo index → 404
                 assert (await client.get(f"/photo/{app_id}/9", headers=hdr)).status == 404

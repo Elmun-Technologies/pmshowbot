@@ -180,10 +180,36 @@ def test_renamed_direction_is_migrated():
         assert asyncio.run(db.stats())["by_direction"].get("Adrenaline Drift") == 1
 
 
+def test_broadcast_audiences():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "t.db"))
+        asyncio.run(db.init())
+        a1 = _make_app(db, 1)
+        a2 = _make_app(db, 2)
+        a3 = _make_app(db, 3)
+        asyncio.run(db.approve(a1, "@mod"))
+        asyncio.run(db.reject(a2, "@mod"))
+        asyncio.run(db.touch_user(99, username="@ghost", language="uz"))
+
+        approved = asyncio.run(db.recipients("approved"))
+        pending = asyncio.run(db.recipients("pending"))
+        rejected = asyncio.run(db.recipients("rejected"))
+        incomplete = asyncio.run(db.recipients("incomplete"))
+        starters = asyncio.run(db.recipients("starters"))
+        assert {u for u, _ in approved} == {1}
+        assert {u for u, _ in pending} == {3}
+        assert {u for u, _ in rejected} == {2}
+        assert {u for u, _ in incomplete} == {99}
+        assert {u for u, _ in starters} == {1, 2, 3, 99}
+        counts = asyncio.run(db.audience_counts())
+        assert counts["approved"] == 1 and counts["incomplete"] == 1
+
+
 if __name__ == "__main__":
     test_sequential_numbers_and_rejection_gaps()
     test_active_application_lookup()
     test_language_roundtrip_and_migration()
     test_modification_photos_roundtrip_and_migration()
     test_renamed_direction_is_migrated()
+    test_broadcast_audiences()
     print("All tests passed.")
