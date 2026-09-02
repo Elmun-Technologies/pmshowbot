@@ -113,7 +113,8 @@ def test_routes():
                 # Language/direction filters, photo upload and the live preview.
                 assert 'name="langs"' in body
                 assert 'name="directions"' in body
-                assert 'id="bcast-photo"' in body
+                assert 'id="bcast-photo-uz"' in body
+                assert 'id="bcast-photo-ru"' in body
                 assert "Предпросмотр поста" in body
 
                 # Out-of-range photo index → 404
@@ -288,7 +289,7 @@ def test_broadcast_with_photo():
                 form.add_field("action", "send")
                 form.add_field("text_ru", "Привет с фото")
                 form.add_field(
-                    "photo", b"\xff\xd8\xff\xe0fakejpeg",
+                    "photo_ru", b"\xff\xd8\xff\xe0fakejpeg",
                     filename="badge.jpg", content_type="image/jpeg",
                 )
                 r = await client.post("/broadcast", data=form, headers=hdr)
@@ -296,11 +297,56 @@ def test_broadcast_with_photo():
                 body = await r.text()
                 assert "с фото" in body
 
-                # First recipient gets the raw upload, the rest reuse its file_id.
+                # Only photo_ru was uploaded, so the Uzbek recipient falls back
+                # to it too — same rule as the text fields. One raw upload,
+                # every other recipient (Uzbek included) reuses its file_id.
                 assert len(bot.sent_photos) == 3
                 assert bot.sent == []
                 file_ids = {fid for _, fid, _ in bot.sent_photos}
                 assert file_ids == {"uploaded-1"}
+
+        asyncio.run(run())
+
+
+def test_broadcast_with_distinct_photos_per_language():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = _broadcast_db(tmp)
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            import aiohttp
+
+            async with TestClient(TestServer(admin_app)) as client:
+                form = aiohttp.FormData()
+                form.add_field("audience", "approved")
+                form.add_field("confirm", "1")
+                form.add_field("action", "send")
+                form.add_field("text_uz", "Salom")
+                form.add_field("text_ru", "Привет")
+                form.add_field(
+                    "photo_uz", b"\xff\xd8\xff\xe0uzbanner",
+                    filename="uz.jpg", content_type="image/jpeg",
+                )
+                form.add_field(
+                    "photo_ru", b"\xff\xd8\xff\xe0rubanner",
+                    filename="ru.jpg", content_type="image/jpeg",
+                )
+                r = await client.post("/broadcast", data=form, headers=hdr)
+                assert r.status == 200
+
+                # user 1 is uz, users 2 and 3 are ru (see _broadcast_db) — each
+                # language gets its own upload, reused across its own recipients.
+                assert len(bot.sent_photos) == 3
+                by_chat = {chat_id: (fid, caption) for chat_id, fid, caption in bot.sent_photos}
+                assert by_chat[1][1] == "Salom"
+                assert by_chat[2][1] == by_chat[3][1] == "Привет"
+                uz_file_ids = {fid for chat_id, (fid, _) in by_chat.items() if chat_id == 1}
+                ru_file_ids = {fid for chat_id, (fid, _) in by_chat.items() if chat_id in (2, 3)}
+                assert uz_file_ids != ru_file_ids
+                assert len(ru_file_ids) == 1
 
         asyncio.run(run())
 
@@ -327,7 +373,7 @@ def test_broadcast_accepts_photo_over_one_megabyte():
                 form.add_field("action", "send")
                 form.add_field("text_ru", "Большое фото")
                 form.add_field(
-                    "photo", big_photo, filename="badge.jpg", content_type="image/jpeg"
+                    "photo_ru", big_photo, filename="badge.jpg", content_type="image/jpeg"
                 )
                 r = await client.post("/broadcast", data=form, headers=hdr)
                 assert r.status == 200
@@ -430,6 +476,7 @@ if __name__ == "__main__":
     test_broadcast_two_languages()
     test_broadcast_language_and_direction_filters()
     test_broadcast_with_photo()
+    test_broadcast_with_distinct_photos_per_language()
     test_broadcast_accepts_photo_over_one_megabyte()
     test_badge_photo_route()
     print("All admin tests passed.")

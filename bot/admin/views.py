@@ -425,12 +425,18 @@ def broadcast_page(
         + '<p class="muted" style="margin:0 0 12px;font-size:13px">'
         "Если заполнено только одно поле — этот текст уйдёт всем получателям."
         "</p>"
-        '<div style="margin:0 0 16px">'
-        '<label style="display:block;font-weight:600;margin-bottom:6px">📎 Фото к посту '
-        '<span class="muted" style="font-weight:400"> — необязательно, максимум 1024 символа '
-        "в тексте, если фото прикреплено</span></label>"
-        '<input type="file" name="photo" id="bcast-photo" accept="image/*">'
-        "</div>"
+        + _broadcast_photo_input(
+            "photo_uz", "bcast-photo-uz", "🇺🇿 Фото к посту — O‘zbekcha",
+            "необязательно — если не загружено, возьмётся фото из русской версии",
+        )
+        + _broadcast_photo_input(
+            "photo_ru", "bcast-photo-ru", "🇷🇺 Фото к посту — Русский",
+            "необязательно — если не загружено, возьмётся фото из узбекской версии",
+        )
+        + '<p class="muted" style="margin:0 0 16px;font-size:13px">'
+        "Максимум 1024 символа в тексте того языка, для которого прикреплено фото "
+        "(ограничение Telegram на подпись)."
+        "</p>"
         + _broadcast_preview_block(last_text_uz, last_text_ru)
         + '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
         '<input type="checkbox" name="confirm" value="1" required> '
@@ -453,25 +459,37 @@ def broadcast_page(
     return _page("Рассылка", body, active="broadcast")
 
 
+def _broadcast_photo_input(name: str, input_id: str, label: str, hint: str) -> str:
+    return (
+        '<div style="margin:0 0 12px">'
+        f'<label style="display:block;font-weight:600;margin-bottom:6px">📎 {escape(label)} '
+        f'<span class="muted" style="font-weight:400"> — {escape(hint)}</span></label>'
+        f'<input type="file" name="{name}" id="{input_id}" accept="image/*">'
+        "</div>"
+    )
+
+
 def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
     """A live, client-side preview of what each language's recipient will see.
 
-    Pure JS/no round trip: the photo is previewed straight from the file
-    picker (FileReader) and the text mirrors the textareas on every
-    keystroke, so this never re-uploads anything and never hits the
-    request-size limit that sending the form does.
+    Pure JS/no round trip: each language's photo is previewed straight from
+    its own file picker (FileReader) and mirrors the *other* language's photo
+    when its own is empty — matching the fallback the server applies when
+    actually sending — and the text mirrors the textareas on every keystroke.
+    Nothing here re-uploads anything or hits the request-size limit that
+    sending the form does.
     """
 
-    def card(lang_label: str, text_id: str, preview_id: str, initial: str) -> str:
+    def card(lang_label: str, preview_photo_id: str, preview_text_id: str, initial: str) -> str:
         empty_hint = '<span class="muted">Пусто</span>'
         content = escape(initial) if initial else empty_hint
         return (
             '<div style="flex:1;min-width:220px;border:1px solid #eee;border-radius:10px;'
             'padding:12px;background:#fafafa">'
             f'<div class="muted" style="font-size:12px;margin-bottom:6px">{lang_label}</div>'
-            '<img class="bcast-preview-photo" style="display:none;max-width:100%;'
+            f'<img id="{preview_photo_id}" style="display:none;max-width:100%;'
             'border-radius:8px;margin-bottom:8px">'
-            f'<div id="{preview_id}" style="white-space:pre-wrap;font-size:14px">'
+            f'<div id="{preview_text_id}" style="white-space:pre-wrap;font-size:14px">'
             f"{content}</div>"
             "</div>"
         )
@@ -480,22 +498,31 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
         '<div class="section" style="margin:0 0 16px;background:#fff">'
         '<h3 style="margin:0 0 12px;font-size:14px;color:#6b7280">👁 Предпросмотр поста</h3>'
         '<div style="display:flex;gap:16px;flex-wrap:wrap">'
-        + card("🇺🇿 O‘zbekcha", "text_uz", "preview-uz-text", last_text_uz)
-        + card("🇷🇺 Русский", "text_ru", "preview-ru-text", last_text_ru)
+        + card("🇺🇿 O‘zbekcha", "preview-uz-photo", "preview-uz-text", last_text_uz)
+        + card("🇷🇺 Русский", "preview-ru-photo", "preview-ru-text", last_text_ru)
         + "</div></div>"
         "<script>"
         "(function(){"
-        "var fileInput=document.getElementById('bcast-photo');"
-        "var photoImgs=document.querySelectorAll('.bcast-preview-photo');"
-        "if(fileInput){fileInput.addEventListener('change',function(){"
-        "var file=fileInput.files&&fileInput.files[0];"
-        "if(!file){photoImgs.forEach(function(img){img.style.display='none';img.src='';});return;}"
+        "var uzInput=document.getElementById('bcast-photo-uz');"
+        "var ruInput=document.getElementById('bcast-photo-ru');"
+        "var uzImg=document.getElementById('preview-uz-photo');"
+        "var ruImg=document.getElementById('preview-ru-photo');"
+        "function setPreview(img,file){"
+        "if(!img)return;"
+        "if(!file){img.style.display='none';img.src='';return;}"
         "var reader=new FileReader();"
-        "reader.onload=function(e){photoImgs.forEach(function(img){img.src=e.target.result;"
-        "img.style.display='block';});};"
+        "reader.onload=function(e){img.src=e.target.result;img.style.display='block';};"
         "reader.readAsDataURL(file);"
-        "});}"
-        "function bind(taId,boxId){"
+        "}"
+        "function refreshPhotos(){"
+        "var uzFile=uzInput&&uzInput.files&&uzInput.files[0];"
+        "var ruFile=ruInput&&ruInput.files&&ruInput.files[0];"
+        "setPreview(uzImg,uzFile||ruFile);"
+        "setPreview(ruImg,ruFile||uzFile);"
+        "}"
+        "if(uzInput)uzInput.addEventListener('change',refreshPhotos);"
+        "if(ruInput)ruInput.addEventListener('change',refreshPhotos);"
+        "function bindText(taId,boxId){"
         "var ta=document.getElementById(taId),box=document.getElementById(boxId);"
         "if(!ta||!box)return;"
         "ta.addEventListener('input',function(){"
@@ -503,8 +530,8 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
         "if(!ta.value){box.innerHTML='<span class=\"muted\">Пусто</span>';}"
         "});"
         "}"
-        "bind('text_uz','preview-uz-text');"
-        "bind('text_ru','preview-ru-text');"
+        "bindText('text_uz','preview-uz-text');"
+        "bindText('text_ru','preview-ru-text');"
         "})();"
         "</script>"
     )
