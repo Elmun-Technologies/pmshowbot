@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 router = Router(name="badge_photo")
 
 
+def _user_label(message: Message) -> str:
+    user = message.from_user
+    if user.username:
+        return f"@{user.username}"
+    return f"{user.full_name} (id {user.id})"
+
+
 @router.message(StateFilter(None), F.photo, F.chat.type == "private")
 async def receive_badge_photo(message: Message, bot: Bot, config: Config, db: Database) -> None:
     lang = await db.get_user_language(message.from_user.id)
@@ -39,3 +46,22 @@ async def receive_badge_photo(message: Message, bot: Bot, config: Config, db: Da
         await message.answer(t.BADGE_PHOTO_NO_APP)
         return
     await message.answer(t.BADGE_PHOTO_SAVED)
+
+    # Let the moderation chat know whose badge photo this is — but only once
+    # it's confirmed tied to a real application; this never touches the
+    # registration flow's own state or texts.
+    app = await db.get_application(app_id)
+    if app is not None:
+        try:
+            await bot.send_photo(
+                config.admin_chat_id,
+                photo=photo.file_id,
+                caption=texts.BADGE_PHOTO_ADMIN_NOTICE.format(
+                    app_id=app.id,
+                    plate=app.plate,
+                    direction=app.direction,
+                    user=_user_label(message),
+                ),
+            )
+        except Exception:  # noqa: BLE001 - a notify failure must not affect the sender
+            logger.exception("Could not notify admin chat about badge photo for app %s", app_id)

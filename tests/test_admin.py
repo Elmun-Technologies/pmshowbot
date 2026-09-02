@@ -110,6 +110,11 @@ def test_routes():
                 # Two language fields instead of a single "text" textarea.
                 assert 'name="text_uz"' in body
                 assert 'name="text_ru"' in body
+                # Language/direction filters, photo upload and the live preview.
+                assert 'name="langs"' in body
+                assert 'name="directions"' in body
+                assert 'id="bcast-photo"' in body
+                assert "Предпросмотр поста" in body
 
                 # Out-of-range photo index → 404
                 assert (await client.get(f"/photo/{app_id}/9", headers=hdr)).status == 404
@@ -300,6 +305,37 @@ def test_broadcast_with_photo():
         asyncio.run(run())
 
 
+def test_broadcast_accepts_photo_over_one_megabyte():
+    # Regression: aiohttp's default client_max_size is exactly 1 MiB, so a
+    # real phone photo (routinely 1-5 MB) used to blow up with "Maximum
+    # request body size exceeded" before create_admin_app raised the cap.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = _broadcast_db(tmp)
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            import aiohttp
+
+            async with TestClient(TestServer(admin_app)) as client:
+                big_photo = b"\xff\xd8\xff\xe0" + os.urandom(2 * 1024 * 1024)
+                form = aiohttp.FormData()
+                form.add_field("audience", "approved")
+                form.add_field("confirm", "1")
+                form.add_field("action", "send")
+                form.add_field("text_ru", "Большое фото")
+                form.add_field(
+                    "photo", big_photo, filename="badge.jpg", content_type="image/jpeg"
+                )
+                r = await client.post("/broadcast", data=form, headers=hdr)
+                assert r.status == 200
+                assert len(bot.sent_photos) == 3
+
+        asyncio.run(run())
+
+
 def test_badge_photo_route():
     with tempfile.TemporaryDirectory() as tmp:
         badge = os.path.join(tmp, "badge.jpg")
@@ -394,5 +430,6 @@ if __name__ == "__main__":
     test_broadcast_two_languages()
     test_broadcast_language_and_direction_filters()
     test_broadcast_with_photo()
+    test_broadcast_accepts_photo_over_one_megabyte()
     test_badge_photo_route()
     print("All admin tests passed.")

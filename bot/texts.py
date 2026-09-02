@@ -247,3 +247,13 @@ MODERATION_MODS_COUNT = "{n} фото (последние в альбоме)"
 MODERATION_APPROVED = "✅ Принято — №{number} ({moderator})"
 MODERATION_REJECTED = "❌ Отклонено ({moderator})"
 MODERATION_ALREADY = "Эта заявка уже обработана."
+
+# Sent to the moderation chat when a registered participant sends their badge
+# photo (outside the registration flow, so it never touches its texts/state).
+BADGE_PHOTO_ADMIN_NOTICE = (
+    "🖼 <b>Фото на бейдж</b>\n\n"
+    "Заявка: #{app_id}\n"
+    "Гос. номер: {plate}\n"
+    "Направление: {direction}\n"
+    "Пользователь: {user}"
+)
