@@ -297,12 +297,28 @@ def application_detail_page(app: Application) -> str:
     return _page(f"Заявка #{app.id}", body, active="apps")
 
 
+def _broadcast_textarea(
+    name: str, label: str, hint: str, placeholder: str, value: str
+) -> str:
+    return (
+        '<div style="margin:12px 0">'
+        f'<label style="display:block;font-weight:600;margin-bottom:6px">{label}'
+        f'<span class="muted" style="font-weight:400"> — {escape(hint)}</span></label>'
+        f'<textarea name="{name}" maxlength="3500" rows="8" '
+        'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
+        'font-size:15px;font-family:inherit" '
+        f'placeholder="{escape(placeholder)}">{escape(value)}</textarea>'
+        "</div>"
+    )
+
+
 def broadcast_page(
     counts: dict,
     audience: str = "approved",
     result: Optional[dict] = None,
     error: str = "",
-    last_text: str = "",
+    last_text_uz: str = "",
+    last_text_ru: str = "",
 ) -> str:
     result_html = ""
     if result:
@@ -312,7 +328,9 @@ def broadcast_page(
             f'<p>Аудитория: <b>{escape(str(result.get("audience_label", "")))}</b><br>'
             f'Отправлено: <b>{result.get("ok", 0)}</b> · '
             f'ошибки / блок бота: <b>{result.get("fail", 0)}</b> · '
-            f'всего адресатов: <b>{result.get("total", 0)}</b></p>'
+            f'всего адресатов: <b>{result.get("total", 0)}</b><br>'
+            f'🇺🇿 на узбекском: <b>{result.get("ok_uz", 0)}</b> · '
+            f'🇷🇺 на русском: <b>{result.get("ok_ru", 0)}</b></p>'
             "</div>"
         )
     err_html = f'<div class="err">{escape(error)}</div>' if error else ""
@@ -344,13 +362,23 @@ def broadcast_page(
         "которым они писали. Один пользователь — одно сообщение.</p>"
         '<form method="post" action="/broadcast">'
         f'<div style="margin:12px 0">{radios}</div>'
-        '<div style="margin:12px 0">'
-        '<textarea name="text" required maxlength="3500" rows="10" '
-        'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
-        'font-size:15px;font-family:inherit" '
-        'placeholder="Текст сообщения…">'
-        f"{escape(last_text)}</textarea>"
-        "</div>"
+        + _broadcast_textarea(
+            "text_uz",
+            "🇺🇿 O‘zbekcha",
+            "Тем, кто выбрал узбекский язык",
+            "Xabar matni…",
+            last_text_uz,
+        )
+        + _broadcast_textarea(
+            "text_ru",
+            "🇷🇺 Русский",
+            "Всем остальным получателям",
+            "Текст сообщения…",
+            last_text_ru,
+        )
+        + '<p class="muted" style="margin:0 0 12px;font-size:13px">'
+        "Если заполнено только одно поле — этот текст уйдёт всем получателям."
+        "</p>"
         '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
         '<input type="checkbox" name="confirm" value="1" required> '
         "Да, отправить выбранной аудитории"

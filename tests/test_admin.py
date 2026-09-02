@@ -107,6 +107,9 @@ def test_routes():
                 assert r.status == 200 and "Рассылка" in body
                 assert 'name="audience"' in body
                 assert "Одобрено" in body
+                # Two language fields instead of a single "text" textarea.
+                assert 'name="text_uz"' in body
+                assert 'name="text_ru"' in body
 
                 # Out-of-range photo index → 404
                 assert (await client.get(f"/photo/{app_id}/9", headers=hdr)).status == 404
@@ -115,7 +118,94 @@ def test_routes():
         asyncio.run(run())
 
 
+class _FakeBot:
+    """Records outgoing broadcast messages instead of calling Telegram."""
+
+    def __init__(self):
+        self.sent: list[tuple[int, str]] = []
+
+    async def send_message(self, chat_id: int, text: str):
+        self.sent.append((chat_id, text))
+
+
+def _broadcast_db(tmp: str):
+    db = Database(os.path.join(tmp, "b.db"))
+    asyncio.run(db.init())
+    for user_id, lang in ((1, "uz"), (2, "ru"), (3, "")):
+        app_id = asyncio.run(
+            db.create_application(
+                user_id=user_id,
+                username=f"@u{user_id}",
+                country="Узбекистан",
+                plate=f"01A00{user_id}AA",
+                direction="Adrenaline Drift",
+                phone="+998901112233",
+                photo_file_ids=["f0"],
+                photo_paths=["/nope.jpg"],
+                language=lang,
+            )
+        )
+        asyncio.run(db.approve(app_id, "@mod"))
+    return db
+
+
+def _post_broadcast(client, hdr, **fields):
+    data = {"audience": "approved", "confirm": "1"}
+    data.update(fields)
+    return client.post("/broadcast", data=data, headers=hdr)
+
+
+def test_broadcast_two_languages():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = _broadcast_db(tmp)
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                # Both languages filled → routed by the recipient's language.
+                r = await _post_broadcast(
+                    client, hdr, text_uz="Salom", text_ru="Привет"
+                )
+                body = await r.text()
+                assert r.status == 200
+                assert dict(bot.sent) == {1: "Salom", 2: "Привет", 3: "Привет"}
+                assert "на узбекском: <b>1</b>" in body
+                assert "на русском: <b>2</b>" in body
+
+                # Only one language filled → everyone gets that text.
+                bot.sent.clear()
+                await _post_broadcast(client, hdr, text_uz="Faqat uz", text_ru="")
+                assert {t for _, t in bot.sent} == {"Faqat uz"}
+                assert len(bot.sent) == 3
+
+                bot.sent.clear()
+                await _post_broadcast(client, hdr, text_uz="", text_ru="Только ру")
+                assert {t for _, t in bot.sent} == {"Только ру"}
+
+                # Both empty → error, nothing sent.
+                bot.sent.clear()
+                r = await _post_broadcast(client, hdr, text_uz="  ", text_ru="")
+                assert r.status == 200
+                assert "хотя бы на одном языке" in await r.text()
+                assert bot.sent == []
+
+                # No confirmation checkbox → nothing sent.
+                r = await client.post(
+                    "/broadcast",
+                    data={"audience": "approved", "text_ru": "Привет"},
+                    headers=hdr,
+                )
+                assert "Подтвердите" in await r.text()
+                assert bot.sent == []
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_cookie_signing()
     test_routes()
+    test_broadcast_two_languages()
     print("All admin tests passed.")

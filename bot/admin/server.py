@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 import os
+from typing import Optional
 
 from aiohttp import web
 
@@ -238,65 +239,74 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     db: Database = request.app["db"]
     bot = request.app["bot"]
     data = await request.post()
-    text = str(data.get("text", "")).strip()
+    text_uz = str(data.get("text_uz", "")).strip()
+    text_ru = str(data.get("text_ru", "")).strip()
     confirm = str(data.get("confirm", "")) == "1"
     audience = str(data.get("audience", "approved"))
     if audience not in _AUDIENCES:
         audience = "approved"
     counts = await db.audience_counts()
-    if not text:
+
+    def page(error: str = "", result: Optional[dict] = None) -> str:
+        return views.broadcast_page(
+            counts,
+            audience=audience,
+            error=error,
+            result=result,
+            last_text_uz=text_uz,
+            last_text_ru=text_ru,
+        )
+
+    if not text_uz and not text_ru:
         return web.Response(
-            text=views.broadcast_page(
-                counts, audience=audience, error="Введите текст сообщения", last_text=text
-            ),
+            text=page(error="Введите текст хотя бы на одном языке"),
             content_type="text/html",
         )
     if not confirm:
         return web.Response(
-            text=views.broadcast_page(
-                counts,
-                audience=audience,
-                error="Подтвердите отправку галочкой",
-                last_text=text,
-            ),
+            text=page(error="Подтвердите отправку галочкой"),
             content_type="text/html",
         )
     if bot is None:
         return web.Response(
-            text=views.broadcast_page(
-                counts,
-                audience=audience,
-                error="Бот недоступен — рассылка невозможна",
-                last_text=text,
-            ),
+            text=page(error="Бот недоступен — рассылка невозможна"),
             content_type="text/html",
             status=503,
         )
+    # Only one language filled in → everyone gets that text.
+    body_uz = text_uz or text_ru
+    body_ru = text_ru or text_uz
+
     recipients = await db.recipients(audience)
-    ok = fail = 0
-    for user_id, _lang in recipients:
+    ok = fail = ok_uz = ok_ru = 0
+    for user_id, lang in recipients:
+        is_uz = str(lang or "").strip().lower().startswith("uz")
+        text = body_uz if is_uz else body_ru
         try:
             await bot.send_message(chat_id=user_id, text=text)
             ok += 1
+            if is_uz:
+                ok_uz += 1
+            else:
+                ok_ru += 1
         except Exception as exc:  # noqa: BLE001 — Telegram blocks, deleted chats, etc.
             fail += 1
             logger.warning("broadcast to %s failed: %s", user_id, exc)
         await asyncio.sleep(0.05)
     logger.info(
-        "broadcast audience=%s ok=%s fail=%s total=%s",
-        audience, ok, fail, len(recipients),
+        "broadcast audience=%s ok=%s (uz=%s ru=%s) fail=%s total=%s",
+        audience, ok, ok_uz, ok_ru, fail, len(recipients),
     )
     return web.Response(
-        text=views.broadcast_page(
-            counts,
-            audience=audience,
+        text=page(
             result={
                 "ok": ok,
                 "fail": fail,
+                "ok_uz": ok_uz,
+                "ok_ru": ok_ru,
                 "total": len(recipients),
                 "audience_label": _AUDIENCE_LABELS.get(audience, audience),
             },
-            last_text=text,
         ),
         content_type="text/html",
     )
