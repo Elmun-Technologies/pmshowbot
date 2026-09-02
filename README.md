@@ -110,6 +110,9 @@ Features:
   modification close-ups.
 - **Approve / Reject** from the panel — runs the exact same logic as the Telegram
   buttons (assigns the number, messages the applicant, exports to Google if enabled).
+- **Broadcast** (`/broadcast`) — send a Telegram message to every unique user
+  whose application is **approved**. Confirm checkbox required; the panel shows
+  sent / failed counts after the run.
 - **Export CSV** (`/export.csv`, opens cleanly in Excel).
 
 Locally it listens on `PORT` (default `8080`): open `http://localhost:8080`.

@@ -5,6 +5,7 @@ Database instance and the Bot instance (to notify applicants on decisions).
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -42,6 +43,8 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
     app.router.add_get("/export.csv", _export_csv)
     app.router.add_get("/export.xlsx", _export_excel)
+    app.router.add_get("/broadcast", _broadcast_get)
+    app.router.add_post("/broadcast", _broadcast_post)
     return app
 
 
@@ -204,6 +207,65 @@ async def _export_excel(request: web.Request) -> web.Response:
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "Content-Disposition": 'attachment; filename="promotors_applications.xlsx"',
         },
+    )
+
+
+async def _broadcast_get(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    recipients = await db.approved_recipients()
+    return web.Response(
+        text=views.broadcast_page(len(recipients)), content_type="text/html"
+    )
+
+
+async def _broadcast_post(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    bot = request.app["bot"]
+    data = await request.post()
+    text = str(data.get("text", "")).strip()
+    confirm = str(data.get("confirm", "")) == "1"
+    recipients = await db.approved_recipients()
+    if not text:
+        return web.Response(
+            text=views.broadcast_page(len(recipients), error="Введите текст сообщения", last_text=text),
+            content_type="text/html",
+        )
+    if not confirm:
+        return web.Response(
+            text=views.broadcast_page(
+                len(recipients),
+                error="Подтвердите отправку галочкой",
+                last_text=text,
+            ),
+            content_type="text/html",
+        )
+    if bot is None:
+        return web.Response(
+            text=views.broadcast_page(
+                len(recipients),
+                error="Бот недоступен — рассылка невозможна",
+                last_text=text,
+            ),
+            content_type="text/html",
+            status=503,
+        )
+    ok = fail = 0
+    for user_id, _lang in recipients:
+        try:
+            await bot.send_message(chat_id=user_id, text=text)
+            ok += 1
+        except Exception as exc:  # noqa: BLE001 — Telegram blocks, deleted chats, etc.
+            fail += 1
+            logger.warning("broadcast to %s failed: %s", user_id, exc)
+        await asyncio.sleep(0.05)
+    logger.info("broadcast done: ok=%s fail=%s total=%s", ok, fail, len(recipients))
+    return web.Response(
+        text=views.broadcast_page(
+            len(recipients),
+            result={"ok": ok, "fail": fail, "total": len(recipients)},
+            last_text=text,
+        ),
+        content_type="text/html",
     )
 
 

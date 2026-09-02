@@ -150,6 +150,7 @@ def dashboard_page(stats: dict) -> str:
         + _stat_card(stats["total"], "Всего заявок")
         + _stat_card(stats["pending"], "На рассмотрении")
         + _stat_card(stats["approved"], "Одобрено")
+        + _stat_card(stats.get("approved_users", stats["approved"]), "Одобр. участники")
         + _stat_card(stats["rejected"], "Отклонено")
         + _stat_card(f'№{stats["max_number"]}', "Последний номер")
         + '</div>'
@@ -293,3 +294,46 @@ def application_detail_page(app: Application) -> str:
         f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
     )
     return _page(f"Заявка #{app.id}", body, active="apps")
+
+
+def broadcast_page(
+    recipient_count: int,
+    result: Optional[dict] = None,
+    error: str = "",
+    last_text: str = "",
+) -> str:
+    result_html = ""
+    if result:
+        result_html = (
+            '<div class="section" style="background:#ecfdf5;margin-top:0;margin-bottom:16px">'
+            "<h2>Рассылка завершена</h2>"
+            f'<p>Отправлено: <b>{result.get("ok", 0)}</b> · '
+            f'ошибки / блок бота: <b>{result.get("fail", 0)}</b> · '
+            f'всего адресатов: <b>{result.get("total", 0)}</b></p>'
+            "</div>"
+        )
+    err_html = f'<div class="err">{escape(error)}</div>' if error else ""
+    body = (
+        result_html
+        + err_html
+        + '<div class="section">'
+        "<h2>Сообщение одобренным участникам</h2>"
+        f'<p class="muted">Получатели — уникальные пользователи со статусом '
+        f'«Одобрено» (сейчас <b>{recipient_count}</b>). Сообщение уйдёт в Telegram '
+        "тем же ботом, которым они регистрировались.</p>"
+        '<form method="post" action="/broadcast">'
+        '<div style="margin:12px 0">'
+        '<textarea name="text" required maxlength="3500" rows="10" '
+        'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
+        'font-size:15px;font-family:inherit" '
+        'placeholder="Текст сообщения…">'
+        f"{escape(last_text)}</textarea>"
+        "</div>"
+        '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
+        '<input type="checkbox" name="confirm" value="1" required> '
+        f"Да, отправить {recipient_count} участникам"
+        "</label>"
+        '<button class="btn btn-primary" type="submit">📢 Отправить</button>'
+        "</form></div>"
+    )
+    return _page("Рассылка", body, active="broadcast")

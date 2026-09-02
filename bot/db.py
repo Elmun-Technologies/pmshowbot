@@ -323,6 +323,13 @@ class Database:
             max_number = conn.execute(
                 "SELECT COALESCE(MAX(reg_number), 0) FROM applications"
             ).fetchone()[0]
+            approved_users = conn.execute(
+                """
+                SELECT COUNT(DISTINCT user_id) AS n
+                FROM applications WHERE status = ?
+                """,
+                (STATUS_APPROVED,),
+            ).fetchone()["n"]
         total = sum(by_status.values())
         return {
             "total": total,
@@ -334,6 +341,7 @@ class Database:
             "by_language": by_language,
             "by_date": by_date,
             "max_number": int(max_number),
+            "approved_users": int(approved_users),
         }
 
     # --- async wrappers ---
@@ -366,3 +374,22 @@ class Database:
 
     async def reject(self, app_id: int, moderator: str) -> bool:
         return await asyncio.to_thread(self._reject, app_id, moderator)
+
+    def _approved_recipients(self) -> list[tuple[int, str]]:
+        """Unique approved users: (user_id, language) — latest approved app wins."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, language FROM applications
+                WHERE id IN (
+                    SELECT MAX(id) FROM applications
+                    WHERE status = ?
+                    GROUP BY user_id
+                )
+                """,
+                (STATUS_APPROVED,),
+            ).fetchall()
+            return [(int(r["user_id"]), r["language"] or "ru") for r in rows]
+
+    async def approved_recipients(self) -> list[tuple[int, str]]:
+        return await asyncio.to_thread(self._approved_recipients)
