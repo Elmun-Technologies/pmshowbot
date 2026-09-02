@@ -93,6 +93,13 @@ _RU = dict(
     COUNTRY_OTHER="Другая",
     COUNTRIES=["Россия", "Узбекистан", "Таджикистан", "Казахстан", "Киргизия"],
     DIRECTIONS=DIRECTION_LABELS["ru"],
+    BADGE_PHOTO_SAVED=(
+        "Спасибо! Фото для бейджа получено ✅\n\n"
+        "Если захотите заменить его — просто пришлите новое фото."
+    ),
+    BADGE_PHOTO_NO_APP=(
+        "Фото получено, но у вас пока нет заявки — сначала зарегистрируйтесь: /start"
+    ),
 )
 
 # --- Uzbek ---
@@ -178,6 +185,13 @@ _UZ = dict(
     COUNTRY_OTHER="Boshqa",
     COUNTRIES=["Rossiya", "O‘zbekiston", "Tojikiston", "Qozog‘iston", "Qirg‘iziston"],
     DIRECTIONS=DIRECTION_LABELS["uz"],
+    BADGE_PHOTO_SAVED=(
+        "Rahmat! Beyjingiz uchun surat qabul qilindi ✅\n\n"
+        "Almashtirmoqchi bo‘lsangiz — shunchaki yangi surat yuboring."
+    ),
+    BADGE_PHOTO_NO_APP=(
+        "Surat qabul qilindi, lekin sizda hali ariza yo‘q — avval ro‘yxatdan o‘ting: /start"
+    ),
 )
 
 RU = SimpleNamespace(**_RU)

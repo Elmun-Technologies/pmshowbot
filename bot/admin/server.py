@@ -14,7 +14,10 @@ from typing import Optional
 
 from aiohttp import web
 
+from aiogram.types import BufferedInputFile
+
 from ..config import Config
+from ..constants import DIRECTIONS_CANON
 from ..db import Database, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
 from ..services import decisions
 from . import auth, views
@@ -58,6 +61,7 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_post("/application/{id}/reject", _reject)
     app.router.add_get("/photo/{id}/{idx}", _photo)
     app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
+    app.router.add_get("/badgephoto/{id}", _badge_photo)
     app.router.add_get("/export.csv", _export_csv)
     app.router.add_get("/export.xlsx", _export_excel)
     app.router.add_get("/broadcast", _broadcast_get)
@@ -174,6 +178,18 @@ async def _mod_photo(request: web.Request) -> web.StreamResponse:
     return await _serve_photo(request, "mod_paths")
 
 
+async def _badge_photo(request: web.Request) -> web.StreamResponse:
+    db: Database = request.app["db"]
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    path = getattr(app, "badge_photo_path", "") if app is not None else ""
+    if app is None or not path:
+        raise web.HTTPNotFound()
+    if not os.path.exists(path):
+        raise web.HTTPNotFound(text="Фото не найдено на диске")
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
+
+
 async def _serve_photo(request: web.Request, attr: str) -> web.StreamResponse:
     db: Database = request.app["db"]
     app_id = _int_or_404(request.match_info["id"])
@@ -242,12 +258,23 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     text_uz = str(data.get("text_uz", "")).strip()
     text_ru = str(data.get("text_ru", "")).strip()
     confirm = str(data.get("confirm", "")) == "1"
+    action = str(data.get("action", "send"))
     audience = str(data.get("audience", "approved"))
     if audience not in _AUDIENCES:
         audience = "approved"
+
+    # An empty selection means "don't filter by this" rather than "match nobody".
+    langs = [v for v in data.getall("langs", []) if v in ("uz", "ru")] or None
+    directions = [v for v in data.getall("directions", []) if v in DIRECTIONS_CANON] or None
+
+    photo_field = data.get("photo")
+    has_photo = isinstance(photo_field, web.FileField) and bool(photo_field.filename)
+
     counts = await db.audience_counts()
 
-    def page(error: str = "", result: Optional[dict] = None) -> str:
+    def page(
+        error: str = "", result: Optional[dict] = None, preview: Optional[int] = None
+    ) -> str:
         return views.broadcast_page(
             counts,
             audience=audience,
@@ -255,7 +282,14 @@ async def _broadcast_post(request: web.Request) -> web.Response:
             result=result,
             last_text_uz=text_uz,
             last_text_ru=text_ru,
+            langs=langs,
+            directions=directions,
+            preview_count=preview,
         )
+
+    if action == "preview":
+        n = len(await db.recipients(audience, languages=langs, directions=directions))
+        return web.Response(text=page(preview=n), content_type="text/html")
 
     if not text_uz and not text_ru:
         return web.Response(
@@ -277,13 +311,40 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     body_uz = text_uz or text_ru
     body_ru = text_ru or text_uz
 
-    recipients = await db.recipients(audience)
+    if has_photo and (len(body_uz) > 1024 or len(body_ru) > 1024):
+        return web.Response(
+            text=page(
+                error="Текст слишком длинный для сообщения с фото — "
+                "у Telegram лимит подписи 1024 символа"
+            ),
+            content_type="text/html",
+        )
+
+    recipients = await db.recipients(audience, languages=langs, directions=directions)
+    if not recipients:
+        return web.Response(
+            text=page(error="По выбранным фильтрам получателей не найдено"),
+            content_type="text/html",
+        )
+
+    # The photo is uploaded to Telegram once (on the first send) and then
+    # reused by its file_id for every other recipient.
+    photo_ref = None
+    if has_photo:
+        photo_ref = BufferedInputFile(
+            photo_field.file.read(), filename=photo_field.filename or "broadcast.jpg"
+        )
+
     ok = fail = ok_uz = ok_ru = 0
     for user_id, lang in recipients:
         is_uz = str(lang or "").strip().lower().startswith("uz")
         text = body_uz if is_uz else body_ru
         try:
-            await bot.send_message(chat_id=user_id, text=text)
+            if photo_ref is not None:
+                sent = await bot.send_photo(chat_id=user_id, photo=photo_ref, caption=text)
+                photo_ref = sent.photo[-1].file_id
+            else:
+                await bot.send_message(chat_id=user_id, text=text)
             ok += 1
             if is_uz:
                 ok_uz += 1
@@ -294,8 +355,8 @@ async def _broadcast_post(request: web.Request) -> web.Response:
             logger.warning("broadcast to %s failed: %s", user_id, exc)
         await asyncio.sleep(0.05)
     logger.info(
-        "broadcast audience=%s ok=%s (uz=%s ru=%s) fail=%s total=%s",
-        audience, ok, ok_uz, ok_ru, fail, len(recipients),
+        "broadcast audience=%s langs=%s directions=%s ok=%s (uz=%s ru=%s) fail=%s total=%s",
+        audience, langs, directions, ok, ok_uz, ok_ru, fail, len(recipients),
     )
     return web.Response(
         text=page(
@@ -306,6 +367,7 @@ async def _broadcast_post(request: web.Request) -> web.Response:
                 "ok_ru": ok_ru,
                 "total": len(recipients),
                 "audience_label": _AUDIENCE_LABELS.get(audience, audience),
+                "with_photo": has_photo,
             },
         ),
         content_type="text/html",

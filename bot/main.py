@@ -15,7 +15,7 @@ from .admin.server import create_admin_app
 from .config import Config, load_config
 from .db import Database
 from .services import assets
-from .handlers import moderation, mynumber, registration
+from .handlers import badge_photo, moderation, mynumber, registration
 from .middlewares import SerializePerUserMiddleware
 
 logging.basicConfig(
@@ -51,6 +51,7 @@ async def main() -> None:
 
     dp.include_router(registration.router)
     dp.include_router(moderation.router)
+    dp.include_router(badge_photo.router)
     dp.include_router(mynumber.router)
 
     # Start the admin web panel (same process → shares the DB and bot).

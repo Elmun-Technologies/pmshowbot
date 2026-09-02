@@ -40,6 +40,10 @@ class Application:
     # Close-ups of what the participant changed on the car (hood, trunk, audio…).
     mod_file_ids: list[str] = field(default_factory=list)
     mod_paths: list[str] = field(default_factory=list)
+    # Photo submitted for the personal event badge (sent to the bot outside
+    # the registration flow, in reply to a broadcast asking for one).
+    badge_photo_file_id: str = ""
+    badge_photo_path: str = ""
 
 
 _SCHEMA = """
@@ -61,7 +65,9 @@ CREATE TABLE IF NOT EXISTS applications (
     language       TEXT NOT NULL DEFAULT 'ru',
     full_name      TEXT NOT NULL DEFAULT '',
     mod_file_ids   TEXT NOT NULL DEFAULT '[]',
-    mod_paths      TEXT NOT NULL DEFAULT '[]'
+    mod_paths      TEXT NOT NULL DEFAULT '[]',
+    badge_photo_file_id TEXT NOT NULL DEFAULT '',
+    badge_photo_path    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
 
@@ -80,6 +86,8 @@ _MIGRATIONS = [
     ("full_name", "ALTER TABLE applications ADD COLUMN full_name TEXT NOT NULL DEFAULT ''"),
     ("mod_file_ids", "ALTER TABLE applications ADD COLUMN mod_file_ids TEXT NOT NULL DEFAULT '[]'"),
     ("mod_paths", "ALTER TABLE applications ADD COLUMN mod_paths TEXT NOT NULL DEFAULT '[]'"),
+    ("badge_photo_file_id", "ALTER TABLE applications ADD COLUMN badge_photo_file_id TEXT NOT NULL DEFAULT ''"),
+    ("badge_photo_path", "ALTER TABLE applications ADD COLUMN badge_photo_path TEXT NOT NULL DEFAULT ''"),
 ]
 
 # Renamed directions: applications stored under the old name are moved to the
@@ -116,6 +124,8 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         full_name=row["full_name"] if "full_name" in keys else "",
         mod_file_ids=json.loads(row["mod_file_ids"]) if "mod_file_ids" in keys else [],
         mod_paths=json.loads(row["mod_paths"]) if "mod_paths" in keys else [],
+        badge_photo_file_id=row["badge_photo_file_id"] if "badge_photo_file_id" in keys else "",
+        badge_photo_path=row["badge_photo_path"] if "badge_photo_path" in keys else "",
     )
 
 
@@ -242,6 +252,32 @@ class Database:
                 (user_id, STATUS_PENDING, STATUS_APPROVED),
             ).fetchone()
             return _row_to_application(row) if row else None
+
+    def _set_badge_photo(self, user_id: int, file_id: str, path: str) -> Optional[int]:
+        """Attach a badge photo to the user's latest application.
+
+        Returns the application id, or None if the user has no application yet.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM applications WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            app_id = int(row["id"])
+            conn.execute(
+                "UPDATE applications SET badge_photo_file_id = ?, badge_photo_path = ? WHERE id = ?",
+                (file_id, path, app_id),
+            )
+            return app_id
+
+    def _get_user_language(self, user_id: int) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT language FROM bot_users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return (row["language"] if row else None) or "ru"
 
     def _approve(self, app_id: int, moderator: str) -> Optional[int]:
         """Atomically assign the next registration number and mark approved.
@@ -398,6 +434,12 @@ class Database:
     async def has_active_application(self, user_id: int) -> Optional[Application]:
         return await asyncio.to_thread(self._has_active_application, user_id)
 
+    async def set_badge_photo(self, user_id: int, file_id: str, path: str) -> Optional[int]:
+        return await asyncio.to_thread(self._set_badge_photo, user_id, file_id, path)
+
+    async def get_user_language(self, user_id: int) -> str:
+        return await asyncio.to_thread(self._get_user_language, user_id)
+
     async def approve(self, app_id: int, moderator: str) -> Optional[int]:
         return await asyncio.to_thread(self._approve, app_id, moderator)
 
@@ -430,47 +472,98 @@ class Database:
                     (username or "", username or "", language or "", language or "", now, user_id),
                 )
 
-    def _recipients(self, audience: str) -> list[tuple[int, str]]:
-        """Unique (user_id, language) for a broadcast audience."""
+    def _recipients(
+        self,
+        audience: str,
+        languages: Optional[list[str]] = None,
+        directions: Optional[list[str]] = None,
+    ) -> list[tuple[int, str]]:
+        """Unique (user_id, language) for a broadcast audience.
+
+        ``languages`` narrows recipients to those specific language codes
+        (e.g. ["uz"]) and ``directions`` to specific participation directions
+        (matched against the canonical names in constants.DIRECTIONS). Either
+        filter left as None/empty leaves that dimension unrestricted.
+        """
+        lang_filter = [l for l in (languages or []) if l]
+        dir_filter = [d for d in (directions or []) if d]
         with self._connect() as conn:
             if audience == "starters":
-                rows = conn.execute(
-                    "SELECT user_id, language FROM bot_users"
-                ).fetchall()
-            elif audience == "incomplete":
-                rows = conn.execute(
-                    """
-                    SELECT u.user_id, u.language
-                    FROM bot_users u
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM applications a WHERE a.user_id = u.user_id
+                query = "SELECT u.user_id, u.language FROM bot_users u"
+                conds: list[str] = []
+                params: list = []
+                if dir_filter:
+                    placeholders = ",".join("?" for _ in dir_filter)
+                    conds.append(
+                        "EXISTS (SELECT 1 FROM applications a "
+                        f"WHERE a.user_id = u.user_id AND a.direction IN ({placeholders}))"
                     )
+                    params.extend(dir_filter)
+                if lang_filter:
+                    placeholders = ",".join("?" for _ in lang_filter)
+                    conds.append(f"u.language IN ({placeholders})")
+                    params.extend(lang_filter)
+                if conds:
+                    query += " WHERE " + " AND ".join(conds)
+                rows = conn.execute(query, params).fetchall()
+            elif audience == "incomplete":
+                # Users with no application at all have no direction to match,
+                # so a direction filter excludes this whole audience.
+                if dir_filter:
+                    rows = []
+                else:
+                    query = """
+                        SELECT u.user_id, u.language
+                        FROM bot_users u
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM applications a WHERE a.user_id = u.user_id
+                        )
                     """
-                ).fetchall()
+                    params = []
+                    if lang_filter:
+                        placeholders = ",".join("?" for _ in lang_filter)
+                        query += f" AND u.language IN ({placeholders})"
+                        params.extend(lang_filter)
+                    rows = conn.execute(query, params).fetchall()
             elif audience == "all_apps":
-                rows = conn.execute(
-                    """
+                query = """
                     SELECT user_id, language FROM applications
                     WHERE id IN (SELECT MAX(id) FROM applications GROUP BY user_id)
-                    """
-                ).fetchall()
+                """
+                params = []
+                if lang_filter:
+                    placeholders = ",".join("?" for _ in lang_filter)
+                    query += f" AND language IN ({placeholders})"
+                    params.extend(lang_filter)
+                if dir_filter:
+                    placeholders = ",".join("?" for _ in dir_filter)
+                    query += f" AND direction IN ({placeholders})"
+                    params.extend(dir_filter)
+                rows = conn.execute(query, params).fetchall()
             else:
                 status = {
                     "approved": STATUS_APPROVED,
                     "pending": STATUS_PENDING,
                     "rejected": STATUS_REJECTED,
                 }.get(audience, STATUS_APPROVED)
-                rows = conn.execute(
-                    """
+                query = """
                     SELECT user_id, language FROM applications
                     WHERE id IN (
                         SELECT MAX(id) FROM applications
                         WHERE status = ?
                         GROUP BY user_id
                     )
-                    """,
-                    (status,),
-                ).fetchall()
+                """
+                params = [status]
+                if lang_filter:
+                    placeholders = ",".join("?" for _ in lang_filter)
+                    query += f" AND language IN ({placeholders})"
+                    params.extend(lang_filter)
+                if dir_filter:
+                    placeholders = ",".join("?" for _ in dir_filter)
+                    query += f" AND direction IN ({placeholders})"
+                    params.extend(dir_filter)
+                rows = conn.execute(query, params).fetchall()
             return [(int(r["user_id"]), r["language"] or "ru") for r in rows]
 
     def _audience_counts(self) -> dict[str, int]:
@@ -481,8 +574,13 @@ class Database:
     async def touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
         await asyncio.to_thread(self._touch_user, user_id, username, language)
 
-    async def recipients(self, audience: str) -> list[tuple[int, str]]:
-        return await asyncio.to_thread(self._recipients, audience)
+    async def recipients(
+        self,
+        audience: str,
+        languages: Optional[list[str]] = None,
+        directions: Optional[list[str]] = None,
+    ) -> list[tuple[int, str]]:
+        return await asyncio.to_thread(self._recipients, audience, languages, directions)
 
     async def audience_counts(self) -> dict[str, int]:
         return await asyncio.to_thread(self._audience_counts)

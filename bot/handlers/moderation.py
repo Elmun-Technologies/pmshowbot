@@ -198,16 +198,18 @@ async def cmd_delasset(message: Message, config: Config) -> None:
         await message.answer(f"Не найдено: <code>{parts[2]}</code>")
 
 
-@router.message(F.photo | F.document)
+def _is_brand_asset_caption(message: Message) -> bool:
+    caption = (message.caption or "").strip()
+    return caption.startswith(("/logo", "/banner", "/brand"))
+
+
+@router.message(F.photo | F.document, _is_brand_asset_caption)
 async def receive_brand_asset(message: Message, bot: Bot, config: Config) -> None:
     """Store an image sent with a /logo or /banner caption."""
     if not _is_admin(message, config):
         return
 
     caption = (message.caption or "").strip()
-    if not caption.startswith(("/logo", "/banner", "/brand")):
-        return
-
     parts = caption.split()
     command = parts[0].split("@")[0]  # tolerate /logo@BotName in groups
     name = parts[1] if len(parts) > 1 else ""

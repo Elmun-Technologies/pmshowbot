@@ -4,7 +4,7 @@ from __future__ import annotations
 from html import escape
 from typing import Iterable, Optional
 
-from ..constants import SIDES, SIDE_LABELS_RU
+from ..constants import DIRECTIONS_CANON, SIDES, SIDE_LABELS_RU
 from ..db import Application, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
 
 _STATUS_RU = {
@@ -258,6 +258,14 @@ def application_detail_page(app: Application) -> str:
         else '<p class="muted">Участник не отметил изменений</p>'
     )
 
+    badge_path = getattr(app, "badge_photo_path", "") or ""
+    badge_html = (
+        f'<div class="photos"><figure><img src="/badgephoto/{app.id}" alt="Фото на бейдж">'
+        '<figcaption>Фото на бейдж</figcaption></figure></div>'
+        if badge_path
+        else '<p class="muted">Участник ещё не прислал фото для бейджа</p>'
+    )
+
     number = f'№{app.reg_number}' if app.reg_number is not None else "—"
     kv = (
         '<div class="kv">'
@@ -293,6 +301,7 @@ def application_detail_page(app: Application) -> str:
         f'<div class="section"><h2>Заявка #{app.id}</h2>{kv}{actions}</div>'
         f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
         f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
+        f'<div class="section"><h2>Фото на бейдж</h2>{badge_html}</div>'
     )
     return _page(f"Заявка #{app.id}", body, active="apps")
 
@@ -319,18 +328,32 @@ def broadcast_page(
     error: str = "",
     last_text_uz: str = "",
     last_text_ru: str = "",
+    langs: Optional[list] = None,
+    directions: Optional[list] = None,
+    preview_count: Optional[int] = None,
 ) -> str:
+    # Nothing selected yet (first load) → don't pre-narrow the audience.
+    langs = list(langs) if langs is not None else ["uz", "ru"]
+    directions = list(directions) if directions is not None else list(DIRECTIONS_CANON)
+
     result_html = ""
     if result:
+        photo_note = " · с фото" if result.get("with_photo") else ""
         result_html = (
             '<div class="section" style="background:#ecfdf5;margin-top:0;margin-bottom:16px">'
             "<h2>Рассылка завершена</h2>"
-            f'<p>Аудитория: <b>{escape(str(result.get("audience_label", "")))}</b><br>'
+            f'<p>Аудитория: <b>{escape(str(result.get("audience_label", "")))}</b>{photo_note}<br>'
             f'Отправлено: <b>{result.get("ok", 0)}</b> · '
             f'ошибки / блок бота: <b>{result.get("fail", 0)}</b> · '
             f'всего адресатов: <b>{result.get("total", 0)}</b><br>'
             f'🇺🇿 на узбекском: <b>{result.get("ok_uz", 0)}</b> · '
             f'🇷🇺 на русском: <b>{result.get("ok_ru", 0)}</b></p>'
+            "</div>"
+        )
+    elif preview_count is not None:
+        result_html = (
+            '<div class="section" style="background:#eff6ff;margin-top:0;margin-bottom:16px">'
+            f'<p class="muted">По выбранным фильтрам получателей: <b>{preview_count}</b></p>'
             "</div>"
         )
     err_html = f'<div class="err">{escape(error)}</div>' if error else ""
@@ -353,6 +376,25 @@ def broadcast_page(
             f'<span><b>{escape(label)}</b>'
             f'<span class="muted"> — {n} чел.</span></span></label>'
         )
+
+    lang_options = [("uz", "🇺🇿 Только узбекский"), ("ru", "🇷🇺 Только русский")]
+    lang_checks = ""
+    for key, label in lang_options:
+        checked = " checked" if key in langs else ""
+        lang_checks += (
+            f'<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 16px 4px 0">'
+            f'<input type="checkbox" name="langs" value="{key}"{checked}> {escape(label)}</label>'
+        )
+
+    dir_checks = ""
+    for canonical in DIRECTIONS_CANON:
+        checked = " checked" if canonical in directions else ""
+        dir_checks += (
+            f'<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 16px 4px 0">'
+            f'<input type="checkbox" name="directions" value="{escape(canonical)}"{checked}> '
+            f'{escape(canonical)}</label>'
+        )
+
     body = (
         result_html
         + err_html
@@ -360,8 +402,12 @@ def broadcast_page(
         "<h2>Рассылка в Telegram</h2>"
         '<p class="muted">Выберите аудиторию и напишите текст. Сообщение уйдёт тем же ботом, '
         "которым они писали. Один пользователь — одно сообщение.</p>"
-        '<form method="post" action="/broadcast">'
+        '<form method="post" action="/broadcast" enctype="multipart/form-data">'
         f'<div style="margin:12px 0">{radios}</div>'
+        '<div style="margin:16px 0"><label style="display:block;font-weight:600;margin-bottom:6px">'
+        "Уточнить по языку</label>" + lang_checks + "</div>"
+        '<div style="margin:16px 0"><label style="display:block;font-weight:600;margin-bottom:6px">'
+        "Уточнить по направлению</label>" + dir_checks + "</div>"
         + _broadcast_textarea(
             "text_uz",
             "🇺🇿 O‘zbekcha",
@@ -379,15 +425,27 @@ def broadcast_page(
         + '<p class="muted" style="margin:0 0 12px;font-size:13px">'
         "Если заполнено только одно поле — этот текст уйдёт всем получателям."
         "</p>"
+        '<div style="margin:0 0 16px">'
+        '<label style="display:block;font-weight:600;margin-bottom:6px">📎 Фото к посту '
+        '<span class="muted" style="font-weight:400"> — необязательно, максимум 1024 символа '
+        "в тексте, если фото прикреплено</span></label>"
+        '<input type="file" name="photo" accept="image/*">'
+        "</div>"
         '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
         '<input type="checkbox" name="confirm" value="1" required> '
         "Да, отправить выбранной аудитории"
         "</label>"
-        '<button class="btn btn-primary" type="submit">📢 Отправить</button>'
+        '<div style="display:flex;gap:10px">'
+        '<button class="btn btn-ghost" type="submit" name="action" value="preview">'
+        "🔍 Показать количество</button>"
+        '<button class="btn btn-primary" type="submit" name="action" value="send">'
+        "📢 Отправить</button>"
+        "</div>"
         "</form>"
         '<p class="muted" style="margin-top:16px;font-size:13px">'
         "«Не завершили регистрацию» — те, кто нажал /start после обновления бота, "
-        "но заявку так и не отправил. Старых брошенных анкет в базе нет."
+        "но заявку так и не отправил. Старых брошенных анкет в базе нет.<br>"
+        "Если снять все языки или все направления — фильтр по этому признаку не применяется."
         "</p>"
         "</div>"
     )
