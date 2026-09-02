@@ -44,8 +44,13 @@ _AUDIENCE_LABELS = {
 }
 
 
+_MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # Telegram photos can run a few MB.
+
+
 def create_admin_app(bot, config: Config, db: Database) -> web.Application:
-    app = web.Application(middlewares=[_auth_middleware])
+    app = web.Application(
+        middlewares=[_auth_middleware], client_max_size=_MAX_UPLOAD_SIZE
+    )
     app["bot"] = bot
     app["config"] = config
     app["db"] = db

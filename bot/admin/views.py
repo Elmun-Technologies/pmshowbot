@@ -313,7 +313,7 @@ def _broadcast_textarea(
         '<div style="margin:12px 0">'
         f'<label style="display:block;font-weight:600;margin-bottom:6px">{label}'
         f'<span class="muted" style="font-weight:400"> — {escape(hint)}</span></label>'
-        f'<textarea name="{name}" maxlength="3500" rows="8" '
+        f'<textarea name="{name}" id="{name}" maxlength="3500" rows="8" '
         'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
         'font-size:15px;font-family:inherit" '
         f'placeholder="{escape(placeholder)}">{escape(value)}</textarea>'
@@ -429,9 +429,10 @@ def broadcast_page(
         '<label style="display:block;font-weight:600;margin-bottom:6px">📎 Фото к посту '
         '<span class="muted" style="font-weight:400"> — необязательно, максимум 1024 символа '
         "в тексте, если фото прикреплено</span></label>"
-        '<input type="file" name="photo" accept="image/*">'
+        '<input type="file" name="photo" id="bcast-photo" accept="image/*">'
         "</div>"
-        '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
+        + _broadcast_preview_block(last_text_uz, last_text_ru)
+        + '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
         '<input type="checkbox" name="confirm" value="1" required> '
         "Да, отправить выбранной аудитории"
         "</label>"
@@ -450,3 +451,60 @@ def broadcast_page(
         "</div>"
     )
     return _page("Рассылка", body, active="broadcast")
+
+
+def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
+    """A live, client-side preview of what each language's recipient will see.
+
+    Pure JS/no round trip: the photo is previewed straight from the file
+    picker (FileReader) and the text mirrors the textareas on every
+    keystroke, so this never re-uploads anything and never hits the
+    request-size limit that sending the form does.
+    """
+
+    def card(lang_label: str, text_id: str, preview_id: str, initial: str) -> str:
+        empty_hint = '<span class="muted">Пусто</span>'
+        content = escape(initial) if initial else empty_hint
+        return (
+            '<div style="flex:1;min-width:220px;border:1px solid #eee;border-radius:10px;'
+            'padding:12px;background:#fafafa">'
+            f'<div class="muted" style="font-size:12px;margin-bottom:6px">{lang_label}</div>'
+            '<img class="bcast-preview-photo" style="display:none;max-width:100%;'
+            'border-radius:8px;margin-bottom:8px">'
+            f'<div id="{preview_id}" style="white-space:pre-wrap;font-size:14px">'
+            f"{content}</div>"
+            "</div>"
+        )
+
+    return (
+        '<div class="section" style="margin:0 0 16px;background:#fff">'
+        '<h3 style="margin:0 0 12px;font-size:14px;color:#6b7280">👁 Предпросмотр поста</h3>'
+        '<div style="display:flex;gap:16px;flex-wrap:wrap">'
+        + card("🇺🇿 O‘zbekcha", "text_uz", "preview-uz-text", last_text_uz)
+        + card("🇷🇺 Русский", "text_ru", "preview-ru-text", last_text_ru)
+        + "</div></div>"
+        "<script>"
+        "(function(){"
+        "var fileInput=document.getElementById('bcast-photo');"
+        "var photoImgs=document.querySelectorAll('.bcast-preview-photo');"
+        "if(fileInput){fileInput.addEventListener('change',function(){"
+        "var file=fileInput.files&&fileInput.files[0];"
+        "if(!file){photoImgs.forEach(function(img){img.style.display='none';img.src='';});return;}"
+        "var reader=new FileReader();"
+        "reader.onload=function(e){photoImgs.forEach(function(img){img.src=e.target.result;"
+        "img.style.display='block';});};"
+        "reader.readAsDataURL(file);"
+        "});}"
+        "function bind(taId,boxId){"
+        "var ta=document.getElementById(taId),box=document.getElementById(boxId);"
+        "if(!ta||!box)return;"
+        "ta.addEventListener('input',function(){"
+        "box.textContent=ta.value||'';"
+        "if(!ta.value){box.innerHTML='<span class=\"muted\">Пусто</span>';}"
+        "});"
+        "}"
+        "bind('text_uz','preview-uz-text');"
+        "bind('text_ru','preview-ru-text');"
+        "})();"
+        "</script>"
+    )
