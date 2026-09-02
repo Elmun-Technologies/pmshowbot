@@ -118,14 +118,38 @@ def test_routes():
         asyncio.run(run())
 
 
+class _FakePhoto:
+    def __init__(self, file_id: str):
+        self.file_id = file_id
+
+
+class _FakeSentPhoto:
+    def __init__(self, file_id: str):
+        self.photo = [_FakePhoto(file_id)]
+
+
 class _FakeBot:
     """Records outgoing broadcast messages instead of calling Telegram."""
 
     def __init__(self):
         self.sent: list[tuple[int, str]] = []
+        self.sent_photos: list[tuple[int, str, str]] = []
+        self._next_file_id = 0
 
     async def send_message(self, chat_id: int, text: str):
         self.sent.append((chat_id, text))
+
+    async def send_photo(self, chat_id: int, photo, caption: str = ""):
+        # A real Bot re-uploads the first BufferedInputFile and returns a
+        # fresh file_id; every later call in the broadcast passes that
+        # file_id straight through, exactly like Telegram would accept it.
+        if isinstance(photo, str):
+            file_id = photo
+        else:
+            self._next_file_id += 1
+            file_id = f"uploaded-{self._next_file_id}"
+        self.sent_photos.append((chat_id, file_id, caption))
+        return _FakeSentPhoto(file_id)
 
 
 def _broadcast_db(tmp: str):
@@ -153,6 +177,166 @@ def _post_broadcast(client, hdr, **fields):
     data = {"audience": "approved", "confirm": "1"}
     data.update(fields)
     return client.post("/broadcast", data=data, headers=hdr)
+
+
+def _post_broadcast_multi(client, hdr, fields: list[tuple[str, str]]):
+    import aiohttp
+
+    form = aiohttp.FormData()
+    for key, value in fields:
+        form.add_field(key, value)
+    return client.post("/broadcast", data=form, headers=hdr)
+
+
+def test_broadcast_language_and_direction_filters():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "b2.db"))
+        asyncio.run(db.init())
+        seed = [(1, "uz", "Adrenaline Drift"), (2, "ru", "SPL Тюнинг"), (3, "ru", "Adrenaline Drift")]
+        for user_id, lang, direction in seed:
+            app_id = asyncio.run(
+                db.create_application(
+                    user_id=user_id,
+                    username=f"@u{user_id}",
+                    country="Узбекистан",
+                    plate=f"01A00{user_id}AA",
+                    direction=direction,
+                    phone="+998901112233",
+                    photo_file_ids=[],
+                    photo_paths=[],
+                    language=lang,
+                )
+            )
+            asyncio.run(db.approve(app_id, "@mod"))
+
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                # Only Uzbek-speaking recipients.
+                r = await _post_broadcast_multi(
+                    client, hdr,
+                    [
+                        ("audience", "approved"), ("confirm", "1"), ("action", "send"),
+                        ("text_ru", "Привет"), ("langs", "uz"),
+                    ],
+                )
+                assert dict(bot.sent) == {1: "Привет"}
+                bot.sent.clear()
+
+                # Only the Adrenaline Drift direction.
+                r = await _post_broadcast_multi(
+                    client, hdr,
+                    [
+                        ("audience", "approved"), ("confirm", "1"), ("action", "send"),
+                        ("text_ru", "Привет"), ("directions", "Adrenaline Drift"),
+                    ],
+                )
+                assert set(dict(bot.sent)) == {1, 3}
+                bot.sent.clear()
+
+                # Combined language + direction filter.
+                r = await _post_broadcast_multi(
+                    client, hdr,
+                    [
+                        ("audience", "approved"), ("confirm", "1"), ("action", "send"),
+                        ("text_ru", "Привет"),
+                        ("langs", "ru"), ("directions", "Adrenaline Drift"),
+                    ],
+                )
+                assert set(dict(bot.sent)) == {3}
+                bot.sent.clear()
+
+                # Preview action: reports a count, sends nothing.
+                r = await _post_broadcast_multi(
+                    client, hdr,
+                    [
+                        ("audience", "approved"), ("confirm", "1"), ("action", "preview"),
+                        ("text_ru", "Привет"), ("langs", "uz"),
+                    ],
+                )
+                body = await r.text()
+                assert bot.sent == []
+                assert "получателей: <b>1</b>" in body
+
+        asyncio.run(run())
+
+
+def test_broadcast_with_photo():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = _broadcast_db(tmp)
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            import aiohttp
+
+            async with TestClient(TestServer(admin_app)) as client:
+                form = aiohttp.FormData()
+                form.add_field("audience", "approved")
+                form.add_field("confirm", "1")
+                form.add_field("action", "send")
+                form.add_field("text_ru", "Привет с фото")
+                form.add_field(
+                    "photo", b"\xff\xd8\xff\xe0fakejpeg",
+                    filename="badge.jpg", content_type="image/jpeg",
+                )
+                r = await client.post("/broadcast", data=form, headers=hdr)
+                assert r.status == 200
+                body = await r.text()
+                assert "с фото" in body
+
+                # First recipient gets the raw upload, the rest reuse its file_id.
+                assert len(bot.sent_photos) == 3
+                assert bot.sent == []
+                file_ids = {fid for _, fid, _ in bot.sent_photos}
+                assert file_ids == {"uploaded-1"}
+
+        asyncio.run(run())
+
+
+def test_badge_photo_route():
+    with tempfile.TemporaryDirectory() as tmp:
+        badge = os.path.join(tmp, "badge.jpg")
+        with open(badge, "wb") as fh:
+            fh.write(b"\xff\xd8\xff\xe0badge")
+        db, app_id = _seed_db(
+            os.path.join(tmp, "t.db"),
+            os.path.join(tmp, "left.jpg"),
+            os.path.join(tmp, "mod.jpg"),
+        )
+        for path in (os.path.join(tmp, "left.jpg"), os.path.join(tmp, "mod.jpg")):
+            with open(path, "wb") as fh:
+                fh.write(b"\xff\xd8\xff\xe0dummy")
+        asyncio.run(db.set_badge_photo(7, "file0", badge))
+
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=None, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                r = await client.get(f"/badgephoto/{app_id}", headers=hdr)
+                assert r.status == 200 and (await r.read()).startswith(b"\xff\xd8")
+
+                detail = await client.get(f"/application/{app_id}", headers=hdr)
+                body = await detail.text()
+                assert f"/badgephoto/{app_id}" in body
+
+                # No badge photo on this one → 404, no crash.
+                other_id = await db.create_application(
+                    user_id=8, username="@u8", country="Узбекистан", plate="01A008AA",
+                    direction="Adrenaline Drift", phone="+998", photo_file_ids=[], photo_paths=[],
+                )
+                r = await client.get(f"/badgephoto/{other_id}", headers=hdr)
+                assert r.status == 404
+
+        asyncio.run(run())
 
 
 def test_broadcast_two_languages():
@@ -208,4 +392,7 @@ if __name__ == "__main__":
     test_cookie_signing()
     test_routes()
     test_broadcast_two_languages()
+    test_broadcast_language_and_direction_filters()
+    test_broadcast_with_photo()
+    test_badge_photo_route()
     print("All admin tests passed.")

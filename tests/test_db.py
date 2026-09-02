@@ -205,6 +205,94 @@ def test_broadcast_audiences():
         assert counts["approved"] == 1 and counts["incomplete"] == 1
 
 
+def test_recipients_filter_by_language_and_direction():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "t.db"))
+        asyncio.run(db.init())
+
+        def app(user_id: int, direction: str, lang: str) -> int:
+            return asyncio.run(
+                db.create_application(
+                    user_id=user_id,
+                    username=f"@u{user_id}",
+                    country="Узбекистан",
+                    plate=f"01A00{user_id}AA",
+                    direction=direction,
+                    phone="+998900000000",
+                    photo_file_ids=[],
+                    photo_paths=[],
+                    language=lang,
+                )
+            )
+
+        a1 = app(1, "Adrenaline Drift", "uz")
+        a2 = app(2, "SPL Тюнинг", "ru")
+        a3 = app(3, "Adrenaline Drift", "ru")
+        for a in (a1, a2, a3):
+            asyncio.run(db.approve(a, "@mod"))
+        asyncio.run(db.touch_user(99, username="@ghost", language="uz"))
+
+        only_uz = asyncio.run(db.recipients("approved", languages=["uz"]))
+        assert {u for u, _ in only_uz} == {1}
+
+        only_drift = asyncio.run(
+            db.recipients("approved", directions=["Adrenaline Drift"])
+        )
+        assert {u for u, _ in only_drift} == {1, 3}
+
+        drift_ru = asyncio.run(
+            db.recipients(
+                "approved", languages=["ru"], directions=["Adrenaline Drift"]
+            )
+        )
+        assert {u for u, _ in drift_ru} == {3}
+
+        # A direction filter makes no sense for users with no application at
+        # all — they never get matched.
+        incomplete_with_direction = asyncio.run(
+            db.recipients("incomplete", directions=["Adrenaline Drift"])
+        )
+        assert incomplete_with_direction == []
+
+        # "starters" spans bot_users + applications, so a direction filter has
+        # to look the user's application up.
+        starters_drift = asyncio.run(
+            db.recipients("starters", directions=["Adrenaline Drift"])
+        )
+        assert {u for u, _ in starters_drift} == {1, 3}
+
+
+def test_badge_photo_roundtrip():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "t.db"))
+        asyncio.run(db.init())
+
+        # No application yet → nothing to attach the photo to.
+        assert asyncio.run(db.set_badge_photo(5, "file123", "/media/5/badge.jpg")) is None
+
+        app_id = _make_app(db, 5)
+        got = asyncio.run(db.set_badge_photo(5, "file123", "/media/5/badge.jpg"))
+        assert got == app_id
+
+        app = asyncio.run(db.get_application(app_id))
+        assert app.badge_photo_file_id == "file123"
+        assert app.badge_photo_path == "/media/5/badge.jpg"
+
+        # Sending a new photo replaces the old one on the same (latest) app.
+        asyncio.run(db.set_badge_photo(5, "file456", "/media/5/badge2.jpg"))
+        app = asyncio.run(db.get_application(app_id))
+        assert app.badge_photo_file_id == "file456"
+
+
+def test_get_user_language():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "t.db"))
+        asyncio.run(db.init())
+        assert asyncio.run(db.get_user_language(1)) == "ru"  # unknown user → default
+        asyncio.run(db.touch_user(1, language="uz"))
+        assert asyncio.run(db.get_user_language(1)) == "uz"
+
+
 if __name__ == "__main__":
     test_sequential_numbers_and_rejection_gaps()
     test_active_application_lookup()
@@ -212,4 +300,7 @@ if __name__ == "__main__":
     test_modification_photos_roundtrip_and_migration()
     test_renamed_direction_is_migrated()
     test_broadcast_audiences()
+    test_recipients_filter_by_language_and_direction()
+    test_badge_photo_roundtrip()
+    test_get_user_language()
     print("All tests passed.")
