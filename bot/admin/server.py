@@ -272,8 +272,10 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     langs = [v for v in data.getall("langs", []) if v in ("uz", "ru")] or None
     directions = [v for v in data.getall("directions", []) if v in DIRECTIONS_CANON] or None
 
-    photo_field = data.get("photo")
-    has_photo = isinstance(photo_field, web.FileField) and bool(photo_field.filename)
+    photo_uz_field = data.get("photo_uz")
+    photo_ru_field = data.get("photo_ru")
+    has_photo_uz = isinstance(photo_uz_field, web.FileField) and bool(photo_uz_field.filename)
+    has_photo_ru = isinstance(photo_ru_field, web.FileField) and bool(photo_ru_field.filename)
 
     counts = await db.audience_counts()
 
@@ -316,10 +318,33 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     body_uz = text_uz or text_ru
     body_ru = text_ru or text_uz
 
-    if has_photo and (len(body_uz) > 1024 or len(body_ru) > 1024):
+    # Each language keeps its own photo when one was uploaded; a language
+    # left empty falls back to the other's — same rule as the text above.
+    # ``source`` names which physical upload a language actually uses, so a
+    # shared fallback photo is uploaded to Telegram once, not twice.
+    photo_sources: dict[str, tuple[bytes, str]] = {}
+    if has_photo_uz:
+        photo_sources["uz"] = (photo_uz_field.file.read(), photo_uz_field.filename or "broadcast.jpg")
+    if has_photo_ru:
+        photo_sources["ru"] = (photo_ru_field.file.read(), photo_ru_field.filename or "broadcast.jpg")
+    lang_photo_source = {
+        "uz": "uz" if has_photo_uz else ("ru" if has_photo_ru else None),
+        "ru": "ru" if has_photo_ru else ("uz" if has_photo_uz else None),
+    }
+    has_any_photo = bool(photo_sources)
+
+    if lang_photo_source["uz"] and len(body_uz) > 1024:
         return web.Response(
             text=page(
-                error="Текст слишком длинный для сообщения с фото — "
+                error="Текст на узбекском слишком длинный для сообщения с фото — "
+                "у Telegram лимит подписи 1024 символа"
+            ),
+            content_type="text/html",
+        )
+    if lang_photo_source["ru"] and len(body_ru) > 1024:
+        return web.Response(
+            text=page(
+                error="Текст на русском слишком длинный для сообщения с фото — "
                 "у Telegram лимит подписи 1024 символа"
             ),
             content_type="text/html",
@@ -332,22 +357,28 @@ async def _broadcast_post(request: web.Request) -> web.Response:
             content_type="text/html",
         )
 
-    # The photo is uploaded to Telegram once (on the first send) and then
-    # reused by its file_id for every other recipient.
-    photo_ref = None
-    if has_photo:
-        photo_ref = BufferedInputFile(
-            photo_field.file.read(), filename=photo_field.filename or "broadcast.jpg"
-        )
+    # Each source photo is uploaded to Telegram once (on its first send) and
+    # then reused by the returned file_id for every other recipient.
+    photo_refs: dict[str, object] = {}
+
+    def get_photo_ref(source_key: str):
+        if source_key not in photo_refs:
+            data_bytes, filename = photo_sources[source_key]
+            photo_refs[source_key] = BufferedInputFile(data_bytes, filename=filename)
+        return photo_refs[source_key]
 
     ok = fail = ok_uz = ok_ru = 0
     for user_id, lang in recipients:
         is_uz = str(lang or "").strip().lower().startswith("uz")
+        lang_key = "uz" if is_uz else "ru"
         text = body_uz if is_uz else body_ru
+        source_key = lang_photo_source[lang_key]
         try:
-            if photo_ref is not None:
-                sent = await bot.send_photo(chat_id=user_id, photo=photo_ref, caption=text)
-                photo_ref = sent.photo[-1].file_id
+            if source_key is not None:
+                sent = await bot.send_photo(
+                    chat_id=user_id, photo=get_photo_ref(source_key), caption=text
+                )
+                photo_refs[source_key] = sent.photo[-1].file_id
             else:
                 await bot.send_message(chat_id=user_id, text=text)
             ok += 1
@@ -372,7 +403,7 @@ async def _broadcast_post(request: web.Request) -> web.Response:
                 "ok_ru": ok_ru,
                 "total": len(recipients),
                 "audience_label": _AUDIENCE_LABELS.get(audience, audience),
-                "with_photo": has_photo,
+                "with_photo": has_any_photo,
             },
         ),
         content_type="text/html",
