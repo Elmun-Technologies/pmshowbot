@@ -87,6 +87,7 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
             f'<nav>{link("/", "Дашборд", "home")} '
             f'{link("/applications", "Заявки", "apps")} '
             f'{link("/broadcast", "📢 Рассылка", "broadcast")} '
+            f'{link("/message", "💬 Xabar", "msg")} '
             f'{link("/export.xlsx", "📊 Экспорт Excel (.xlsx)", "export")} '
             f'{link("/export.csv", "CSV", "export_csv")}</nav>'
             '<span class="spacer"></span>'
@@ -234,7 +235,9 @@ def applications_page(
     return _page("Заявки", table, active="apps")
 
 
-def application_detail_page(app: Application) -> str:
+def application_detail_page(
+    app: Application, sent: str = "", error: str = ""
+) -> str:
     photos = ""
     for i, _ in enumerate(app.photo_paths):
         side = SIDES[i] if i < len(SIDES) else str(i + 1)
@@ -296,12 +299,47 @@ def application_detail_page(app: Application) -> str:
             '</div>'
         )
 
+    notice = ""
+    if sent == "1":
+        notice = (
+            '<div class="section" style="background:#ecfdf5;margin-top:0;margin-bottom:16px">'
+            "<h2>✅ Xabar yuborildi</h2>"
+            '<p class="muted">Сообщение отправлено этому пользователю от имени бота.</p>'
+            "</div>"
+        )
+    elif sent == "0":
+        notice = (
+            f'<div class="err">{escape(error or "Сообщение не отправлено")}</div>'
+        )
+
+    message_form = (
+        f'<div class="section"><h2>💬 Личное сообщение / Individual xabar</h2>'
+        '<p class="muted">Текст будет отправлен этому пользователю напрямую от имени бота — '
+        "его получит только он.</p>"
+        f'<form method="post" action="/application/{app.id}/message" '
+        'enctype="multipart/form-data">'
+        '<div style="margin:10px 0">'
+        '<textarea name="text" maxlength="3500" rows="5" placeholder="Xabar matni…" '
+        'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
+        'font-size:15px;font-family:inherit"></textarea>'
+        "</div>"
+        '<div style="margin:0 0 12px">'
+        '<label class="muted" style="display:block;font-size:13px;margin-bottom:4px">'
+        "📎 Rasm (ixtiyoriy) — текст станет подписью (до 1024 символов)</label>"
+        '<input type="file" name="photo" accept="image/*">'
+        "</div>"
+        '<button class="btn btn-primary" type="submit">📨 Yuborish / Send</button>'
+        "</form></div>"
+    )
+
     body = (
         '<p><a href="/applications">← Назад к заявкам</a></p>'
-        f'<div class="section"><h2>Заявка #{app.id}</h2>{kv}{actions}</div>'
-        f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
-        f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
-        f'<div class="section"><h2>Фото на бейдж</h2>{badge_html}</div>'
+        + notice
+        + f'<div class="section"><h2>Заявка #{app.id}</h2>{kv}{actions}</div>'
+        + message_form
+        + f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
+        + f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
+        + f'<div class="section"><h2>Фото на бейдж</h2>{badge_html}</div>'
     )
     return _page(f"Заявка #{app.id}", body, active="apps")
 
@@ -457,6 +495,113 @@ def broadcast_page(
         "</div>"
     )
     return _page("Рассылка", body, active="broadcast")
+
+
+def user_option_label(u: dict) -> str:
+    """Human-readable label for one known user: id — @username — plate · №N · status."""
+    parts = [str(u.get("user_id", ""))]
+    if u.get("username"):
+        parts.append(str(u["username"]))
+    app_bits = []
+    if u.get("plate"):
+        app_bits.append(str(u["plate"]))
+    if u.get("reg_number") is not None:
+        app_bits.append(f"№{u['reg_number']}")
+    if u.get("status"):
+        app_bits.append(_STATUS_RU.get(u["status"], str(u["status"])))
+    if app_bits:
+        parts.append(" · ".join(app_bits))
+    return " — ".join(parts)
+
+
+def message_page(
+    users: list[dict],
+    selected_user_id: Optional[int] = None,
+    manual_id: str = "",
+    error: str = "",
+    result: Optional[dict] = None,
+    last_text: str = "",
+) -> str:
+    result_html = ""
+    if result:
+        if result.get("ok"):
+            result_html = (
+                '<div class="section" style="background:#ecfdf5;margin-top:0;'
+                'margin-bottom:16px">'
+                "<h2>✅ Сообщение отправлено</h2>"
+                f'<p>Получатель: <b>{escape(str(result.get("who", "")))}</b> '
+                f'(id <code>{result.get("user_id", "")}</code>)</p>'
+                '<p class="muted">Сообщение ушло от имени бота. Если адресат не '
+                "ответил — возможно, он заблокировал бота.</p>"
+                "</div>"
+            )
+        else:
+            result_html = (
+                '<div class="section" style="background:#fee2e2;margin-top:0;'
+                'margin-bottom:16px">'
+                "<h2>❌ Не отправлено</h2>"
+                f'<p style="margin:0">{escape(str(result.get("error", "")))}</p>'
+                "</div>"
+            )
+    err_html = f'<div class="err">{escape(error)}</div>' if error else ""
+
+    options_html = ""
+    for u in users:
+        sel = " selected" if selected_user_id == u["user_id"] else ""
+        options_html += (
+            f'<option value="{u["user_id"]}"{sel}>'
+            f"{escape(user_option_label(u))}</option>"
+        )
+    if not options_html:
+        options_html = '<option value="">— Нет известных пользователей —</option>'
+
+    body = (
+        result_html
+        + err_html
+        + '<div class="section">'
+        "<h2>💬 Индивидуальное сообщение</h2>"
+        '<p class="muted">Выберите одного пользователя и отправьте ему личное '
+        "сообщение от имени бота. В отличие от рассылки, его получит только "
+        "выбранный человек.</p>"
+        '<form method="post" action="/message" enctype="multipart/form-data">'
+        '<div style="margin:12px 0">'
+        '<label style="display:block;font-weight:600;margin-bottom:6px">'
+        "👤 Получатель</label>"
+        f'<select name="pick_user" id="msg-pick-user" style="width:100%;padding:10px;'
+        f'border:1px solid #ccc;border-radius:8px;font-size:15px">{options_html}</select>'
+        '<p class="muted" style="margin:8px 0 0;font-size:13px">Или введите Telegram '
+        "user id вручную (например, если пользователя нет в списке):</p>"
+        f'<input type="text" name="user_id" id="msg-user-id" '
+        f'placeholder="123456789" value="{escape(manual_id)}" '
+        'style="width:100%;margin-top:6px">'
+        "</div>"
+        + _broadcast_textarea(
+            "text",
+            "📝 Xabar matni",
+            "matn yoki rasm bilan",
+            "Сообщение для одного пользователя…",
+            last_text,
+        )
+        + '<p class="muted" style="margin:0 0 12px;font-size:13px">Если прикреплено '
+        "фото — текст становится подписью (максимум 1024 символа).</p>"
+        + _broadcast_photo_input(
+            "photo", "msg-photo", "📎 Rasm (ixtiyoriy)", "необязательно"
+        )
+        + '<div style="display:flex;gap:10px;margin-top:10px">'
+        '<button class="btn btn-primary" type="submit">📨 Yuborish</button>'
+        "</div>"
+        "</form>"
+        "<script>"
+        "(function(){"
+        "var sel=document.getElementById('msg-pick-user');"
+        "var manual=document.getElementById('msg-user-id');"
+        "if(sel)sel.addEventListener('change',function(){if(sel.value!=='')manual.value='';});"
+        "if(manual)manual.addEventListener('input',function(){if(manual.value!=='')sel.value='';});"
+        "})();"
+        "</script>"
+        "</div>"
+    )
+    return _page("Индивидуальное сообщение", body, active="msg")
 
 
 def _broadcast_photo_input(name: str, input_id: str, label: str, hint: str) -> str:

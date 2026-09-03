@@ -114,6 +114,10 @@ Features:
   incomplete `/start` without an application / everyone the bot knows) and send
   a Telegram message. Confirm checkbox required; the panel shows sent / failed
   counts after the run.
+- **Individual message** (`/message`) — write a message (optionally with a
+  photo) to a single chosen user: pick them from the list of known users or
+  paste a Telegram user id. The same quick-send form is on every application
+  page, so you can text a specific participant right away.
 - **Export CSV** (`/export.csv`, opens cleanly in Excel).
 
 Locally it listens on `PORT` (default `8080`): open `http://localhost:8080`.

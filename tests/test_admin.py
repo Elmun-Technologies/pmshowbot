@@ -1,5 +1,6 @@
 """Tests for the admin panel: auth cookie logic and HTTP routes."""
 import asyncio
+import io
 import os
 import sys
 import tempfile
@@ -470,6 +471,97 @@ def test_broadcast_two_languages():
         asyncio.run(run())
 
 
+def test_individual_message():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "m.db"))
+        asyncio.run(db.init())
+        app_id = asyncio.run(
+            db.create_application(
+                user_id=7,
+                username="@tester",
+                country="Узбекистан",
+                plate="01A777AA",
+                direction="Adrenaline Drift",
+                phone="+998901112233",
+                photo_file_ids=[],
+                photo_paths=[],
+            )
+        )
+        asyncio.run(db.approve(app_id, "@mod"))
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                # The page lists known users with their plate / reg number.
+                r = await client.get("/message", headers=hdr)
+                body = await r.text()
+                assert r.status == 200 and "Индивидуальное сообщение" in body
+                assert "@tester" in body and "01A777AA" in body
+
+                # Text-only message to the picked user.
+                r = await client.post(
+                    "/message",
+                    data={"pick_user": "7", "text": "Salom, №1!"},
+                    headers=hdr,
+                )
+                body = await r.text()
+                assert bot.sent == [(7, "Salom, №1!")]
+                assert "Сообщение отправлено" in body
+
+                # A manually typed user id wins over the picker.
+                bot.sent.clear()
+                await client.post(
+                    "/message",
+                    data={"pick_user": "7", "user_id": "8", "text": "Priory"},
+                    headers=hdr,
+                )
+                assert bot.sent == [(8, "Priory")]
+
+                # Missing text and photo → error, nothing sent.
+                bot.sent.clear()
+                r = await client.post("/message", data={"pick_user": "7"}, headers=hdr)
+                assert "Введите текст" in await r.text()
+                assert bot.sent == []
+
+                # Missing recipient → error, nothing sent.
+                r = await client.post("/message", data={"text": "Kimsiz"}, headers=hdr)
+                assert "Выберите получателя" in await r.text()
+
+                # Message with a photo → send_photo with the text as caption.
+                import aiohttp
+
+                form = aiohttp.FormData()
+                form.add_field("pick_user", "7")
+                form.add_field("text", "Rasm bilan")
+                form.add_field(
+                    "photo", io.BytesIO(b"jpeg-data"), filename="p.jpg",
+                    content_type="image/jpeg",
+                )
+                await client.post("/message", data=form, headers=hdr)
+                assert bot.sent_photos and bot.sent_photos[0][0] == 7
+                assert bot.sent_photos[0][2] == "Rasm bilan"
+
+                # Quick form on the application page: sends + redirects + banner.
+                bot.sent.clear()
+                r = await client.post(
+                    f"/application/{app_id}/message",
+                    data={"text": "Xabar from app"},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.status == 302 and "sent=1" in r.headers["Location"]
+                assert bot.sent == [(7, "Xabar from app")]
+                r = await client.get(f"/application/{app_id}?sent=1", headers=hdr)
+                body = await r.text()
+                assert "Xabar yuborildi" in body
+                assert f'action="/application/{app_id}/message"' in body
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_cookie_signing()
     test_routes()
@@ -479,4 +571,5 @@ if __name__ == "__main__":
     test_broadcast_with_distinct_photos_per_language()
     test_broadcast_accepts_photo_over_one_megabyte()
     test_badge_photo_route()
+    test_individual_message()
     print("All admin tests passed.")

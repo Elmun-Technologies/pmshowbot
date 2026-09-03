@@ -11,6 +11,7 @@ import io
 import logging
 import os
 from typing import Optional
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -71,6 +72,9 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_get("/export.xlsx", _export_excel)
     app.router.add_get("/broadcast", _broadcast_get)
     app.router.add_post("/broadcast", _broadcast_post)
+    app.router.add_get("/message", _message_get)
+    app.router.add_post("/message", _message_post)
+    app.router.add_post("/application/{id}/message", _application_message)
     return app
 
 
@@ -151,8 +155,11 @@ async def _application_detail(request: web.Request) -> web.Response:
     app = await db.get_application(app_id)
     if app is None:
         raise web.HTTPNotFound(text="Заявка не найдена")
+    sent = request.query.get("sent", "")
+    error = request.query.get("err", "")
     return web.Response(
-        text=views.application_detail_page(app), content_type="text/html"
+        text=views.application_detail_page(app, sent=sent, error=error),
+        content_type="text/html",
     )
 
 
@@ -408,6 +415,118 @@ async def _broadcast_post(request: web.Request) -> web.Response:
         ),
         content_type="text/html",
     )
+
+
+async def _send_individual(bot, user_id: int, text_raw: str, photo_field) -> tuple[bool, str]:
+    """Send one message (text and/or photo) from the bot to a single user.
+
+    Returns (ok, error_message). Delivery errors — a bot block, a deleted
+    account, … — are surfaced to the admin but never raised.
+    """
+    text = str(text_raw or "").strip()
+    has_photo = isinstance(photo_field, web.FileField) and bool(photo_field.filename)
+    if bot is None:
+        return False, "Бот недоступен в этой конфигурации."
+    if not text and not has_photo:
+        return False, "Введите текст сообщения или прикрепите фото."
+    if has_photo and len(text) > 1024:
+        return False, "С фото текст может быть максимум 1024 символа (лимит подписи Telegram)."
+    try:
+        if has_photo:
+            filename = photo_field.filename or "message.jpg"
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=BufferedInputFile(photo_field.file.read(), filename=filename),
+                caption=text or None,
+            )
+        else:
+            await bot.send_message(chat_id=user_id, text=text)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 - tell the admin, never crash the panel
+        logger.warning("Individual message to %s failed: %s", user_id, exc)
+        return False, f"Telegram не принял сообщение: {exc}"
+
+
+def _int_or_none(value: str) -> Optional[int]:
+    value = (value or "").strip()
+    if value.lstrip("-").isdigit():
+        return int(value)
+    return None
+
+
+async def _message_get(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    users = await db.list_users()
+    selected = _int_or_none(request.query.get("user_id", ""))
+    return web.Response(
+        text=views.message_page(users, selected_user_id=selected),
+        content_type="text/html",
+    )
+
+
+async def _message_post(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    bot = request.app["bot"]
+    data = await request.post()
+    text = str(data.get("text", "")).strip()
+    manual_field = str(data.get("user_id", "")).strip()
+    pick_field = str(data.get("pick_user", "")).strip()
+    user_id_raw = manual_field or pick_field
+    selected_user_id = _int_or_none(pick_field)
+    manual_id = manual_field
+
+    users = await db.list_users()
+
+    async def render(
+        error: str = "", result: Optional[dict] = None
+    ) -> web.Response:
+        return web.Response(
+            text=views.message_page(
+                users,
+                selected_user_id=selected_user_id,
+                manual_id=manual_id,
+                error=error,
+                result=result,
+                last_text=text,
+            ),
+            content_type="text/html",
+        )
+
+    if not user_id_raw or _int_or_none(user_id_raw) is None:
+        return await render(
+            error="Выберите получателя из списка или введите его Telegram user id."
+        )
+
+    user_id = int(user_id_raw)
+    ok, error_msg = await _send_individual(
+        bot, user_id, text, data.get("photo")
+    )
+    if ok:
+        who = next(
+            (views.user_option_label(u) for u in users if u["user_id"] == user_id),
+            f"id {user_id}",
+        )
+        result = {"ok": True, "user_id": user_id, "who": who}
+    else:
+        result = {"ok": False, "error": error_msg}
+    return await render(result=result)
+
+
+async def _application_message(request: web.Request) -> web.Response:
+    """Quick-send form on the application page: message that single applicant."""
+    db: Database = request.app["db"]
+    bot = request.app["bot"]
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    if app is None:
+        raise web.HTTPNotFound(text="Заявка не найдена")
+    data = await request.post()
+    ok, error = await _send_individual(
+        bot, app.user_id, str(data.get("text", "")), data.get("photo")
+    )
+    if ok:
+        raise web.HTTPFound(f"/application/{app_id}?sent=1")
+    raise web.HTTPFound(f"/application/{app_id}?sent=0&err={quote(error)}")
 
 
 def _int_or_404(value: str) -> int:

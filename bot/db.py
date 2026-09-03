@@ -409,10 +409,38 @@ class Database:
             "approved_users": int(approved_users),
         }
 
+    def _list_users(self, limit: int = 5000) -> list[dict]:
+        """Known bot users + their latest application, for admin pickers.
+
+        Returns rows with user id/username/language/timestamps plus the latest
+        application's plate, direction, status and reg number (None if the user
+        never submitted an application).
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT u.user_id, u.username, u.language, u.first_seen, u.last_seen,
+                       a.id AS app_id, a.plate, a.direction, a.status, a.reg_number
+                FROM bot_users u
+                LEFT JOIN applications a ON a.id = (
+                    SELECT id FROM applications
+                    WHERE user_id = u.user_id
+                    ORDER BY id DESC LIMIT 1
+                )
+                ORDER BY u.last_seen DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     # --- async wrappers ---
 
     async def init(self) -> None:
         await asyncio.to_thread(self._init)
+
+    async def list_users(self, limit: int = 5000) -> list[dict]:
+        return await asyncio.to_thread(self._list_users, limit)
 
     async def list_applications(
         self, status: Optional[str] = None, search: Optional[str] = None, limit: int = 500
