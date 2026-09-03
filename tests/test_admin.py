@@ -142,7 +142,7 @@ class _FakeBot:
         self.sent_photos: list[tuple[int, str, str]] = []
         self._next_file_id = 0
 
-    async def send_message(self, chat_id: int, text: str):
+    async def send_message(self, chat_id: int, text: str, reply_markup=None):
         self.sent.append((chat_id, text))
 
     async def send_photo(self, chat_id: int, photo, caption: str = ""):
@@ -517,6 +517,65 @@ def test_individual_message():
         asyncio.run(run())
 
 
+def test_status_override():
+    with tempfile.TemporaryDirectory() as tmp:
+        photo = os.path.join(tmp, "left.jpg")
+        mod = os.path.join(tmp, "mod_1.jpg")
+        for path in (photo, mod):
+            with open(path, "wb") as fh:
+                fh.write(b"\xff\xd8\xff\xe0JFIFdummy")
+        db, app_id = _seed_db(os.path.join(tmp, "t.db"), photo, mod)
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080, instagram_handle="", drive_enabled=False, sheets_enabled=False)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                # Pending -> rejected via the override control.
+                r = await client.post(
+                    f"/application/{app_id}/status",
+                    data={"status": "rejected"},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.status == 302
+                assert r.headers["Location"] == f"/application/{app_id}?status_change=ok"
+                app = await db.get_application(app_id)
+                assert app.status == "rejected"
+                assert bot.sent  # rejection notice sent
+
+                # Rejected -> approved: gets a registration number, even
+                # though it was never in "pending".
+                bot.sent.clear()
+                r = await client.post(
+                    f"/application/{app_id}/status",
+                    data={"status": "approved"},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.headers["Location"] == f"/application/{app_id}?status_change=ok"
+                app = await db.get_application(app_id)
+                assert app.status == "approved"
+                assert app.reg_number is not None
+                assert bot.sent  # approval message (ticket generation is best-effort)
+
+                # Invalid status value -> error redirect, nothing changes.
+                r = await client.post(
+                    f"/application/{app_id}/status",
+                    data={"status": "bogus"},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.headers["Location"] == f"/application/{app_id}?status_change=error"
+
+                detail = await client.get(f"/application/{app_id}", headers=hdr)
+                body = await detail.text()
+                assert "Управление статусом" in body
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_cookie_signing()
     test_routes()
@@ -527,4 +586,5 @@ if __name__ == "__main__":
     test_broadcast_accepts_photo_over_one_megabyte()
     test_badge_photo_route()
     test_individual_message()
+    test_status_override()
     print("All admin tests passed.")

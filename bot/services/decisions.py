@@ -20,7 +20,13 @@ from aiogram.types import BufferedInputFile
 from .. import keyboards, texts
 from ..config import Config
 from ..constants import SIDES, SIDE_LABELS_TRANSLIT
-from ..db import Application, Database
+from ..db import (
+    Application,
+    Database,
+    STATUS_APPROVED,
+    STATUS_PENDING,
+    STATUS_REJECTED,
+)
 from . import drive, sheets, subscription
 from .ticket import generate_ticket
 
@@ -156,4 +162,29 @@ async def reject_application(
         return False
     app = await db.get_application(app_id)
     await notify_applicant(bot, app.user_id, texts.T(app.language).REJECTED, app.language)
+    return True
+
+
+async def set_status(
+    bot: Bot, config: Config, db: Database, app_id: int, status: str, moderator: str
+) -> bool:
+    """Admin-panel override: force an application's status regardless of what
+    it currently is (e.g. flip a previously rejected applicant to approved
+    after they were contacted individually). Notifies the applicant and, on
+    a transition to approved, sends the ticket and exports to Google — same
+    as the normal one-shot approve/reject flow."""
+    if status not in (STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED):
+        return False
+    ok = await db.set_status(app_id, status, moderator)
+    if not ok:
+        return False
+    app = await db.get_application(app_id)
+    if status == STATUS_APPROVED:
+        await notify_applicant(
+            bot, app.user_id, texts.T(app.language).APPROVED.format(number=app.reg_number), app.language
+        )
+        await send_ticket(bot, config, app)
+        asyncio.create_task(export_to_google(config, app))
+    elif status == STATUS_REJECTED:
+        await notify_applicant(bot, app.user_id, texts.T(app.language).REJECTED, app.language)
     return True

@@ -256,8 +256,49 @@ def _individual_message_form(
     )
 
 
+def _status_control(
+    app_id: int, current_status: str, changed: bool = False, error: str = ""
+) -> str:
+    notice = ""
+    if changed:
+        notice = '<div class="section" style="background:#ecfdf5;margin:0 0 12px"><p>✅ Статус изменён</p></div>'
+    elif error:
+        notice = f'<div class="err">{escape(error)}</div>'
+
+    options = [
+        (STATUS_APPROVED, "✅ Одобрено", "btn-approve"),
+        (STATUS_REJECTED, "❌ Отклонено", "btn-reject"),
+        (STATUS_PENDING, "⏳ На рассмотрении", "btn-ghost"),
+    ]
+    buttons = ""
+    for status, label, cls in options:
+        if status == current_status:
+            continue
+        buttons += (
+            f'<form method="post" action="/application/{app_id}/status" style="display:inline">'
+            f'<input type="hidden" name="status" value="{status}">'
+            f'<button class="btn {cls}" type="submit" '
+            'onclick="return confirm(\'Изменить статус и уведомить участника в Telegram?\')">'
+            f'{label}</button></form>'
+        )
+    return (
+        '<div class="section"><h2>🔀 Управление статусом</h2>'
+        + notice
+        + '<p class="muted">Текущий статус: '
+        + _status_badge(current_status)
+        + '<br>Изменение статуса отправит участнику уведомление в Telegram '
+        "(при переводе в «Одобрено» — также билет и номер).</p>"
+        + f'<div style="display:flex;gap:10px;flex-wrap:wrap">{buttons}</div>'
+        + '</div>'
+    )
+
+
 def application_detail_page(
-    app: Application, msg_sent: bool = False, msg_error: str = ""
+    app: Application,
+    msg_sent: bool = False,
+    msg_error: str = "",
+    status_changed: bool = False,
+    status_error: str = "",
 ) -> str:
     photos = ""
     for i, _ in enumerate(app.photo_paths):
@@ -326,6 +367,7 @@ def application_detail_page(
         f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
         f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
         f'<div class="section"><h2>Фото на бейдж</h2>{badge_html}</div>'
+        + _status_control(app.id, app.status, changed=status_changed, error=status_error)
         + _individual_message_form(app.id, sent=msg_sent, error=msg_error)
     )
     return _page(f"Заявка #{app.id}", body, active="apps")
