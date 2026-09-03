@@ -234,7 +234,31 @@ def applications_page(
     return _page("Заявки", table, active="apps")
 
 
-def application_detail_page(app: Application) -> str:
+def _individual_message_form(
+    app_id: int, sent: bool = False, error: str = ""
+) -> str:
+    notice = ""
+    if sent:
+        notice = '<div class="section" style="background:#ecfdf5;margin:0 0 12px"><p>✅ Сообщение отправлено</p></div>'
+    elif error:
+        notice = f'<div class="err">{escape(error)}</div>'
+    return (
+        '<div class="section"><h2>✉️ Личное сообщение</h2>'
+        + notice
+        + '<p class="muted">Сообщение уйдёт только этому пользователю, тем же ботом.</p>'
+        f'<form method="post" action="/application/{app_id}/message">'
+        '<textarea name="text" maxlength="3500" rows="5" '
+        'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
+        'font-size:15px;font-family:inherit" placeholder="Текст сообщения…"></textarea>'
+        '<div style="margin-top:10px">'
+        '<button class="btn btn-primary" type="submit">📩 Отправить</button>'
+        '</div></form></div>'
+    )
+
+
+def application_detail_page(
+    app: Application, msg_sent: bool = False, msg_error: str = ""
+) -> str:
     photos = ""
     for i, _ in enumerate(app.photo_paths):
         side = SIDES[i] if i < len(SIDES) else str(i + 1)
@@ -302,6 +326,7 @@ def application_detail_page(app: Application) -> str:
         f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
         f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
         f'<div class="section"><h2>Фото на бейдж</h2>{badge_html}</div>'
+        + _individual_message_form(app.id, sent=msg_sent, error=msg_error)
     )
     return _page(f"Заявка #{app.id}", body, active="apps")
 
