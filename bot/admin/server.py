@@ -64,6 +64,7 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_get("/application/{id}", _application_detail)
     app.router.add_post("/application/{id}/approve", _approve)
     app.router.add_post("/application/{id}/reject", _reject)
+    app.router.add_post("/application/{id}/message", _send_individual_message)
     app.router.add_get("/photo/{id}/{idx}", _photo)
     app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
     app.router.add_get("/badgephoto/{id}", _badge_photo)
@@ -151,8 +152,16 @@ async def _application_detail(request: web.Request) -> web.Response:
     app = await db.get_application(app_id)
     if app is None:
         raise web.HTTPNotFound(text="Заявка не найдена")
+    msg = request.query.get("msg")
     return web.Response(
-        text=views.application_detail_page(app), content_type="text/html"
+        text=views.application_detail_page(
+            app,
+            msg_sent=msg == "sent",
+            msg_error="Не удалось отправить — пользователь заблокировал бота" if msg == "blocked" else (
+                "Введите текст сообщения" if msg == "empty" else ""
+            ),
+        ),
+        content_type="text/html",
     )
 
 
@@ -172,6 +181,27 @@ async def _reject(request: web.Request) -> web.Response:
     app_id = _int_or_404(request.match_info["id"])
     await decisions.reject_application(bot, config, db, app_id, moderator="админ-панель")
     raise web.HTTPFound(f"/application/{app_id}")
+
+
+async def _send_individual_message(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    bot = request.app["bot"]
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    if app is None:
+        raise web.HTTPNotFound(text="Заявка не найдена")
+    data = await request.post()
+    text = str(data.get("text", "")).strip()
+    if not text:
+        raise web.HTTPFound(f"/application/{app_id}?msg=empty")
+    if bot is None:
+        raise web.HTTPFound(f"/application/{app_id}?msg=blocked")
+    try:
+        await bot.send_message(chat_id=app.user_id, text=text)
+    except Exception as exc:  # noqa: BLE001 — Telegram blocks, deleted chats, etc.
+        logger.warning("individual message to %s (app %s) failed: %s", app.user_id, app_id, exc)
+        raise web.HTTPFound(f"/application/{app_id}?msg=blocked")
+    raise web.HTTPFound(f"/application/{app_id}?msg=sent")
 
 
 async def _photo(request: web.Request) -> web.StreamResponse:

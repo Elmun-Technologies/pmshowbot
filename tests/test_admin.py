@@ -470,6 +470,53 @@ def test_broadcast_two_languages():
         asyncio.run(run())
 
 
+def test_individual_message():
+    with tempfile.TemporaryDirectory() as tmp:
+        photo = os.path.join(tmp, "left.jpg")
+        mod = os.path.join(tmp, "mod_1.jpg")
+        for path in (photo, mod):
+            with open(path, "wb") as fh:
+                fh.write(b"\xff\xd8\xff\xe0JFIFdummy")
+        db, app_id = _seed_db(os.path.join(tmp, "t.db"), photo, mod)
+        bot = _FakeBot()
+        config = SimpleNamespace(admin_password=PW, panel_port=8080)
+        admin_app = create_admin_app(bot=bot, config=config, db=db)
+        hdr = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(PW)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                detail = await client.get(f"/application/{app_id}", headers=hdr)
+                body = await detail.text()
+                assert f"/application/{app_id}/message" in body
+                assert "Личное сообщение" in body
+
+                r = await client.post(
+                    f"/application/{app_id}/message",
+                    data={"text": "Здравствуйте, уточните, пожалуйста, номер"},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.status == 302
+                assert r.headers["Location"] == f"/application/{app_id}?msg=sent"
+                assert bot.sent == [(7, "Здравствуйте, уточните, пожалуйста, номер")]
+
+                r = await client.get(r.headers["Location"], headers=hdr)
+                assert "Сообщение отправлено" in await r.text()
+
+                # Empty text → validation error, nothing sent.
+                bot.sent.clear()
+                r = await client.post(
+                    f"/application/{app_id}/message",
+                    data={"text": "  "},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.headers["Location"] == f"/application/{app_id}?msg=empty"
+                assert bot.sent == []
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_cookie_signing()
     test_routes()
@@ -479,4 +526,5 @@ if __name__ == "__main__":
     test_broadcast_with_distinct_photos_per_language()
     test_broadcast_accepts_photo_over_one_megabyte()
     test_badge_photo_route()
+    test_individual_message()
     print("All admin tests passed.")
