@@ -328,6 +328,37 @@ class Database:
             conn.commit()
             return True
 
+    def _set_status(self, app_id: int, status: str, moderator: str) -> bool:
+        """Admin override: force an application to any status, regardless of
+        its current one. Assigns a registration number on the transition to
+        approved if it doesn't already have one (keeps the existing number if
+        it does, e.g. rejected-then-re-approved). Returns False if the
+        application doesn't exist.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT reg_number FROM applications WHERE id = ?", (app_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            reg_number = row["reg_number"]
+            if status == STATUS_APPROVED and reg_number is None:
+                reg_number = conn.execute(
+                    "SELECT COALESCE(MAX(reg_number), 0) + 1 FROM applications"
+                ).fetchone()[0]
+            conn.execute(
+                """
+                UPDATE applications
+                SET status = ?, reg_number = ?, processed_at = ?, processed_by = ?
+                WHERE id = ?
+                """,
+                (status, reg_number, _now(), moderator, app_id),
+            )
+            conn.commit()
+            return True
+
     # --- admin panel queries ---
 
     def _list_applications(
@@ -445,6 +476,9 @@ class Database:
 
     async def reject(self, app_id: int, moderator: str) -> bool:
         return await asyncio.to_thread(self._reject, app_id, moderator)
+
+    async def set_status(self, app_id: int, status: str, moderator: str) -> bool:
+        return await asyncio.to_thread(self._set_status, app_id, status, moderator)
 
     def _touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
         now = _now()

@@ -65,6 +65,7 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_post("/application/{id}/approve", _approve)
     app.router.add_post("/application/{id}/reject", _reject)
     app.router.add_post("/application/{id}/message", _send_individual_message)
+    app.router.add_post("/application/{id}/status", _change_status)
     app.router.add_get("/photo/{id}/{idx}", _photo)
     app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
     app.router.add_get("/badgephoto/{id}", _badge_photo)
@@ -153,6 +154,7 @@ async def _application_detail(request: web.Request) -> web.Response:
     if app is None:
         raise web.HTTPNotFound(text="Заявка не найдена")
     msg = request.query.get("msg")
+    status_flag = request.query.get("status_change")
     return web.Response(
         text=views.application_detail_page(
             app,
@@ -160,6 +162,8 @@ async def _application_detail(request: web.Request) -> web.Response:
             msg_error="Не удалось отправить — пользователь заблокировал бота" if msg == "blocked" else (
                 "Введите текст сообщения" if msg == "empty" else ""
             ),
+            status_changed=status_flag == "ok",
+            status_error="Не удалось изменить статус" if status_flag == "error" else "",
         ),
         content_type="text/html",
     )
@@ -202,6 +206,22 @@ async def _send_individual_message(request: web.Request) -> web.Response:
         logger.warning("individual message to %s (app %s) failed: %s", app.user_id, app_id, exc)
         raise web.HTTPFound(f"/application/{app_id}?msg=blocked")
     raise web.HTTPFound(f"/application/{app_id}?msg=sent")
+
+
+async def _change_status(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    bot = request.app["bot"]
+    config: Config = request.app["config"]
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    if app is None:
+        raise web.HTTPNotFound(text="Заявка не найдена")
+    data = await request.post()
+    status = str(data.get("status", ""))
+    if status not in _VALID_STATUSES or bot is None:
+        raise web.HTTPFound(f"/application/{app_id}?status_change=error")
+    ok = await decisions.set_status(bot, config, db, app_id, status, moderator="админ-панель")
+    raise web.HTTPFound(f"/application/{app_id}?status_change={'ok' if ok else 'error'}")
 
 
 async def _photo(request: web.Request) -> web.StreamResponse:
