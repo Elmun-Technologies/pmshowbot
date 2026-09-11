@@ -16,7 +16,7 @@ from .config import Config, load_config
 from .db import Database
 from .services import assets
 from .handlers import badge_photo, moderation, mynumber, registration
-from .middlewares import SerializePerUserMiddleware
+from .middlewares import RegistrationClosedMiddleware, SerializePerUserMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +53,12 @@ async def main() -> None:
     dp.include_router(moderation.router)
     dp.include_router(badge_photo.router)
     dp.include_router(mynumber.router)
+
+    # When registration is closed, stop anyone mid-form from continuing.
+    # (The other routers — moderation, my number, badge photo, broadcasts —
+    # are unaffected, so admins can still reach everyone.)
+    registration.router.message.outer_middleware(RegistrationClosedMiddleware())
+    registration.router.callback_query.outer_middleware(RegistrationClosedMiddleware())
 
     # Start the admin web panel (same process → shares the DB and bot).
     web_runner = await _start_admin_panel(bot, config, db)

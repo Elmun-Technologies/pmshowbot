@@ -84,6 +84,11 @@ _RU = dict(
         "оно пройдёт <b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
     ),
     STATUS_PENDING="Ваша заявка на рассмотрении. В ближайшее время вы получите ответ.",
+    REGISTRATION_CLOSED=(
+        "Регистрация на <b>Promotors Show Samarkand</b> завершена. Спасибо за интерес!\n\n"
+        "Приходите на мероприятие в качестве гостя — оно пройдёт "
+        "<b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
+    ),
     SHARE_CTA="📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на Promotors Show!",
     SHARE_CTA_PLAIN="📸 Опубликуй свой билет в Stories — увидимся на Promotors Show!",
     BTN_SUBSCRIBE="Подписаться на канал",
@@ -176,6 +181,12 @@ _UZ = dict(
         "<b>12 va 13-sentyabr, 10:00 dan</b> <b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
     ),
     STATUS_PENDING="Arizangiz ko‘rib chiqilmoqda. Tez orada javob olasiz.",
+    REGISTRATION_CLOSED=(
+        "<b>Promotors Show Samarkand</b> uchun ro‘yxatdan o‘tish yakunlandi. "
+        "Qiziqish bildirganingiz uchun rahmat!\n\n"
+        "Tadbirga mehmon sifatida tashrif buyuring — u <b>12 va 13-sentyabr, 10:00 dan</b> "
+        "<b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
+    ),
     SHARE_CTA="📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — Promotors Show’da ko‘rishguncha!",
     SHARE_CTA_PLAIN="📸 Biletingizni Storiesda ulashing — Promotors Show’da ko‘rishguncha!",
     BTN_SUBSCRIBE="Kanalga obuna bo‘lish",
@@ -225,6 +236,17 @@ BTN_LANG_RU = "🇷🇺 Русский"
 
 # Any-language labels used to match the "my number" reply-keyboard button.
 MY_NUMBER_LABELS = {RU.BTN_MY_NUMBER, UZ.BTN_MY_NUMBER}
+
+# Shown on /start when registration is closed and the user's language is still
+# unknown (before the language picker), so it has to be bilingual.
+REGISTRATION_CLOSED_BILINGUAL = (
+    "Ro‘yxatdan o‘tish yakunlandi! ✅ Qiziqish bildirganingiz uchun rahmat!\n"
+    "Tadbirga mehmon sifatida tashrif buyuring — 12 va 13-sentyabr, 10:00 dan, "
+    "SOF EXPO avtoturargohida.\n\n"
+    "Регистрация завершена! ✅ Спасибо за интерес!\n"
+    "Приходите на мероприятие как гость — 12 и 13 сентября с 10:00, "
+    "парковка SOF EXPO."
+)
 
 # Shown when someone asks their number but has no application (language unknown).
 STATUS_NONE = (
