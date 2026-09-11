@@ -38,6 +38,10 @@ async def _gate_or_start(
 ) -> None:
     """After the language is known: subscription gate, then the form."""
     t = texts.T(lang)
+    # Registration is over — block even someone mid-flow who already picked a language.
+    if config.registration_closed:
+        await message.answer(t.REGISTRATION_CLOSED)
+        return
     if config.require_subscription and not await subscription.is_subscribed(
         bot, config.required_channel, user_id
     ):
@@ -76,6 +80,11 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
         await show_status(message, active)
         return
 
+    # Registration is over — new applicants just get the "closed" notice.
+    if config.registration_closed:
+        await message.answer(texts.REGISTRATION_CLOSED_BILINGUAL)
+        return
+
     # First ask the language (prompt is bilingual).
     await state.set_state(Registration.language)
     await message.answer(texts.ASK_LANGUAGE, reply_markup=keyboards.language_keyboard())
@@ -107,6 +116,12 @@ async def check_subscription(
         return
 
     lang = await _lang(state)
+    # Registration is over — the "I subscribed" button must not open the form.
+    if config.registration_closed:
+        await query.answer()
+        await query.message.answer(texts.T(lang).REGISTRATION_CLOSED)
+        return
+
     if await subscription.is_subscribed(bot, config.required_channel, query.from_user.id):
         await query.answer()
         await _start_form(query.message, state, lang)
