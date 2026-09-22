@@ -530,7 +530,7 @@ def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
             f"Sizning ro‘yxat raqamingiz — <b>№{number}</b>.\n"
         )
         if ev_date:
-            base += f"Ishtirokchi avtomobillari kirishi: <b>{ev_date}</b>.\n"
+            base += f"Ishtirokchilar kirishi — <b>{ev_date}</b>.\n"
         note = _event_note(tenant, lang)
         if note:
             base += f"{note}\n"
@@ -544,7 +544,9 @@ def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
             f"Ваш регистрационный номер — <b>№{number}</b>.\n"
         )
         if ev_date:
-            base += f"Заезд авто участников: <b>{ev_date}</b>.\n"
+            # The client's wording for the line participants read first:
+            # «Заезд участников — 2 октября».
+            base += f"Заезд участников — <b>{ev_date}</b>.\n"
         note = _event_note(tenant, lang)
         if note:
             base += f"{note}\n"
