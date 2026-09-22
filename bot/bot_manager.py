@@ -141,11 +141,19 @@ class BotManager:
             media_dir=f"{media_root}/_tenants/{tenant.slug}",
             asset_scope=tenant.slug,
             require_subscription=bool(getattr(self.config, "require_subscription", True)),
-            registration_closed=bool(getattr(self.config, "registration_closed", False)),
+            registration_closed=bool(getattr(tenant, "registration_closed", False)),
             admin_user_ids=getattr(self.config, "admin_user_ids", frozenset()),
             channel_url=tenant.channel_url,
             instagram_handle=tenant.instagram_handle,
             instagram_url=tenant.instagram_url,
+            event_date_text_ru=getattr(tenant, "event_date_text_ru", "") or "",
+            event_date_text_uz=getattr(tenant, "event_date_text_uz", "") or "",
+            event_venue_text_ru=getattr(tenant, "event_venue_text_ru", "") or "",
+            event_venue_text_uz=getattr(tenant, "event_venue_text_uz", "") or "",
+            event_guest_date_text_ru=getattr(tenant, "event_guest_date_text_ru", "") or "",
+            event_guest_date_text_uz=getattr(tenant, "event_guest_date_text_uz", "") or "",
+            event_note_text_ru=getattr(tenant, "event_note_text_ru", "") or "",
+            event_note_text_uz=getattr(tenant, "event_note_text_uz", "") or "",
         )
 
     @staticmethod
@@ -161,6 +169,15 @@ class BotManager:
             tenant.instagram_url,
             tenant.spreadsheet_id,
             tenant.drive_folder_id,
+            bool(getattr(tenant, "registration_closed", False)),
+            getattr(tenant, "event_date_text_ru", "") or "",
+            getattr(tenant, "event_date_text_uz", "") or "",
+            getattr(tenant, "event_venue_text_ru", "") or "",
+            getattr(tenant, "event_venue_text_uz", "") or "",
+            getattr(tenant, "event_guest_date_text_ru", "") or "",
+            getattr(tenant, "event_guest_date_text_uz", "") or "",
+            getattr(tenant, "event_note_text_ru", "") or "",
+            getattr(tenant, "event_note_text_uz", "") or "",
         )
 
     def _new_bot(self, token: str) -> Any:

@@ -46,6 +46,13 @@ async def main() -> None:
     manager = BotManager(db, config)
     web_runner = await _start_admin_panel(config, db, manager)
     await manager.start()
+    if config.registration_closed:
+        logger.warning(
+            "REGISTRATION_CLOSED is set in the environment but ignored. "
+            "Registration is per tenant and stays open unless that tenant's "
+            "admin checkbox is on. A leftover secret no longer makes every bot "
+            "answer «регистрация завершена»."
+        )
     logger.info("Tenant bot manager started; waiting for shutdown.")
 
     try:

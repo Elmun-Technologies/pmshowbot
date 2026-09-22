@@ -329,6 +329,12 @@ def _venue(tenant: Any, lang: str) -> str:
     return (getattr(tenant, "event_venue_text_ru", "") or "").strip()
 
 
+def _event_note(tenant: Any, lang: str) -> str:
+    if lang == "uz":
+        return (getattr(tenant, "event_note_text_uz", "") or "").strip()
+    return (getattr(tenant, "event_note_text_ru", "") or "").strip()
+
+
 def greeting_for_tenant(lang: str, tenant: Any) -> str:
     """Greeting with tenant name, no hard-coded Promotors."""
     name = _tenant_name_or_default(tenant)
@@ -383,9 +389,11 @@ def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
             f"Sizning ro‘yxat raqamingiz — <b>№{number}</b>.\n"
         )
         if ev_date:
-            base += f"Ishtirokchilar kirishi <b>{ev_date}</b> boshlanadi.\n\n"
-        else:
-            base += "\n"
+            base += f"Ishtirokchi avtomobillari kirishi: <b>{ev_date}</b>.\n"
+        note = _event_note(tenant, lang)
+        if note:
+            base += f"{note}\n"
+        base += "\n"
         base += channel_line
         base += "1) Kirish vaqti\n2) Festivalda ishtirok etish qoidalari\n3) Joylashuv\nshuningdek boshqa barcha yangiliklar."
         return base
@@ -395,12 +403,22 @@ def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
             f"Ваш регистрационный номер — <b>№{number}</b>.\n"
         )
         if ev_date:
-            base += f"Заезд участников начнётся <b>{ev_date}</b>.\n\n"
-        else:
-            base += "\n"
+            base += f"Заезд авто участников: <b>{ev_date}</b>.\n"
+        note = _event_note(tenant, lang)
+        if note:
+            base += f"{note}\n"
+        base += "\n"
         base += channel_line
         base += "1) Время заезда\n2) Правила участия на фестивале\n3) Расстановку\nа также все другие новости."
         return base
+
+
+def _venue_is_parking(venue: str) -> bool:
+    """Promotors called SOF EXPO a parking lot. Named halls (INDEX) are not."""
+    low = (venue or "").lower()
+    if any(word in low for word in ("парк", "parking", "turargoh", "avtoturargoh")):
+        return True
+    return "expo" in low
 
 
 def rejected_for_tenant(lang: str, tenant: Any) -> str:
@@ -432,7 +450,10 @@ def rejected_for_tenant(lang: str, tenant: Any) -> str:
                 base += f"<b>{gdate}</b>"
             if venue:
                 if gdate:
-                    base += f" на парковке <b>{venue}</b>."
+                    if _venue_is_parking(venue):
+                        base += f" на парковке <b>{venue}</b>."
+                    else:
+                        base += f" на <b>{venue}</b>."
                 else:
                     base += f" на <b>{venue}</b>."
             else:
@@ -456,7 +477,10 @@ def registration_closed_for_tenant(lang: str, tenant: Any) -> str:
                     base += f"<b>{gdate}</b>"
                 if venue:
                     if gdate:
-                        base += f" <b>{venue}</b> avtoturargohida bo‘lib o‘tadi."
+                        if _venue_is_parking(venue):
+                            base += f" <b>{venue}</b> avtoturargohida bo‘lib o‘tadi."
+                        else:
+                            base += f" <b>{venue}</b> da bo‘lib o‘tadi."
                     else:
                         base += f"<b>{venue}</b> da bo‘lib o‘tadi."
                 else:
@@ -474,7 +498,10 @@ def registration_closed_for_tenant(lang: str, tenant: Any) -> str:
                     base += f"<b>{gdate}</b>"
                 if venue:
                     if gdate:
-                        base += f" на парковке <b>{venue}</b>."
+                        if _venue_is_parking(venue):
+                            base += f" на парковке <b>{venue}</b>."
+                        else:
+                            base += f" на <b>{venue}</b>."
                     else:
                         base += f" на <b>{venue}</b>."
                 else:

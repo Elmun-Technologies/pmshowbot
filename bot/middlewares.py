@@ -59,7 +59,7 @@ class RegistrationClosedMiddleware(BaseMiddleware):
         lang = (await state.get_data()).get("lang", "ru")
         await state.clear()
 
-        text = texts.T(lang).REGISTRATION_CLOSED
+        text = texts.registration_closed_for_tenant(lang, config)
         if isinstance(event, CallbackQuery):
             await event.answer()
             if event.message is not None:
