@@ -14,10 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 from aiogram.types import BufferedInputFile
 
 from .. import keyboards, texts
@@ -31,7 +35,7 @@ from ..db import (
     STATUS_REJECTED,
 )
 from . import drive, sheets, subscription
-from .ticket import generate_ticket
+from .ticket import generate_ticket, ticket_as_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -57,35 +61,214 @@ def _get_display_name(app: Application) -> str:
     return ""
 
 
-async def send_ticket(bot: Bot, config: Config | TenantConfig, app: Application) -> None:
-    """Render and send the shareable Stories ticket, then a short share message."""
-    try:
-        tenant_scope = getattr(config, "asset_scope", None) or getattr(config, "tenant_slug", None)
-        tenant_name = getattr(config, "tenant_name", "")
-        # Pass full tenant config for date/venue branding
-        png = await asyncio.to_thread(
+_UNSET = object()
+
+# Telegram rejects photos above 10 MB; re-encode well before that.
+_MAX_PHOTO_BYTES = 9 * 1024 * 1024
+# Rendering a ticket over a participant's 4-5 MB phone photo takes seconds; a
+# stuck render must not hold the approval handler (and the group card) forever.
+_RENDER_TIMEOUT_SECONDS = 90.0
+
+
+@dataclass
+class TicketResult:
+    """Outcome of one ticket delivery — ``bool(result)`` is True when sent."""
+
+    ok: bool
+    error: str = ""
+
+    def __bool__(self) -> bool:  # pragma: no cover - trivial
+        return self.ok
+
+
+def _tenant_scope(config: Any) -> Optional[str]:
+    return getattr(config, "asset_scope", None) or getattr(config, "tenant_slug", None)
+
+
+def _applicant_label(app: Application) -> str:
+    return _get_display_name(app) or f"id {app.user_id}"
+
+
+async def _render_ticket(
+    config: Config | TenantConfig, app: Application, hero_path: Optional[str]
+) -> bytes:
+    """Render the ticket in a worker thread, with a timeout."""
+    return await asyncio.wait_for(
+        asyncio.to_thread(
             generate_ticket,
-            tenant_scope,
+            _tenant_scope(config),
             number=app.reg_number,
             plate=app.plate,
             direction=texts.localize_direction(app.direction, app.language),
             name=_get_display_name(app),
-            tenant_name=tenant_name,
+            tenant_name=getattr(config, "tenant_name", ""),
             lang=app.language,
-            hero_image_path=_pick_hero(app.photo_paths),
+            hero_image_path=hero_path,
             tenant_config=config,
-        )
-        await bot.send_photo(
-            app.user_id,
-            BufferedInputFile(png, filename=f"ticket_{app.reg_number}.png"),
-        )
-        # Share CTA tenant-branded
-        share_text = texts.share_cta_for_tenant(app.language, config)
-        await bot.send_message(app.user_id, share_text)
-    except TelegramForbiddenError:
-        logger.warning("Could not send ticket to user %s (bot blocked?)", app.user_id)
-    except Exception:
-        logger.exception("Failed to generate/send ticket for application %s", app.id)
+        ),
+        timeout=_RENDER_TIMEOUT_SECONDS,
+    )
+
+
+async def _report_ticket_failure(
+    bot: Optional[Bot],
+    config: Config | TenantConfig,
+    app: Application,
+    error: str,
+    *,
+    image: Optional[bytes] = None,
+) -> None:
+    """Tell the moderation chat that a ticket could not be delivered.
+
+    The team can forward the very same image to the participant by hand, which
+    is what they had to do (blindly) whenever the automatic send failed.
+    """
+    chat_id = getattr(config, "admin_chat_id", 0)
+    logger.error("Ticket for application %s was not delivered: %s", app.id, error)
+    if not chat_id or bot is None:
+        return
+    label = _applicant_label(app)
+    number = app.reg_number if app.reg_number is not None else "—"
+    try:
+        if image:
+            await bot.send_photo(
+                chat_id,
+                BufferedInputFile(image, filename=f"ticket_{number}.png"),
+                caption=texts.TICKET_FALLBACK_ADMIN.format(
+                    number=number, plate=app.plate or "—", user=label
+                ),
+            )
+        else:
+            await bot.send_message(
+                chat_id,
+                texts.TICKET_FAILED_ADMIN.format(
+                    number=number, plate=app.plate or "—", user=label, error=error[:300]
+                ),
+            )
+    except Exception:  # noqa: BLE001 - reporting must never break the decision
+        logger.warning("Could not report the ticket failure for %s", app.id, exc_info=True)
+
+
+async def send_ticket(
+    bot: Optional[Bot],
+    config: Config | TenantConfig,
+    app: Application,
+    *,
+    hero_path: Any = _UNSET,
+    report_failure: bool = True,
+) -> TicketResult:
+    """Render and send the shareable Stories ticket, then a short share message.
+
+    Never raises. Delivery is layered, because the participant paid for a
+    registration and must not silently lose the ticket:
+
+    1. the poster is rendered from their front photo, and without it (gradient
+       background) if that photo cannot be decoded;
+    2. sent as PNG, retried as JPEG when Telegram refuses the photo (size or
+       dimensions), and finally as a document;
+    3. on any definitive failure the moderation chat receives the ticket with a
+       "forward this to the participant" caption, and the error is logged.
+    """
+    if bot is None:
+        error = "рабочий процесс бота не запущен (bot is None)"
+        if report_failure:
+            await _report_ticket_failure(bot, config, app, error)
+        else:
+            logger.error("Ticket for application %s: %s", app.id, error)
+        return TicketResult(False, error)
+
+    hero = _pick_hero(app.photo_paths) if hero_path is _UNSET else hero_path
+    candidates = [hero, None] if hero else [None]
+
+    png: Optional[bytes] = None
+    error = ""
+    for candidate in candidates:
+        try:
+            png = await _render_ticket(config, app, candidate)
+            break
+        except Exception as exc:  # noqa: BLE001 - retried without the hero photo
+            error = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "Ticket rendering for application %s failed (hero photo: %s)",
+                app.id,
+                bool(candidate),
+            )
+
+    if png is None:
+        if report_failure:
+            await _report_ticket_failure(bot, config, app, error)
+        return TicketResult(False, error or "ticket rendering failed")
+
+    png_name = f"ticket_{app.reg_number}.png"
+    jpg_name = f"ticket_{app.reg_number}.jpg"
+    jpeg: Optional[bytes] = None
+    # A PNG over the photo limit would be rejected by Telegram anyway — send the
+    # compact JPEG copy first in that case instead of wasting the upload.
+    transports = (
+        ("photo", "photo_jpeg", "document")
+        if len(png) <= _MAX_PHOTO_BYTES
+        else ("photo_jpeg", "document")
+    )
+
+    for kind in transports:
+        for attempt in (1, 2):
+            try:
+                if kind == "photo":
+                    await bot.send_photo(
+                        app.user_id, BufferedInputFile(png, filename=png_name)
+                    )
+                elif kind == "photo_jpeg":
+                    if jpeg is None:
+                        jpeg = ticket_as_jpeg(png)
+                    if not jpeg:
+                        break  # nothing to send on this transport
+                    await bot.send_photo(
+                        app.user_id, BufferedInputFile(jpeg, filename=jpg_name)
+                    )
+                else:
+                    await bot.send_document(
+                        app.user_id, BufferedInputFile(png, filename=png_name)
+                    )
+                share_text = texts.share_cta_for_tenant(app.language, config)
+                try:
+                    await bot.send_message(app.user_id, share_text)
+                except Exception:  # noqa: BLE001 - the ticket itself arrived
+                    logger.warning(
+                        "Share CTA was not delivered to %s", app.user_id, exc_info=True
+                    )
+                return TicketResult(True, "")
+            except TelegramForbiddenError:
+                error = "участник заблокировал бота или не начинал с ним чат"
+                logger.warning(
+                    "Ticket for application %s: participant %s is unreachable",
+                    app.id,
+                    app.user_id,
+                )
+                if report_failure:
+                    await _report_ticket_failure(bot, config, app, error, image=png)
+                return TicketResult(False, error)
+            except TelegramRetryAfter as exc:
+                # Telegram rate-limited us: wait exactly as asked, then retry once.
+                if attempt == 2:
+                    error = f"TelegramRetryAfter: {getattr(exc, 'retry_after', '?')}s"
+                    break
+                wait = min(float(getattr(exc, "retry_after", 5) or 5), 60.0)
+                logger.warning(
+                    "Telegram asked to wait %.0fs before the ticket of application %s",
+                    wait,
+                    app.id,
+                )
+                await asyncio.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - try the next transport
+                error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Ticket of application %s was rejected as %s: %s", app.id, kind, error
+                )
+                break
+
+    if report_failure:
+        await _report_ticket_failure(bot, config, app, error, image=png)
+    return TicketResult(False, error or "ticket delivery failed")
 
 
 async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") -> None:

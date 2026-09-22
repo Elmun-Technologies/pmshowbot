@@ -30,6 +30,7 @@ from ..services import assets, decisions, subscription
 from ..security import EncryptionError
 from . import auth, i18n, views
 from .i18n import t
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ def _register_tenant_routes(app: web.Application, prefix: str) -> None:
     app.router.add_get(f"{prefix}/modphoto/{{id}}/{{idx}}", _mod_photo)
     app.router.add_get(f"{prefix}/badgephoto/{{id}}", _badge_photo)
     app.router.add_post(f"{prefix}/application/{{id}}/delete", _delete_application)
+    app.router.add_post(f"{prefix}/application/{{id}}/ticket", _resend_ticket)
     app.router.add_get(f"{prefix}/export.csv", _export_csv)
     app.router.add_get(f"{prefix}/export.xlsx", _export_excel)
     app.router.add_get(f"{prefix}/broadcast", _broadcast_get)
@@ -152,6 +154,7 @@ def _register_tenant_routes(app: web.Application, prefix: str) -> None:
         app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
         app.router.add_get("/badgephoto/{id}", _badge_photo)
         app.router.add_post("/application/{id}/delete", _delete_application)
+        app.router.add_post("/application/{id}/ticket", _resend_ticket)
         app.router.add_get("/export.csv", _export_csv)
         app.router.add_get("/export.xlsx", _export_excel)
         app.router.add_get("/broadcast", _broadcast_get)
@@ -513,6 +516,8 @@ async def _application_detail(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
     msg = request.query.get("msg")
     status_flag = request.query.get("status_change")
+    ticket = request.query.get("ticket")
+    ticket_error = request.query.get("ticket_error", "")
     return _html(
         request,
         views.application_detail_page(
@@ -525,6 +530,12 @@ async def _application_detail(request: web.Request) -> web.Response:
             ),
             status_changed=status_flag == "ok",
             status_error=t(lang, "error.status_change") if status_flag == "error" else "",
+            ticket_sent=ticket == "sent",
+            ticket_error=(
+                t(lang, "ticket.failed_notice", error=quote(ticket_error[:200]))
+                if ticket == "failed"
+                else ""
+            ),
         ),
     )
 
@@ -607,6 +618,32 @@ async def _change_status(request: web.Request) -> web.Response:
         announce_in_chat=True,
     )
     raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if ok else 'error'}"))
+
+
+async def _resend_ticket(request: web.Request) -> web.Response:
+    """POST /application/{id}/ticket — regenerate and send the ticket again.
+
+    Covers the "the picture never arrived" report without a developer: the
+    panel regenerates the ticket with the current branding and reports the
+    outcome on the application page.
+    """
+    db = _db(request)
+    bot = _bot(request)
+    config = _config(request)
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    if app is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.app_not_found"))
+
+    result = await decisions.send_ticket(bot, config, app, report_failure=False)
+    if result:
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?ticket=sent"))
+    raise web.HTTPFound(
+        _url(
+            request,
+            f"/application/{app_id}?ticket=failed&ticket_error={quote(str(result.error or ''))}",
+        )
+    )
 
 
 async def _delete_application(request: web.Request) -> web.Response:

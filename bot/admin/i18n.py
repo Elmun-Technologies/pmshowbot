@@ -174,6 +174,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "detail.reject": "❌ Отклонить",
 
         # --- Danger zone: permanent delete ---
+        "ticket.resend_title": "🎫 Билет участника",
+        "ticket.resend_hint": (
+            "Отправить сгенерированный билет (№{number}) участнику ещё раз — "
+            "например, если он его не получил."
+        ),
+        "ticket.resend_button": "🎫 Отправить билет повторно",
+        "ticket.sent_notice": "Билет отправлен участнику в Telegram.",
+        "ticket.failed_notice": "Не удалось отправить билет: {error}",
         "delete.title": "🗑 Удаление заявки",
         "delete.hint": (
             "Заявка будет удалена из базы вместе с фотографиями. После этого "
@@ -730,6 +738,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "detail.reject": "❌ Rad etish",
 
         # --- Danger zone: permanent delete ---
+        "ticket.resend_title": "🎫 Ishtirokchi bileti",
+        "ticket.resend_hint": (
+            "Yaratilgan biletni (№{number}) ishtirokchiga qayta yuborish — "
+            "masalan, u biletni olmagan bo‘lsa."
+        ),
+        "ticket.resend_button": "🎫 Biletni qayta yuborish",
+        "ticket.sent_notice": "Bilet ishtirokchiga Telegram orqali yuborildi.",
+        "ticket.failed_notice": "Biletni yuborib bo‘lmadi: {error}",
         "delete.title": "🗑 Arizani o‘chirish",
         "delete.hint": (
             "Ariza suratlar bilan birga bazadan butunlay o‘chiriladi. Shundan so‘ng "

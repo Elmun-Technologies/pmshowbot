@@ -500,15 +500,40 @@ def test_a_crashing_message_handler_answers_the_participant():
 
 
 def test_global_buttons_still_work_in_the_middle_of_the_form():
-    """The safety net must not swallow /mynumber or the status keyboard button."""
+    """The safety net must not swallow /mynumber or the status keyboard button.
+
+    The reply keyboard of an earlier session stays on screen while the form is
+    open, so participants do tap "Узнать свой номер" mid-registration.  The
+    answer must continue the form — answering "у вас нет заявки, нажмите /start"
+    made testers fill everything in again and looked like a lost registration.
+    """
     async def run():
         harness = BotHarness()
         await harness.start()
         try:
             await _register_until_directions(harness)
             await harness.send_text(USER, "Узнать свой номер")
+            answers = harness.private_texts(USER)[-2:]
+            assert "процессе регистрации" in answers[0], answers
+            # …and the current step (choosing a direction) is re-asked.
+            assert any("направление" in a for a in answers), answers
+            assert not any("нет заявки" in a for a in answers)
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
+
+
+def test_status_button_without_any_application_still_answers_the_status_text():
+    """Outside the form the plain "no application" answer is kept."""
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            # No form is open: the plain status answer is still the right one.
+            await harness.send_text(USER, "Узнать свой номер")
             last = harness.private_texts(USER)[-1]
-            assert "нет заявки" in last or "yo‘q" in last, last
+            assert "нет заявки" in last, last
         finally:
             await harness.stop()
 
@@ -520,3 +545,79 @@ if __name__ == "__main__":  # pragma: no cover - manual run helper
         if name.startswith("test_") and callable(value):
             value()
             print(f"ok  {name}")
+
+def test_start_in_the_middle_of_the_form_offers_continue_or_restart():
+    """``/start`` mid-form must not silently wipe the collected answers.
+
+    The client tapped /start (an old answer had told him to) after all four
+    photos and had to fill the whole form in again — "заново опять всё делает".
+    """
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            await _register_until_directions(harness)
+            await _tap_root(harness, "SQ")
+            await harness.send_photo(USER, "left")
+            await harness.send_photo(USER, "right")
+
+            await harness.send_command(USER, "/start")
+            assert "уже начали регистрацию" in harness.private_texts(USER)[-1]
+            keys = [
+                button.callback_data
+                for row in await _direction_keyboard(harness)
+                for button in row
+            ]
+            assert "flow:continue" in keys and "flow:restart" in keys, keys
+
+            # Continuing keeps the two photos and repeats the current step.
+            await harness.tap(USER, "flow:continue")
+            assert "3 из 4" in harness.private_texts(USER)[-1]
+
+            # Restarting really starts over.
+            await harness.send_command(USER, "/start")
+            await harness.tap(USER, "flow:restart")
+            assert "Выберите страну" in harness.private_texts(USER)[-1]
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
+
+
+def test_missing_application_is_logged_with_the_other_tenants(caplog):
+    """A "нет заявки" answer must leave a diagnosable trace in the log.
+
+    The client finished the form and was then told he had no application.  The
+    handler cannot know which bot the record went to, but the log now names the
+    tenants that do hold rows for that person, so the next such report can be
+    resolved from the log instead of guessed at.
+    """
+    import logging
+
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            default_tenant = await harness.db.get_tenant("promotors")
+            assert default_tenant is not None, "the bootstrap tenant is missing"
+            await harness.db.create_application(
+                tenant_id=default_tenant.id,
+                user_id=USER,
+                username="@tester",
+                country="Узбекистан",
+                plate="01A000AA",
+                direction="SQ",
+                phone="+998900000000",
+                photo_file_ids=[],
+                photo_paths=[],
+            )
+            with caplog.at_level(logging.WARNING):
+                await harness.send_text(USER, "Узнать свой номер")
+
+            assert "нет заявки" in harness.private_texts(USER)[-1]
+            messages = [record.getMessage() for record in caplog.records]
+            assert any("promotors" in m for m in messages), messages
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())

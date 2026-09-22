@@ -478,6 +478,13 @@ class TenantDatabase:
             user_id, file_id, path, tenant_id=self.tenant_id
         )
 
+    async def other_tenants_for_user(self, user_id: int) -> dict[str, int]:
+        """Diagnostics only: other tenants holding applications of this user."""
+        counter = getattr(self._database, "user_tenant_counts", None)
+        if counter is None:  # pragma: no cover - very old facades
+            return {}
+        return await counter(user_id, exclude_tenant_id=int(self.tenant_id))
+
     async def delete_application(self, app_id: int, *, remove_files: bool = True) -> Optional[Application]:
         """Remove one of this tenant's applications permanently."""
         return await self._database.delete_application(
@@ -1542,6 +1549,34 @@ class Database:
             ).fetchone()
             return _row_to_application(row) if row else None
 
+    def _user_tenant_counts(
+        self, user_id: int, exclude_tenant_id: int | None = None
+    ) -> dict[str, int]:
+        """How many applications a Telegram user has per tenant (diagnostics).
+
+        Used when someone is answered "you have no application" although they
+        just finished the form: if rows exist under another tenant, the log
+        says so instead of leaving the team guessing why the record vanished.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.slug AS slug, t.id AS tid, COUNT(a.id) AS n
+                FROM applications a
+                JOIN tenants t ON t.id = a.tenant_id
+                WHERE a.user_id = ?
+                GROUP BY t.id
+                ORDER BY t.slug
+                """,
+                (user_id,),
+            ).fetchall()
+        counts: dict[str, int] = {}
+        for row in rows:
+            if exclude_tenant_id is not None and int(row["tid"]) == int(exclude_tenant_id):
+                continue
+            counts[str(row["slug"])] = int(row["n"])
+        return counts
+
     def _set_badge_photo(
         self, user_id: int, file_id: str, path: str, tenant_id: int | str | None = None
     ) -> Optional[int]:
@@ -2016,6 +2051,11 @@ class Database:
         self, user_id: int, *, tenant_id: int | str | None = None
     ) -> Optional[Application]:
         return await asyncio.to_thread(self._has_active_application, user_id, tenant_id)
+
+    async def user_tenant_counts(
+        self, user_id: int, *, exclude_tenant_id: int | None = None
+    ) -> dict[str, int]:
+        return await asyncio.to_thread(self._user_tenant_counts, user_id, exclude_tenant_id)
 
     async def set_badge_photo(
         self, user_id: int, file_id: str, path: str, *, tenant_id: int | str | None = None

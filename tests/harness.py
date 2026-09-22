@@ -172,6 +172,24 @@ class FakeSession(BaseSession):
     def fail_always(self, name: str, error: Exception) -> None:
         self.handlers[name] = lambda _method: error
 
+    def fail_for_chat(self, name: str, chat_id: int, error: Exception) -> None:
+        """Make one API method fail only for one chat.
+
+        Needed to test delivery fallbacks: the participant's chat keeps failing
+        while the moderation chat still receives the "forward this manually"
+        copy of the ticket.
+        """
+        base = self.handlers.get(name)
+
+        def handler(method: Any) -> Any:
+            if getattr(method, "chat_id", None) == chat_id:
+                raise error
+            if base is not None:
+                return base(method)
+            return self._default_result(name, method)
+
+        self.handlers[name] = handler
+
 
 def make_bot(session: Optional[FakeSession] = None) -> tuple[Bot, FakeSession]:
     session = session or FakeSession()

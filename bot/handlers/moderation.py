@@ -15,7 +15,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from .. import keyboards, texts
 from ..config import Config
 from ..constants import DIRECTIONS
-from ..db import Database
+from ..db import STATUS_APPROVED, Database
 from ..services import assets, decisions, subscription
 from ..services.ticket import generate_ticket
 
@@ -418,6 +418,37 @@ async def cmd_export(message: Message, config: Config, db: Database) -> None:
         pass
 
 
+@router.message(Command("ticket"))
+async def cmd_ticket(message: Message, bot: Bot, config: Config, db: Database) -> None:
+    """``/ticket <id>`` — resend the generated ticket to the participant.
+
+    Participants do report "the picture never arrived" (blocked bot, mobile
+    upload, deleted chat).  Before this the team had no way to send it again;
+    now the ticket is one command away, and the outcome is reported right here.
+    """
+    if not _is_admin(message, config):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer(texts.TICKET_CMD_USAGE)
+        return
+
+    app_id = int(parts[1])
+    app = await db.get_application(app_id)
+    if app is None:
+        await message.answer(texts.TICKET_CMD_NO_APP.format(app_id=app_id))
+        return
+    if app.status != STATUS_APPROVED or app.reg_number is None:
+        await message.answer(texts.TICKET_CMD_NOT_APPROVED.format(status=app.status))
+        return
+
+    result = await decisions.send_ticket(bot, config, app, report_failure=False)
+    if result:
+        await message.answer(texts.TICKET_CMD_SENT.format(number=app.reg_number))
+    else:
+        await message.answer(texts.TICKET_CMD_FAILED.format(error=result.error))
+
+
 @router.callback_query(F.data.startswith(f"{keyboards.CB_APPROVE}:"))
 async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
     app_id = _callback_app_id(query)
@@ -522,6 +553,7 @@ def create_router() -> Router:
     fresh.message.register(diag, Command("diag"))
     fresh.message.register(cmd_stats, Command("stats"))
     fresh.message.register(cmd_export, Command("export"))
+    fresh.message.register(cmd_ticket, Command("ticket"))
     fresh.callback_query.register(
         approve, F.data.startswith(f"{keyboards.CB_APPROVE}:")
     )

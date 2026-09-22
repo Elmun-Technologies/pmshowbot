@@ -14,7 +14,9 @@ Robustness rules (learned from production incidents):
   anything re-asks the current question instead of doing nothing;
 * photo updates are de-duplicated and download failures are reported, so a
   single bad upload can neither desynchronise the four sides nor drop a photo
-  without a word.
+  without a word;
+* ``/start`` in the middle of the form asks whether to continue or restart
+  instead of silently deleting the collected answers.
 """
 from __future__ import annotations
 
@@ -137,6 +139,21 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
         username=_user_label(message),
         language="ru",
     )
+
+    # /start used to clear the state unconditionally.  Testers (and real
+    # participants) tap it in the middle of the form — often because an old
+    # answer told them to — and then had to fill in four photos again
+    # ("заново опять всё делает").  Ask instead of wiping.
+    data = await state.get_data()
+    active_state = await state.get_state()
+    if active_state is not None and data.get("lang"):
+        lang = data.get("lang", "ru")
+        await message.answer(
+            texts.T(lang).FORM_IN_PROGRESS,
+            reply_markup=keyboards.continue_or_restart_keyboard(lang),
+        )
+        return
+
     await state.clear()
 
     active = await db.has_active_application(message.from_user.id)
@@ -154,6 +171,41 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
 
     await state.set_state(Registration.language)
     await message.answer(texts.ASK_LANGUAGE, reply_markup=keyboards.language_keyboard())
+
+
+@router.callback_query(F.data == keyboards.CB_FLOW_CONTINUE)
+async def flow_continue(
+    query: CallbackQuery, state: FSMContext, config: Config | TenantConfig, db: Database
+) -> None:
+    """Keep the collected answers and repeat the current step."""
+    lang = (await state.get_data()).get("lang", "ru")
+    await query.answer()
+    if query.message is None:
+        return
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001 - the message may be too old to edit
+        logger.debug("Could not clear the resume keyboard", exc_info=True)
+    if not await _repeat_step(query.message, state, lang, config, db):
+        await state.clear()
+        await _start_form(query.message, state, lang, config)
+
+
+@router.callback_query(F.data == keyboards.CB_FLOW_RESTART)
+async def flow_restart(
+    query: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
+) -> None:
+    """Drop the collected answers and start the form from the beginning."""
+    lang = (await state.get_data()).get("lang", "ru")
+    await query.answer()
+    await state.clear()
+    if query.message is None:
+        return
+    await _gate_or_start(query.message, state, bot, config, query.from_user.id, lang, db)
 
 
 @router.callback_query(Registration.language, F.data.startswith(f"{keyboards.CB_LANG}:"))
@@ -773,7 +825,11 @@ async def _repeat_step(
         return True
     if current in (Registration.direction.state, Registration.sub_direction.state):
         data = await state.get_data()
-        parent_id = data.get("direction_parent_id") if current == Registration.sub_direction.state else None
+        parent_id = (
+            data.get("direction_parent_id")
+            if current == Registration.sub_direction.state
+            else None
+        )
         await _ask_direction(message, state, lang, config, db, parent_id=parent_id)
         return True
     if current == Registration.photos.state:
@@ -831,6 +887,8 @@ async def stale_callback(
 def create_router() -> Router:
     fresh = Router(name="registration")
     fresh.message.register(cmd_start, CommandStart())
+    fresh.callback_query.register(flow_continue, F.data == keyboards.CB_FLOW_CONTINUE)
+    fresh.callback_query.register(flow_restart, F.data == keyboards.CB_FLOW_RESTART)
     fresh.callback_query.register(
         choose_language,
         Registration.language,

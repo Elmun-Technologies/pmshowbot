@@ -401,6 +401,31 @@ def _delete_application_form(lang: str, app: Application) -> str:
     )
 
 
+def _resend_ticket_form(lang: str, app: Application, message: str = "", error: str = "") -> str:
+    """Send the generated ticket to the participant again.
+
+    "The picture never arrived" is a report the team has to act on during the
+    event; without a button the only options were to re-approve (impossible)
+    or to ask a developer.  Only approved applications have a ticket.
+    """
+    if app.status != STATUS_APPROVED or app.reg_number is None:
+        return ""
+    notice = ""
+    if message:
+        notice = f'<div class="ok">{escape(message)}</div>'
+    if error:
+        notice = f'<div class="err">{escape(error)}</div>'
+    return (
+        '<div class="section">'
+        f'<h2>{t(lang, "ticket.resend_title")}</h2>'
+        f'<p class="muted">{t(lang, "ticket.resend_hint", number=app.reg_number)}</p>'
+        + notice
+        + f'<form method="post" action="/application/{app.id}/ticket">'
+        f'<button class="btn btn-primary" type="submit">{t(lang, "ticket.resend_button")}</button>'
+        '</form></div>'
+    )
+
+
 def application_detail_page(
     lang: str,
     app: Application,
@@ -408,6 +433,8 @@ def application_detail_page(
     msg_error: str = "",
     status_changed: bool = False,
     status_error: str = "",
+    ticket_sent: bool = False,
+    ticket_error: str = "",
 ) -> str:
     lang = i18n.normalize_lang(lang)
     photos = ""
@@ -486,6 +513,12 @@ def application_detail_page(
         f'<div class="section"><h2>{t(lang, "detail.badge_photo")}</h2>{badge_html}</div>'
         + _status_control(lang, app.id, app.status, changed=status_changed, error=status_error)
         + _individual_message_form(lang, app.id, sent=msg_sent, error=msg_error)
+        + _resend_ticket_form(
+            lang,
+            app,
+            message=t(lang, "ticket.sent_notice") if ticket_sent else "",
+            error=ticket_error,
+        )
         + _delete_application_form(lang, app)
     )
     return _page(t(lang, "detail.page_title", id=app.id), body, lang, active="apps")

@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 
 from bot.config import Config
 from bot.db import SPL_EVENT_COPY, Database
-from bot.texts import approved_for_tenant
+from bot.texts import approved_for_tenant, rejected_for_tenant
 
 
 def _config(path: str, key: str, *, closed: bool) -> Config:
@@ -128,3 +128,49 @@ def test_approved_message_includes_arrival_show_start_and_car_rule():
     )
     assert "Заезд авто участников" in plain
     assert "09:00" not in plain
+
+
+def test_rejection_message_has_no_event_time():
+    """«При отклонении заявки приходит сообщение с неправильным временем».
+
+    The client's rule: the show is for registered participants only
+    ("hozircha faqat uchastniklar uchun"), so the rejection must not invite the
+    person as a guest — and must not print any date, time or venue that could
+    be wrong.
+    """
+    tenant = type(
+        "T",
+        (),
+        {
+            "tenant_name": "SPL Show",
+            "channel_url": "https://t.me/splshow",
+            **SPL_EVENT_COPY,
+        },
+    )()
+
+    ru = rejected_for_tenant("ru", tenant)
+    uz = rejected_for_tenant("uz", tenant)
+    assert "не прошли регистрацию" in ru
+    assert "ro‘yxatdan o‘tmadingiz" in uz
+
+    for text in (ru, uz):
+        assert "12:00" not in text
+        assert "17:00" not in text
+        assert "октябр" not in text and "oktyabr" not in text
+        assert "Tashkent INDEX" not in text
+        assert "гост" not in text and "mehmon" not in text
+
+    # Even a tenant that still carries guest fields gets a neutral rejection.
+    legacy = type(
+        "T",
+        (),
+        {
+            "tenant_name": "Promotors Show",
+            "event_guest_date_text_ru": "12 и 13 сентября с 10:00",
+            "event_venue_text_ru": "SOF EXPO",
+            "event_guest_date_text_uz": "12 va 13-sentyabr, 10:00 dan",
+            "event_venue_text_uz": "SOF EXPO",
+        },
+    )()
+    assert "сентябр" not in rejected_for_tenant("ru", legacy).lower()
+    assert "SOF EXPO" not in rejected_for_tenant("ru", legacy)

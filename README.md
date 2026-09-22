@@ -325,6 +325,9 @@ has a regression test.
 | «После принятия заявки в группе не изменился статус» | A panel decision never touched the Telegram card, and a failed `edit_text` was swallowed | The card message id is stored on the application; the decision is appended, buttons removed, and a fallback message is posted if editing fails. Panel decisions clear the card buttons too |
 | «Бот зависает» / «qotyapti» | Any handler exception left the participant without an answer; restarts wiped the FSM | `bot/errors.py` answers callbacks (alert) and private chats (technical-error note); `bot/services/fsm_storage.py` keeps states in SQLite so a restart/hot reload no longer drops a half-finished form |
 | «Удалить зарегистрированного человека из базы нельзя» | There was no delete action | 🗑 delete on the application page removes the row and its photos; the person can register again and the number is reused |
+| «Не пришла сгенерированная картинка после одобрения» | The ticket was rendered and sent in one `try`, and any failure was only logged: no image, no explanation, no way to resend | Delivery is layered — PNG → JPEG (when Telegram refuses the photo) → file → the ticket is posted into the moderation chat with "forward it to the participant"; the render runs in a thread with a timeout and is retried without the hero photo. The team can resend it themselves: `/ticket 123` in the moderation chat, or the 🎫 button on the application page |
+| «При отклонении заявки приходит сообщение с неправильным времени мероприятия» | The rejection invited the person as a guest with a date/time that was wrong (September copy on the deployed build), and a named hall was called a parking lot | The rejection carries **no** date, time or venue at all — the client's rule is «hozircha faqat uchastniklar uchun»; the approval keeps the tenant's participant-entry copy (`03 октября` stays editable in the panel). The venue wording still separates a parking lot from a named venue (RU «на площадке», UZ «manzilida») |
+| Testers tap the status button or `/start` in the middle of the form, get «у вас нет заявки» and fill everything in again | A half-filled form was treated as "no registration": the status answer told them to `/start`, and `/start` silently wiped the collected photos | Mid-form the status button continues the form (current step re-asked); `/start` offers «Продолжить / Начать заново» instead of deleting the answers; when nothing is found the log names the tenants that do hold rows for that person |
 
 Operational notes:
 
@@ -333,6 +336,12 @@ Operational notes:
   in-memory storage instead of stopping the bot.
 - Every failure is logged with the tenant slug and update id — search the log
   for `"failed:"` when a participant reports a silent bot.
+- Tickets: Telegram's photo limit is 10 MB, so a poster above ~9 MB is sent as
+  JPEG from the start; if a send fails the moderation chat receives the same
+  image with a "forward this to the participant" caption.
+- Re-registration for testing: delete the application (🗑 on its page) — the
+  person and the number are freed immediately. `/start` then runs the form
+  again from the beginning.
 
 ## Editing wording / dates
 
