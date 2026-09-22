@@ -104,6 +104,7 @@ python -m bot.main
 ## Testing
 
 ```bash
+python -m pytest -q       # full suite (db, admin panel, i18n, tenants, …)
 python tests/test_db.py   # sequential registration numbers, status transitions
 ```
 
@@ -138,6 +139,45 @@ files live under `media/_tenants/<slug>/_sponsors`, `_brand`, and `_directions`;
 new participant photos are stored below the same tenant root. A tenant's
 sponsor logos, banners and ticket preview can never be read through another
 tenant's panel URL.
+
+## Panel languages (RU / O‘Z)
+
+The whole admin panel — super-admin and tenant sides, including all login
+pages — works in **Русский** and **O‘zbekcha**. Russian (`ru`) is the default,
+so a client who does not read Uzbek can use the panel entirely in Russian.
+
+**Switching languages.** Every page header (and every login page) shows a
+`RU | O‘Z` switcher. Click `O‘Z` and the interface — navigation, tables,
+buttons, forms, validation and flash messages, exports' CSV headers, confirm
+dialogs, empty states and 404 texts — renders in Uzbek immediately. The choice
+is stored in a separate `pm_lang` cookie (`HttpOnly`, `SameSite=Lax`, `Secure`,
+1 year) and kept across pages and sessions. You can also switch (or deep-link)
+with the `?lang=ru` / `?lang=uz` query parameter — a login POST or redirect
+keeps the choice.
+
+**Security properties (unchanged by locale):**
+
+- The locale lives in its own cookie and never touches the tenant or
+  super-admin session cookies; `?lang=` cannot log you in, log you out, or
+  change which tenant's data you see.
+- Only `ru` and `uz` are accepted. Anything else in the cookie or query string
+  (e.g. `?lang=fr` or a crafted value) safely renders the Russian default
+  without being reflected into the HTML — no XSS, no open redirect.
+- Bot tokens are never rendered in any language: the panel shows only the
+  `***` configured marker.
+- The switcher link is relative (`?lang=…`), so it works identically on
+  `/super-admin/…` and tenant-scoped `/t/<slug>/…` URLs and keeps list filters
+  (status/search) when switching on the applications page.
+
+**Where translations live.** All panel strings are centralized in
+`bot/admin/i18n.py` as two flat dictionaries keyed by stable dot-paths
+(e.g. `t(lang, "tenant.create.title")`). Unknown keys and unknown locales fall
+back to Russian; adding a new UI string means adding one `ru` and one `uz`
+entry there — views never contain `if lang == ...` branches. The Telegram-side
+admin/moderation texts (`MODERATION_*`, `/diag`, `/stats`, … in
+`bot/texts.py` / `bot/handlers/moderation.py`) intentionally stay
+Russian-only, matching the default panel locale, so the participant flows are
+untouched.
 
 ## Ticket design & sponsor logos
 

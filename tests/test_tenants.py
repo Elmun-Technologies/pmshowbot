@@ -234,7 +234,9 @@ async def _exercise_scoped_admin_panel(tmp: str) -> None:
         assert response.status == 200
         assert "Adrenaline Rush" in super_html
         assert "private-adrenaline-token" not in super_html
-        assert "*** configured" in super_html
+        # The masked status marker (locale-independent "***") proves the real
+        # token is never rendered in any interface language.
+        assert "***" in super_html
 
 
 def test_scoped_admin_panel_hides_other_tenant_rows_and_tokens():

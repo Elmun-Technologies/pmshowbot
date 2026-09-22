@@ -12,6 +12,7 @@ import csv
 import io
 import logging
 import os
+import re
 import time
 from typing import Any, Optional
 
@@ -27,7 +28,8 @@ from ..constants import DIRECTIONS, DIRECTIONS_CANON
 from ..db import Database, Tenant, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
 from ..services import assets, decisions, subscription
 from ..security import EncryptionError
-from . import auth, views
+from . import auth, i18n, views
+from .i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +37,16 @@ _VALID_STATUSES = {STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED}
 _AUDIENCES = {
     "approved", "pending", "rejected", "incomplete", "all_apps", "starters",
 }
-_AUDIENCE_LABELS = {
-    "approved": "Одобрено",
-    "pending": "На рассмотрении",
-    "rejected": "Отклонено",
-    "incomplete": "Не завершили регистрацию",
-    "all_apps": "Все заявки",
-    "starters": "Все, кого бот знает",
-}
 _MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+
+# Known create/update tenant failures, mapped onto localized form errors.
+_FORM_ERROR_KEYS = {
+    "Tenant slug must contain lowercase letters, digits and hyphens only":
+        "tenant.form.err_slug",
+    "Tenant name is required": "tenant.form.err_name",
+    "admin_chat_id must be an integer": "tenant.form.err_chat_id",
+    "Admin chat ID must be an integer": "tenant.form.err_chat_id",
+}
 
 
 def create_admin_app(
@@ -60,7 +63,10 @@ def create_admin_app(
     """
     if config is None or db is None:
         raise ValueError("config and db are required")
-    app = web.Application(middlewares=[_auth_middleware], client_max_size=_MAX_UPLOAD_SIZE)
+    app = web.Application(
+        middlewares=[_locale_middleware, _auth_middleware],
+        client_max_size=_MAX_UPLOAD_SIZE,
+    )
     app["bot"] = bot
     app["bot_manager"] = bot_manager
     app["config"] = config
@@ -163,6 +169,68 @@ def _super_secret(config: Any) -> str:
     return str(getattr(config, "super_admin_password", "") or "")
 
 
+# ---------------------------------------------------------------------------
+# Locale (RU/UZ) handling
+# ---------------------------------------------------------------------------
+
+def _set_lang_cookie(response: web.StreamResponse, lang: str) -> None:
+    """Persist the panel locale in its own cookie, next to the auth ones.
+
+    The locale has no security meaning: it neither grants access nor scopes
+    data, so it lives in a separate cookie and never touches the tenant or
+    super-admin session cookies.
+    """
+    response.set_cookie(
+        i18n.LANG_COOKIE,
+        i18n.normalize_lang(lang),
+        max_age=365 * 24 * 3600,
+        httponly=True,
+        samesite="Lax",
+        secure=True,
+        path="/",
+    )
+
+
+@web.middleware
+async def _locale_middleware(request: web.Request, handler):
+    """Resolve the panel locale before dispatch and persist explicit switches.
+
+    Precedence: validated ``?lang=`` query parameter, then the ``pm_lang``
+    cookie, then ``ru``.  A *valid* query parameter is stored in the cookie so
+    the choice survives navigation; an invalid one simply renders ``ru``
+    without touching the stored value.
+    """
+    raw_param = request.query.get("lang")
+    lang = i18n.normalize_lang(raw_param or request.cookies.get(i18n.LANG_COOKIE))
+    request["lang"] = lang
+    persist = i18n.is_supported(raw_param)
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        # Redirects raised with `raise web.HTTPFound(...)` are Response
+        # subclasses, so the cookie can ride along on them too.
+        if persist and isinstance(exc, web.Response):
+            _set_lang_cookie(exc, lang)
+        raise
+    if persist and isinstance(response, web.Response):
+        _set_lang_cookie(response, lang)
+    return response
+
+
+def _lang(request: web.Request) -> str:
+    """Panel locale resolved by the middleware (safe ``ru`` fallback)."""
+    return i18n.normalize_lang(request.get("lang"))
+
+
+def _form_error_text(lang: str, exc: Exception) -> str:
+    """Localized message for tenant create/update validation failures."""
+    key = _FORM_ERROR_KEYS.get(str(exc))
+    if key is not None:
+        return t(lang, key)
+    return t(lang, "tenant.form.err_generic", detail=str(exc))
+
+
+
 def _is_super_request(request: web.Request) -> bool:
     secret = _super_secret(request.app["config"])
     return bool(secret and auth.valid_cookie(secret, request.cookies.get(auth.SUPER_COOKIE_NAME)))
@@ -194,7 +262,11 @@ async def _auth_middleware(request: web.Request, handler):
             return await handler(request)
         secret = _super_secret(config)
         if not secret:
-            return web.Response(text=views.super_panel_disabled_page(), content_type="text/html", status=503)
+            return web.Response(
+                text=views.super_panel_disabled_page(_lang(request)),
+                content_type="text/html",
+                status=503,
+            )
         if not _is_super_request(request):
             raise web.HTTPFound("/super-admin/login")
         request["is_super"] = True
@@ -204,7 +276,7 @@ async def _auth_middleware(request: web.Request, handler):
         slug = request.match_info.get("slug", "")
         tenant = await db.get_tenant(slug)
         if tenant is None:
-            raise web.HTTPNotFound(text="Tenant not found")
+            raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
         request["tenant"] = tenant
         request["tenant_db"] = db.for_tenant(tenant.id)
         request["tenant_prefix"] = f"/t/{tenant.slug}"
@@ -216,13 +288,21 @@ async def _auth_middleware(request: web.Request, handler):
         request["tenant_bot"] = manager.get_bot(tenant.id) if manager is not None else request.app.get("bot")
         if path == f"/t/{slug}/login":
             if not tenant.is_active and not _is_super_request(request):
-                return web.Response(text=views.tenant_inactive_page(), content_type="text/html", status=403)
+                return web.Response(
+                    text=views.tenant_inactive_page(_lang(request)),
+                    content_type="text/html",
+                    status=403,
+                )
             return await handler(request)
         if _is_super_request(request):
             request["is_super"] = True
             return await handler(request)
         if not tenant.is_active or not tenant.admin_password:
-            return web.Response(text=views.panel_disabled_page(), content_type="text/html", status=503)
+            return web.Response(
+                text=views.panel_disabled_page(_lang(request)),
+                content_type="text/html",
+                status=503,
+            )
         cookie = request.cookies.get(auth.tenant_cookie_name(tenant.slug))
         if not auth.valid_cookie(tenant.admin_password, cookie):
             raise web.HTTPFound(f"/t/{tenant.slug}/login")
@@ -233,7 +313,11 @@ async def _auth_middleware(request: web.Request, handler):
         raise web.HTTPFound("/login")
     password = str(getattr(config, "admin_password", "") or "")
     if not password:
-        return web.Response(text=views.panel_disabled_page(), content_type="text/html", status=503)
+        return web.Response(
+            text=views.panel_disabled_page(_lang(request)),
+            content_type="text/html",
+            status=503,
+        )
     if not auth.valid_cookie(password, request.cookies.get(auth.COOKIE_NAME)):
         raise web.HTTPFound("/login")
     return await handler(request)
@@ -275,9 +359,14 @@ def _html(request: web.Request, html: str, *, status: int = 200) -> web.Response
         if tenant is not None:
             from html import escape
 
-            html = html.replace(
-                "🚗 Promotors Show — Admin", f"🚗 {escape(tenant.name)} — Admin"
+            # The layout ships the platform brand; scoped pages show the
+            # tenant name instead, in the language currently rendered.
+            brand_pattern = re.compile(r"🚗 Promotors Show — [^<]+")
+            brand_html = (
+                f"🚗 {escape(tenant.name)} — "
+                f"{escape(t(_lang(request), 'nav.brand_suffix'))}"
             )
+            html = brand_pattern.sub(lambda _m: brand_html, html)
     return web.Response(text=html, content_type="text/html", status=status)
 
 
@@ -287,13 +376,17 @@ async def _health(request: web.Request) -> web.Response:
 
 async def _login_get(request: web.Request) -> web.Response:
     config = request.app["config"]
+    lang = _lang(request)
     if _legacy_panel_enabled(config):
         password = str(getattr(config, "admin_password", "") or "")
         if not password:
-            return _html(request, views.panel_disabled_page(), status=503)
-        return _html(request, views.login_page(request.query.get("error") == "1"))
+            return _html(request, views.panel_disabled_page(lang), status=503)
+        return _html(request, views.login_page(lang, error=request.query.get("error") == "1"))
     tenants = await request.app["db"].list_tenants(active_only=True)
-    return _html(request, views.tenant_selector_login_page(tenants, request.query.get("error") == "1"))
+    return _html(
+        request,
+        views.tenant_selector_login_page(lang, tenants, request.query.get("error") == "1"),
+    )
 
 
 async def _login_post(request: web.Request) -> web.Response:
@@ -328,7 +421,9 @@ async def _tenant_login_get(request: web.Request) -> web.Response:
     # This view contains an explicit /t/<slug>/login action and a global
     # /login chooser link, so it deliberately bypasses generic link prefixing.
     return web.Response(
-        text=views.tenant_login_page(tenant, request.query.get("error") == "1"),
+        text=views.tenant_login_page(
+            _lang(request), tenant, error=request.query.get("error") == "1"
+        ),
         content_type="text/html",
     )
 
@@ -352,8 +447,11 @@ async def _tenant_logout(request: web.Request) -> web.Response:
 
 async def _super_login_get(request: web.Request) -> web.Response:
     if not _super_secret(request.app["config"]):
-        return _html(request, views.super_panel_disabled_page(), status=503)
-    return _html(request, views.super_login_page(request.query.get("error") == "1"))
+        return _html(request, views.super_panel_disabled_page(_lang(request)), status=503)
+    return _html(
+        request,
+        views.super_login_page(_lang(request), request.query.get("error") == "1"),
+    )
 
 
 async def _super_login_post(request: web.Request) -> web.Response:
@@ -375,7 +473,7 @@ async def _super_logout(request: web.Request) -> web.Response:
 async def _dashboard(request: web.Request) -> web.Response:
     db = _db(request)
     stats = await db.stats()
-    return _html(request, views.dashboard_page(stats))
+    return _html(request, views.dashboard_page(_lang(request), stats))
 
 
 async def _applications(request: web.Request) -> web.Response:
@@ -385,27 +483,30 @@ async def _applications(request: web.Request) -> web.Response:
         status = None
     search = request.query.get("search", "").strip()
     apps = await db.list_applications(status=status, search=search or None)
-    return _html(request, views.applications_page(apps, status, search))
+    return _html(request, views.applications_page(_lang(request), apps, status, search))
 
 
 async def _application_detail(request: web.Request) -> web.Response:
     db = _db(request)
+    lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     if app is None:
-        raise web.HTTPNotFound(text="Заявка не найдена")
+        raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
     msg = request.query.get("msg")
     status_flag = request.query.get("status_change")
     return _html(
         request,
         views.application_detail_page(
+            lang,
             app,
             msg_sent=msg == "sent",
-            msg_error="Не удалось отправить — пользователь заблокировал бота" if msg == "blocked" else (
-                "Введите текст сообщения" if msg == "empty" else ""
+            msg_error=(
+                t(lang, "error.msg_blocked") if msg == "blocked"
+                else (t(lang, "error.msg_empty") if msg == "empty" else "")
             ),
             status_changed=status_flag == "ok",
-            status_error="Не удалось изменить статус" if status_flag == "error" else "",
+            status_error=t(lang, "error.status_change") if status_flag == "error" else "",
         ),
     )
 
@@ -414,8 +515,11 @@ async def _approve(request: web.Request) -> web.Response:
     db = _db(request)
     bot = _bot(request)
     config = _config(request)
+    lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
-    await decisions.approve_application(bot, config, db, app_id, moderator="админ-панель")
+    await decisions.approve_application(
+        bot, config, db, app_id, moderator=t(lang, "moderation.via_panel")
+    )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
 
@@ -423,8 +527,11 @@ async def _reject(request: web.Request) -> web.Response:
     db = _db(request)
     bot = _bot(request)
     config = _config(request)
+    lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
-    await decisions.reject_application(bot, config, db, app_id, moderator="админ-панель")
+    await decisions.reject_application(
+        bot, config, db, app_id, moderator=t(lang, "moderation.via_panel")
+    )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
 
@@ -434,7 +541,7 @@ async def _send_individual_message(request: web.Request) -> web.Response:
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     if app is None:
-        raise web.HTTPNotFound(text="Заявка не найдена")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.app_not_found"))
     data = await request.post()
     text = str(data.get("text", "")).strip()
     if not text:
@@ -453,15 +560,18 @@ async def _change_status(request: web.Request) -> web.Response:
     db = _db(request)
     bot = _bot(request)
     config = _config(request)
+    lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     if app is None:
-        raise web.HTTPNotFound(text="Заявка не найдена")
+        raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
     data = await request.post()
     status = str(data.get("status", ""))
     if status not in _VALID_STATUSES or bot is None:
         raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change=error"))
-    ok = await decisions.set_status(bot, config, db, app_id, status, moderator="админ-панель")
+    ok = await decisions.set_status(
+        bot, config, db, app_id, status, moderator=t(lang, "moderation.via_panel")
+    )
     raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if ok else 'error'}"))
 
 
@@ -482,7 +592,7 @@ async def _badge_photo(request: web.Request) -> web.StreamResponse:
     if app is None or not path:
         raise web.HTTPNotFound()
     if not os.path.exists(path):
-        raise web.HTTPNotFound(text="Фото не найдено на диске")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.photo_not_on_disk"))
     return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
 
 
@@ -496,19 +606,22 @@ async def _serve_photo(request: web.Request, attr: str) -> web.StreamResponse:
         raise web.HTTPNotFound()
     path = paths[idx]
     if not os.path.exists(path):
-        raise web.HTTPNotFound(text="Фото не найдено на диске")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.photo_not_on_disk"))
     return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
 
 
 async def _export_csv(request: web.Request) -> web.Response:
     db = _db(request)
+    lang = _lang(request)
     apps = await db.list_applications(limit=100000)
     buf = io.StringIO()
     buf.write("﻿")  # BOM so Excel opens UTF-8 (Cyrillic) correctly
     writer = csv.writer(buf)
     writer.writerow(
-        ["ID", "Рег. номер", "Статус", "Страна", "Гос. номер", "Направление",
-         "Телефон", "Пользователь", "Язык", "Подана", "Обработана", "Кто обработал"]
+        [t(lang, "csv.id"), t(lang, "csv.reg_number"), t(lang, "csv.status"),
+         t(lang, "csv.country"), t(lang, "csv.plate"), t(lang, "csv.direction"),
+         t(lang, "csv.phone"), t(lang, "csv.username"), t(lang, "csv.language"),
+         t(lang, "csv.created_at"), t(lang, "csv.processed_at"), t(lang, "csv.processed_by")]
     )
     for a in apps:
         writer.writerow(
@@ -544,12 +657,13 @@ async def _export_excel(request: web.Request) -> web.Response:
 async def _broadcast_get(request: web.Request) -> web.Response:
     db = _db(request)
     counts = await db.audience_counts()
-    return _html(request, views.broadcast_page(counts))
+    return _html(request, views.broadcast_page(_lang(request), counts))
 
 
 async def _broadcast_post(request: web.Request) -> web.Response:
     db = _db(request)
     bot = _bot(request)
+    lang = _lang(request)
     data = await request.post()
     text_uz = str(data.get("text_uz", "")).strip()
     text_ru = str(data.get("text_ru", "")).strip()
@@ -574,6 +688,7 @@ async def _broadcast_post(request: web.Request) -> web.Response:
         error: str = "", result: Optional[dict] = None, preview: Optional[int] = None
     ) -> str:
         return views.broadcast_page(
+            lang,
             counts,
             audience=audience,
             error=error,
@@ -590,11 +705,11 @@ async def _broadcast_post(request: web.Request) -> web.Response:
         return _html(request, page(preview=n))
 
     if not text_uz and not text_ru:
-        return _html(request, page(error="Введите текст хотя бы на одном языке"))
+        return _html(request, page(error=t(lang, "bcast.err_no_text")))
     if not confirm:
-        return _html(request, page(error="Подтвердите отправку галочкой"))
+        return _html(request, page(error=t(lang, "bcast.err_no_confirm")))
     if bot is None:
-        return _html(request, page(error="Бот недоступен — рассылка невозможна"), status=503)
+        return _html(request, page(error=t(lang, "bcast.err_no_bot")), status=503)
     # Only one language filled in → everyone gets that text.
     body_uz = text_uz or text_ru
     body_ru = text_ru or text_uz
@@ -615,25 +730,13 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     has_any_photo = bool(photo_sources)
 
     if lang_photo_source["uz"] and len(body_uz) > 1024:
-        return _html(
-            request,
-            page(
-                error="Текст на узбекском слишком длинный для сообщения с фото — "
-                "у Telegram лимит подписи 1024 символа"
-            ),
-        )
+        return _html(request, page(error=t(lang, "bcast.err_uz_too_long")))
     if lang_photo_source["ru"] and len(body_ru) > 1024:
-        return _html(
-            request,
-            page(
-                error="Текст на русском слишком длинный для сообщения с фото — "
-                "у Telegram лимит подписи 1024 символа"
-            ),
-        )
+        return _html(request, page(error=t(lang, "bcast.err_ru_too_long")))
 
     recipients = await db.recipients(audience, languages=langs, directions=directions)
     if not recipients:
-        return _html(request, page(error="По выбранным фильтрам получателей не найдено"))
+        return _html(request, page(error=t(lang, "bcast.err_no_recipients")))
 
     # Each source photo is uploaded to Telegram once (on its first send) and
     # then reused by the returned file_id for every other recipient.
@@ -681,7 +784,7 @@ async def _broadcast_post(request: web.Request) -> web.Response:
                 "ok_uz": ok_uz,
                 "ok_ru": ok_ru,
                 "total": len(recipients),
-                "audience_label": _AUDIENCE_LABELS.get(audience, audience),
+                "audience_label": t(lang, f"bcast.audience.{audience}"),
                 "with_photo": has_any_photo,
             },
         ),
@@ -752,6 +855,7 @@ async def _ticket_assets(request: web.Request) -> web.Response:
     return _html(
         request,
         views.ticket_assets_page(
+            _lang(request),
             inventory=inv,
             sponsors=sponsors_info,
             brand=brand_info,
@@ -985,11 +1089,11 @@ async def _super_dashboard(request: web.Request) -> web.Response:
     db: Database = request.app["db"]
     tenants = await db.list_tenants()
     counts = await db.tenant_application_counts()
-    return _html(request, views.super_dashboard_page(tenants, counts))
+    return _html(request, views.super_dashboard_page(_lang(request), tenants, counts))
 
 
 async def _super_tenant_new_get(request: web.Request) -> web.Response:
-    return _html(request, views.super_tenant_form_page())
+    return _html(request, views.super_tenant_form_page(_lang(request)))
 
 
 async def _super_tenant_new_post(request: web.Request) -> web.Response:
@@ -1003,7 +1107,9 @@ async def _super_tenant_new_post(request: web.Request) -> web.Response:
     except (ValueError, EncryptionError) as exc:
         return _html(
             request,
-            views.super_tenant_form_page(values=dict(data), error=str(exc)),
+            views.super_tenant_form_page(
+                _lang(request), values=dict(data), error=_form_error_text(_lang(request), exc)
+            ),
             status=400,
         )
     raise web.HTTPFound("/super-admin/")
@@ -1012,24 +1118,27 @@ async def _super_tenant_new_post(request: web.Request) -> web.Response:
 async def _super_tenant_edit_get(request: web.Request) -> web.Response:
     tenant = await request.app["db"].get_tenant(request.match_info["slug"])
     if tenant is None:
-        raise web.HTTPNotFound(text="Tenant not found")
-    return _html(request, views.super_tenant_form_page(tenant=tenant))
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    return _html(request, views.super_tenant_form_page(_lang(request), tenant=tenant))
 
 
 async def _super_tenant_edit_post(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
+    lang = _lang(request)
     data = await request.post()
     try:
         values = _tenant_form_values(data, editing=True)
         tenant = await request.app["db"].update_tenant(slug, **values)
         if tenant is None:
-            raise web.HTTPNotFound(text="Tenant not found")
+            raise web.HTTPNotFound(text=t(lang, "error.tenant_not_found"))
         await _maybe_restart_tenant(request, tenant)
     except (ValueError, EncryptionError) as exc:
         existing = await request.app["db"].get_tenant(slug)
         return _html(
             request,
-            views.super_tenant_form_page(tenant=existing, values=dict(data), error=str(exc)),
+            views.super_tenant_form_page(
+                lang, tenant=existing, values=dict(data), error=_form_error_text(lang, exc)
+            ),
             status=400,
         )
     raise web.HTTPFound("/super-admin/")
@@ -1039,7 +1148,7 @@ async def _super_tenant_toggle(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     tenant = await request.app["db"].get_tenant(slug)
     if tenant is None:
-        raise web.HTTPNotFound(text="Tenant not found")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
     updated = await request.app["db"].update_tenant(tenant.id, is_active=not tenant.is_active)
     if updated:
         await _maybe_restart_tenant(request, updated)
@@ -1060,7 +1169,7 @@ async def _super_tenant_restart(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     tenant = await request.app["db"].get_tenant(slug)
     if tenant is None:
-        raise web.HTTPNotFound(text="Tenant not found")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
     await _maybe_restart_tenant(request, tenant)
     raise web.HTTPFound(f"/super-admin/tenants/{tenant.slug}/edit")
 
@@ -1069,46 +1178,72 @@ async def _super_tenant_diag(request: web.Request) -> web.Response:
     """Run non-destructive Telegram diagnostics for one tenant configuration."""
     tenant = await request.app["db"].get_tenant(request.match_info["slug"])
     if tenant is None:
-        raise web.HTTPNotFound(text="Tenant not found")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    lang = _lang(request)
     checks: list[tuple[str, bool, str]] = []
     bot = None
     me = None
     try:
         token = await request.app["db"].get_tenant_token(tenant.id)
         if not token:
-            checks.append(("Bot token", False, "Token is not configured"))
+            checks.append((t(lang, "diag.check.bot_token"), False, t(lang, "diag.detail.token_missing")))
         else:
             bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
                 me = await bot.get_me()
-                checks.append(("Bot token", True, f"@{me.username or me.id}"))
+                checks.append(
+                    (t(lang, "diag.check.bot_token"), True, f"@{me.username or me.id}")
+                )
             except Exception as exc:  # noqa: BLE001
-                checks.append(("Bot token", False, f"{type(exc).__name__}: {exc}"))
+                checks.append(
+                    (t(lang, "diag.check.bot_token"), False, f"{type(exc).__name__}: {exc}")
+                )
 
             if tenant.required_channel and me is not None:
                 try:
                     channel = subscription.normalize_channel(tenant.required_channel)
                     chat = await bot.get_chat(channel)
-                    checks.append(("Required channel", True, f"{chat.title or chat.id}"))
+                    checks.append(
+                        (t(lang, "diag.check.required_channel"), True, f"{chat.title or chat.id}")
+                    )
                     member = await bot.get_chat_member(channel, me.id)
                     status = getattr(member.status, "value", member.status)
                     is_admin = str(status) in {"administrator", "creator", "owner"}
-                    checks.append(("Channel admin", is_admin, f"status: {status}"))
+                    checks.append(
+                        (t(lang, "diag.check.channel_admin"), is_admin,
+                         t(lang, "diag.detail.status", status=status))
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    checks.append(("Required channel", False, f"{type(exc).__name__}: {exc}"))
+                    checks.append(
+                        (t(lang, "diag.check.required_channel"), False,
+                         f"{type(exc).__name__}: {exc}")
+                    )
             elif not tenant.required_channel:
-                checks.append(("Required channel", False, "Not configured"))
+                checks.append(
+                    (t(lang, "diag.check.required_channel"), False,
+                     t(lang, "diag.detail.not_configured"))
+                )
 
             if tenant.admin_chat_id and bot is not None:
                 try:
                     chat = await bot.get_chat(tenant.admin_chat_id)
-                    checks.append(("Moderation chat", True, f"{chat.title or chat.id}"))
+                    checks.append(
+                        (t(lang, "diag.check.moderation_chat"), True, f"{chat.title or chat.id}")
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    checks.append(("Moderation chat", False, f"{type(exc).__name__}: {exc}"))
+                    checks.append(
+                        (t(lang, "diag.check.moderation_chat"), False,
+                         f"{type(exc).__name__}: {exc}")
+                    )
             elif not tenant.admin_chat_id:
-                checks.append(("Moderation chat", False, "Not configured"))
+                checks.append(
+                    (t(lang, "diag.check.moderation_chat"), False,
+                     t(lang, "diag.detail.not_configured"))
+                )
     except Exception as exc:  # noqa: BLE001 - encrypted-token failures are reportable too
-        checks.append(("Diagnostics", False, f"{type(exc).__name__}: {exc}"))
+        checks.append(
+            (t(lang, "diag.check.diagnostics"), False, f"{type(exc).__name__}: {exc}")
+        )
     finally:
         session = getattr(bot, "session", None)
         if session is not None:
@@ -1116,20 +1251,25 @@ async def _super_tenant_diag(request: web.Request) -> web.Response:
                 await session.close()
             except Exception:  # noqa: BLE001
                 pass
-    return _html(request, views.tenant_diag_page(tenant, checks))
+    return _html(request, views.tenant_diag_page(lang, tenant, checks))
 
 
 async def _tenant_settings_get(request: web.Request) -> web.Response:
     tenant = request.get("tenant") or await request.app["db"].get_tenant("promotors")
     if tenant is None:
-        raise web.HTTPNotFound(text="Tenant not found")
-    return _html(request, views.tenant_settings_page(tenant, message=request.query.get("msg", "")))
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    return _html(
+        request,
+        views.tenant_settings_page(
+            _lang(request), tenant, message=request.query.get("msg", "")
+        ),
+    )
 
 
 async def _tenant_settings_post(request: web.Request) -> web.Response:
     tenant = request.get("tenant") or await request.app["db"].get_tenant("promotors")
     if tenant is None:
-        raise web.HTTPNotFound(text="Tenant not found")
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
     data = await request.post()
     try:
         values = _tenant_form_values(data, editing=True)
@@ -1141,7 +1281,13 @@ async def _tenant_settings_post(request: web.Request) -> web.Response:
         if updated is not None:
             await _maybe_restart_tenant(request, updated)
     except ValueError as exc:
-        return _html(request, views.tenant_settings_page(tenant, error=str(exc)), status=400)
+        return _html(
+            request,
+            views.tenant_settings_page(
+                _lang(request), tenant, error=_form_error_text(_lang(request), exc)
+            ),
+            status=400,
+        )
     raise web.HTTPFound(_url(request, "/settings?msg=saved"))
 
 def _int_or_404(value: str) -> int:
