@@ -34,14 +34,23 @@ class _FakeMessage:
 
 
 class _FakeBot:
+    """Mirrors the aiogram API the handler actually calls.
+
+    ``Bot.download(file_id)`` without a destination returns an in-memory
+    buffer; the handler then writes it to the volume itself (see
+    ``bot.services.media``), so the fake must not write the file.
+    """
+
     def __init__(self):
-        self.downloaded: list[tuple[str, str]] = []
+        self.downloaded: list[str] = []
         self.sent_photos: list[tuple[int, str, str]] = []
 
-    async def download(self, photo, destination: str) -> None:
-        self.downloaded.append((photo.file_id, destination))
-        with open(destination, "wb") as fh:
-            fh.write(b"fake-jpeg-bytes")
+    async def download(self, file, destination=None):
+        import io
+
+        file_id = getattr(file, "file_id", file)
+        self.downloaded.append(file_id)
+        return io.BytesIO(b"fake-jpeg-bytes")
 
     async def send_photo(self, chat_id: int, photo: str, caption: str = "") -> None:
         self.sent_photos.append((chat_id, photo, caption))

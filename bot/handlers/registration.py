@@ -36,7 +36,7 @@ from .. import keyboards, texts
 from ..config import Config, TenantConfig
 from ..constants import MAX_MOD_PHOTOS, SIDES, direction_image_path
 from ..db import Database, Direction
-from ..services import assets, subscription
+from ..services import assets, media, subscription
 from ..services.directions import (
     children_of,
     find_direction_by_id,
@@ -529,13 +529,14 @@ def _photo_path(config: Config | TenantConfig, user_id: int, name: str) -> Optio
 
 
 async def _download_photo(bot: Bot, file_id: str, path: str) -> bool:
-    """Download one Telegram photo, reporting success instead of raising."""
-    try:
-        await bot.download(file_id, destination=path)
-        return True
-    except Exception:
-        logger.exception("Could not download photo %s to %s", file_id, path)
-        return False
+    """Download one Telegram photo, reporting success instead of raising.
+
+    Bounded (see :mod:`bot.services.media`) because this runs inside the
+    per-user lock: an unbounded download is a silent freeze for that
+    participant, and the write happens on the slow-work pool so the disk volume
+    cannot take the database's threads with it.
+    """
+    return await media.save_telegram_photo(bot, file_id, path)
 
 
 async def _next_photo_prompt(message: Message, state: FSMContext, lang: str) -> None:
