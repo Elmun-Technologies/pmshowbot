@@ -124,8 +124,10 @@ application so it can be registered again.
    photos → phone) → "Спасибо".
 3. Moderation chat receives the photos (4 sides, then the modification close-ups)
    + a summary with Accept / Reject.
-4. **Accept** → applicant gets "№1 …"; a new row (with the photos inline) appears
-   in the Google Sheet. **Reject** → applicant gets the guest invitation.
+4. **Accept** → applicant gets "№1 …" plus the generated ticket; a new row (with
+   the photos inline) appears in the Google Sheet. **Reject** → the applicant is
+   told they did not pass; if the tenant has a «Дата для гостей» filled in, the
+   text also invites them as a guest (SPL Show has none — participants only).
 5. "Узнать свой номер" re-shows the applicant's status.
 
 ## Admin web panel
@@ -255,13 +257,16 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
    - Leave **Регистрация закрыта** unchecked. Registration is per tenant.
      A process-wide `REGISTRATION_CLOSED=true` secret is ignored, so it cannot
      make this bot answer «регистрация завершена».
-   - Event fields (Tashkent INDEX, 3 October — filled automatically for slug `splshow` if empty):
-     - `event_date_text_ru`: `02 октября 2026 с 17:00 до 22:00`
+   - Event fields (filled automatically for slug `splshow` if empty):
+     - `event_date_text_ru`: `02 октября 2026 с 17:00 до 22:00` (participant entry)
      - `event_date_text_uz`: `02-oktyabr 2026, soat 17:00 dan 22:00 gacha`
      - `event_venue_text_ru/uz`: `Tashkent INDEX`
-     - `event_guest_date_text_ru`: `03 октября 2026 с 12:00`
-     - `event_guest_date_text_uz`: `03-oktyabr 2026, soat 12:00 dan`
      - participant note: 03 октября 2026 с 09:00 рядом с автомобилем / 03-oktyabr 2026 soat 09:00 dan avtomobil yonida
+     - `event_guest_date_text_ru/uz`: **empty** — the show is for registered
+       participants only, so the rejection message carries no date/time at all.
+       Type a guest date here to switch the guest invitation back on; the boot
+       migration clears the old `03 октября 2026 с 12:00` but never a value the
+       team entered on purpose.
    - Save → worker hot-restarts only `splshow`.
 
 2. Directions CRUD: `/super-admin/tenants/splshow/directions`
@@ -326,7 +331,7 @@ has a regression test.
 | «Бот зависает» / «qotyapti» | Any handler exception left the participant without an answer; restarts wiped the FSM | `bot/errors.py` answers callbacks (alert) and private chats (technical-error note); `bot/services/fsm_storage.py` keeps states in SQLite so a restart/hot reload no longer drops a half-finished form |
 | «Удалить зарегистрированного человека из базы нельзя» | There was no delete action | 🗑 delete on the application page removes the row and its photos; the person can register again and the number is reused |
 | «Не пришла сгенерированная картинка после одобрения» | The ticket was rendered and sent in one `try`, and any failure was only logged: no image, no explanation, no way to resend | Delivery is layered — PNG → JPEG (when Telegram refuses the photo) → file → the ticket is posted into the moderation chat with "forward it to the participant"; the render runs in a thread with a timeout and is retried without the hero photo. The team can resend it themselves: `/ticket 123` in the moderation chat, or the 🎫 button on the application page |
-| «При отклонении заявки приходит сообщение с неправильным времени мероприятия» | The rejection invited the person as a guest with a date/time that was wrong (September copy on the deployed build), and a named hall was called a parking lot | The rejection carries **no** date, time or venue at all — the client's rule is «hozircha faqat uchastniklar uchun»; the approval keeps the tenant's participant-entry copy (`03 октября` stays editable in the panel). The venue wording still separates a parking lot from a named venue (RU «на площадке», UZ «manzilida») |
+| «При отклонении заявки приходит сообщение с неправильным времени мероприятия» | The rejection invited the person as a guest with a date/time that was wrong (September copy on the deployed build), and a named hall was described as a parking lot | The guest invitation now appears **only** when the tenant has a «Дата для гостей» — SPL has none, so its rejection carries no date, time or venue; Promotors keeps its guest invitation word for word. The venue wording also separates a parking lot from a named venue (RU «на площадке», UZ «manzilida») |
 | Testers tap the status button or `/start` in the middle of the form, get «у вас нет заявки» and fill everything in again | A half-filled form was treated as "no registration": the status answer told them to `/start`, and `/start` silently wiped the collected photos | Mid-form the status button continues the form (current step re-asked); `/start` offers «Продолжить / Начать заново» instead of deleting the answers; when nothing is found the log names the tenants that do hold rows for that person |
 
 Operational notes:

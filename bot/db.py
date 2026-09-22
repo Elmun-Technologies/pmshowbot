@@ -173,16 +173,20 @@ _TENANTS_EVENT_MIGRATIONS = [
     ("registration_closed", "ALTER TABLE tenants ADD COLUMN registration_closed INTEGER NOT NULL DEFAULT 0"),
 ]
 
-# SPL Show, Tashkent INDEX, 3 October. Arrival is the day before.
+# SPL Show, Tashkent INDEX. Participant entry 2 October 17:00-22:00, participants
+# next to their cars on 3 October from 09:00 (confirmed by the team).
 # Applied when the splshow tenant exists and a field is still empty or still
 # holds an outdated schedule. A custom value is left alone.
+#
+# There is deliberately **no** guest date for SPL: the client's rule is
+# "hozircha faqat uchastniklar uchun" (only registered participants for now), so
+# the rejection message stays neutral. Filling "Дата для гостей" in the panel
+# switches the guest invitation back on for that tenant.
 SPL_EVENT_COPY = {
     "event_date_text_ru": "02 октября 2026 с 17:00 до 22:00",
     "event_date_text_uz": "02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
     "event_venue_text_ru": "Tashkent INDEX",
     "event_venue_text_uz": "Tashkent INDEX",
-    "event_guest_date_text_ru": "03 октября 2026 с 12:00",
-    "event_guest_date_text_uz": "03-oktyabr 2026, soat 12:00 dan",
     "event_note_text_ru": (
         "Площадка — Tashkent INDEX. "
         "03 октября 2026 с 09:00 участники должны находиться рядом со своими автомобилями."
@@ -203,6 +207,10 @@ _SPL_STALE_EVENT_VALUES = frozenset({
     # First SPL draft, before the client confirmed 17:00–22:00 / guest date.
     "2 октября до 22:00",
     "2-oktyabr soat 22:00 gacha",
+    # Guest invitation of the previous SPL seed — no guests for SPL (the team
+    # confirmed "only participants"), so the field is cleared instead.
+    "03 октября 2026 с 12:00",
+    "03-oktyabr 2026, soat 12:00 dan",
     "3 октября с 12:00",
     "3-oktyabr, soat 12:00 dan",
     (
@@ -215,6 +223,9 @@ _SPL_STALE_EVENT_VALUES = frozenset({
         "avtomobillari yonida bo‘lishlari shart."
     ),
 })
+# Event fields that must be emptied for SPL while they still hold one of the
+# values above (currently: the guest invitation nobody wants yet).
+SPL_CLEARED_EVENT_FIELDS = ("event_guest_date_text_ru", "event_guest_date_text_uz")
 _SPL_SLUGS = frozenset({"splshow", "spl", "spl-show"})
 _SPL_NAMES = frozenset({"spl show", "spl"})
 
@@ -769,6 +780,15 @@ class Database:
                     current = ""
                 if current in _SPL_STALE_EVENT_VALUES:
                     updates[key] = new_val
+            for key in SPL_CLEARED_EVENT_FIELDS:
+                if key not in cols or key in updates:
+                    continue
+                try:
+                    current = str(row[key] or "").strip()
+                except (KeyError, IndexError):
+                    current = ""
+                if current in _SPL_STALE_EVENT_VALUES:
+                    updates[key] = ""
             if not updates:
                 continue
             set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -1171,21 +1191,21 @@ class Database:
         if is_spl_tenant(slug, name):
             defaults = SPL_EVENT_COPY
             if not (event_date_text_ru or "").strip():
-                event_date_text_ru = defaults["event_date_text_ru"]
+                event_date_text_ru = defaults.get("event_date_text_ru", event_date_text_ru)
             if not (event_date_text_uz or "").strip():
-                event_date_text_uz = defaults["event_date_text_uz"]
+                event_date_text_uz = defaults.get("event_date_text_uz", event_date_text_uz)
             if not (event_venue_text_ru or "").strip():
-                event_venue_text_ru = defaults["event_venue_text_ru"]
+                event_venue_text_ru = defaults.get("event_venue_text_ru", event_venue_text_ru)
             if not (event_venue_text_uz or "").strip():
-                event_venue_text_uz = defaults["event_venue_text_uz"]
+                event_venue_text_uz = defaults.get("event_venue_text_uz", event_venue_text_uz)
             if not (event_guest_date_text_ru or "").strip():
-                event_guest_date_text_ru = defaults["event_guest_date_text_ru"]
+                event_guest_date_text_ru = defaults.get("event_guest_date_text_ru", "")
             if not (event_guest_date_text_uz or "").strip():
-                event_guest_date_text_uz = defaults["event_guest_date_text_uz"]
+                event_guest_date_text_uz = defaults.get("event_guest_date_text_uz", "")
             if not (event_note_text_ru or "").strip():
-                event_note_text_ru = defaults["event_note_text_ru"]
+                event_note_text_ru = defaults.get("event_note_text_ru", event_note_text_ru)
             if not (event_note_text_uz or "").strip():
-                event_note_text_uz = defaults["event_note_text_uz"]
+                event_note_text_uz = defaults.get("event_note_text_uz", event_note_text_uz)
         now = _now()
         password = (admin_password or "").strip()
         if password and not is_password_hash(password):

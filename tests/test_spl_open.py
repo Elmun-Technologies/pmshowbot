@@ -65,7 +65,9 @@ def test_spl_schedule_is_seeded_and_stale_september_copy_is_replaced():
             created = await db.create_tenant(slug="splshow", name="SPL Show")
             assert created.event_venue_text_ru == "Tashkent INDEX"
             assert created.event_date_text_ru == "02 октября 2026 с 17:00 до 22:00"
-            assert created.event_guest_date_text_ru == "03 октября 2026 с 12:00"
+            # No guest invitation for SPL: "hozircha faqat uchastniklar uchun".
+            assert created.event_guest_date_text_ru == ""
+            assert created.event_guest_date_text_uz == ""
             assert "09:00" in created.event_note_text_ru
             assert "09:00" in created.event_note_text_uz
             assert "Tashkent INDEX" in created.event_note_text_ru
@@ -86,7 +88,9 @@ def test_spl_schedule_is_seeded_and_stale_september_copy_is_replaced():
             refreshed = await db.get_tenant("splshow")
             assert refreshed.event_date_text_ru == SPL_EVENT_COPY["event_date_text_ru"]
             assert refreshed.event_venue_text_ru == "Tashkent INDEX"
-            assert refreshed.event_guest_date_text_uz == SPL_EVENT_COPY["event_guest_date_text_uz"]
+            # The guest dates of the previous seed are cleared, not replaced.
+            assert refreshed.event_guest_date_text_ru == ""
+            assert refreshed.event_guest_date_text_uz == ""
             # A custom instruction is not overwritten.
             assert refreshed.event_note_text_ru == "custom note"
             assert refreshed.event_note_text_uz == SPL_EVENT_COPY["event_note_text_uz"]
@@ -152,6 +156,7 @@ def test_rejection_message_has_no_event_time():
     uz = rejected_for_tenant("uz", tenant)
     assert "не прошли регистрацию" in ru
     assert "ro‘yxatdan o‘tmadingiz" in uz
+    assert "ro‘yxatdan o‘tgan ishtirokchilar" in uz
 
     for text in (ru, uz):
         assert "12:00" not in text
@@ -160,8 +165,8 @@ def test_rejection_message_has_no_event_time():
         assert "Tashkent INDEX" not in text
         assert "гост" not in text and "mehmon" not in text
 
-    # Even a tenant that still carries guest fields gets a neutral rejection.
-    legacy = type(
+    # A tenant that advertises guests keeps the historic invitation…
+    guest = type(
         "T",
         (),
         {
@@ -172,5 +177,14 @@ def test_rejection_message_has_no_event_time():
             "event_venue_text_uz": "SOF EXPO",
         },
     )()
-    assert "сентябр" not in rejected_for_tenant("ru", legacy).lower()
-    assert "SOF EXPO" not in rejected_for_tenant("ru", legacy)
+    assert "гостя" in rejected_for_tenant("ru", guest)
+    assert "12 и 13 сентября с 10:00" in rejected_for_tenant("ru", guest)
+    assert "mehmon" in rejected_for_tenant("uz", guest)
+    # …while an empty "Дата для гостей" (the SPL switch) keeps it neutral.
+    no_guest = type(
+        "T",
+        (),
+        {"tenant_name": "SPL Show", "event_venue_text_ru": "Tashkent INDEX"},
+    )()
+    assert "Tashkent INDEX" not in rejected_for_tenant("ru", no_guest)
+    assert "Tashkent INDEX" not in rejected_for_tenant("uz", no_guest)

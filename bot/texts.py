@@ -496,25 +496,57 @@ def _venue_is_parking(venue: str) -> bool:
 
 
 def rejected_for_tenant(lang: str, tenant: Any) -> str:
-    """Rejection message — no guest invitation and no event time.
+    """Rejection message.
 
-    The client's rule for SPL Show: "hozircha faqat uchastniklar uchun" — the
-    event is for registered participants only, so the old "come as a guest on
-    <date> at <venue>" paragraph (which kept showing a time the client called
-    wrong) is gone.  A rejection must therefore never advertise a date or a
-    venue; the copy stays event-neutral for every tenant.
+    Two flavours, chosen by the tenant's own settings:
+
+    * a tenant that advertises a guest date (Promotors: 12-13 September at the
+      SOF EXPO parking) keeps the historic "come as a guest" invitation;
+    * a tenant with no guest date — SPL Show, where the client's rule is
+      «hozircha faqat uchastniklar uchun» — gets an event-neutral rejection with
+      **no** date, time or venue.  That is what removed the "неправильное время
+      мероприятия" from the rejection: the empty "Дата для гостей" field in the
+      panel is the switch.
     """
-    if lang == "uz":
+    gdate = _guest_date(tenant, lang)
+    if not gdate:
+        if lang == "uz":
+            return (
+                "Assalomu alaykum! Afsuski, siz ro‘yxatdan o‘tmadingiz.\n\n"
+                "Hozircha tadbir faqat ro‘yxatdan o‘tgan ishtirokchilar uchun. "
+                "Qiziqish bildirganingiz uchun rahmat!"
+            )
         return (
-            "Assalomu alaykum! Afsuski, siz ro‘yxatdan o‘tmadingiz.\n\n"
-            "Hozircha tadbir faqat ro‘yxatdan o‘tgan ishtirokchilar uchun. "
-            "Qiziqish bildirganingiz uchun rahmat!"
+            "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
+            "Сейчас мероприятие проходит только для зарегистрированных участников. "
+            "Спасибо за интерес!"
         )
-    return (
-        "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
-        "Сейчас мероприятие проходит только для зарегистрированных участников. "
-        "Спасибо за интерес!"
-    )
+
+    venue = _venue(tenant, lang)
+    if lang == "uz":
+        base = "Assalomu alaykum! Afsuski, siz ro‘yxatdan o‘tmadingiz.\n\n"
+        base += "Ammo sizni tadbirimizga mehmon sifatida (avtomobilsiz) taklif qilamiz"
+        base += f" — u <b>{gdate}</b>"
+        if venue:
+            if _venue_is_parking(venue):
+                base += f" <b>{venue}</b> avtoturargohida bo‘lib o‘tadi."
+            else:
+                base += f" <b>{venue}</b> manzilida bo‘lib o‘tadi."
+        else:
+            base += " bo‘lib o‘tadi."
+        return base
+
+    base = "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
+    base += "Но мы приглашаем вас посетить наше мероприятие как гостя (без автомобиля)"
+    base += f" — оно пройдёт <b>{gdate}</b>"
+    if venue:
+        if _venue_is_parking(venue):
+            base += f" на парковке <b>{venue}</b>."
+        else:
+            base += f" на площадке <b>{venue}</b>."
+    else:
+        base += "."
+    return base
 
 
 def registration_closed_for_tenant(lang: str, tenant: Any) -> str:
