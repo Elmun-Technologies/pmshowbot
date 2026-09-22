@@ -22,10 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 from .security import EncryptionError, TokenCipher, hash_password, is_password_hash
-
-# Wait instead of instantly raising "database is locked" when another bot
-# worker or the admin panel holds the write lock.
-_SQLITE_TIMEOUT_SECONDS = 30.0
+from .sqlite_pool import connect_sqlite
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
@@ -597,25 +594,13 @@ class Database:
         """Open and tune one SQLite connection.
 
         Opening a connection is not free: it is a file open plus, for the
-        pragmas below, real disk I/O.  ``journal_mode=WAL`` is persisted in the
+        pragmas, real disk I/O.  ``journal_mode=WAL`` is persisted in the
         database file itself, yet it was re-issued on every single query — and
         on a network volume (Fly.io) that write-and-fsync dominated the bot's
         response time.  The pragmas therefore run once per connection, and the
-        connection is then reused.
+        connection is then reused.  See :mod:`bot.sqlite_pool`.
         """
-        conn = sqlite3.connect(self.path, timeout=_SQLITE_TIMEOUT_SECONDS)
-        conn.row_factory = sqlite3.Row
-        # WAL lets readers run while a writer holds the database, which is what
-        # allows several tenant bots plus the admin panel to share one file.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        # NORMAL is the documented companion of WAL: durable across process
-        # crashes, and it removes an fsync from every commit.
-        conn.execute("PRAGMA synchronous=NORMAL")
-        # Cache pages and keep temporary tables in RAM instead of on the volume.
-        conn.execute("PRAGMA cache_size=-16000")  # ~16 MB
-        conn.execute("PRAGMA temp_store=MEMORY")
-        return conn
+        return connect_sqlite(self.path)
 
     def _connect(self) -> sqlite3.Connection:
         """Return this thread's cached connection, opening it on first use.

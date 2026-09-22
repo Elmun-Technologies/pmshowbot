@@ -27,6 +27,8 @@ from aiogram.fsm.state import State
 from aiogram.fsm.storage.base import BaseStorage, StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from ..sqlite_pool import connect_sqlite
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -37,9 +39,6 @@ CREATE TABLE IF NOT EXISTS {table} (
     updated_at REAL NOT NULL
 );
 """
-
-# Wait for a concurrent writer rather than failing with "database is locked".
-_SQLITE_TIMEOUT_SECONDS = 30.0
 
 # A form that has not been touched for a month belongs to nobody.
 MAX_AGE_SECONDS = 30 * 24 * 3600
@@ -82,6 +81,7 @@ class SqliteFSMStorage(BaseStorage):
         self._local = threading.local()
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
+        self._init_lock = asyncio.Lock()
         self._ready = False
         self._broken = not bool(path)
         if path:
@@ -110,11 +110,7 @@ class SqliteFSMStorage(BaseStorage):
         conn = getattr(self._local, "conn", None)
         if conn is not None:
             return conn
-        conn = sqlite3.connect(self._path, timeout=_SQLITE_TIMEOUT_SECONDS)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA temp_store=MEMORY")
+        conn = connect_sqlite(self._path)
         self._local.conn = conn
         with self._connections_lock:
             self._connections.append(conn)
@@ -144,6 +140,26 @@ class SqliteFSMStorage(BaseStorage):
         if self._broken:
             raise _BrokenStorage
         if not self._ready:
+            await self._ensure_ready()
+        return await asyncio.to_thread(func, *args)
+
+    async def _ensure_ready(self) -> None:
+        """Create the schema exactly once, however many updates arrive at once.
+
+        ``_ready`` starts out false, so without this guard every concurrent
+        update races into ``_sync_init``: several worker threads issuing DDL and
+        switching the journal mode on a brand-new file simultaneously, which is
+        precisely when SQLite answers "database is locked" instead of waiting.
+        Losing that race used to mark the storage broken and silently keep every
+        form in memory — losing the progress this module exists to preserve,
+        right at the busiest moment (event start, or just after a deploy).
+
+        The first thread to arrive does the work; the rest wait and find the
+        schema already in place.
+        """
+        async with self._init_lock:
+            if self._ready:
+                return
             try:
                 await asyncio.to_thread(self._sync_init)
             except Exception:
@@ -153,7 +169,6 @@ class SqliteFSMStorage(BaseStorage):
                 )
                 self._broken = True
                 raise _BrokenStorage from None
-        return await asyncio.to_thread(func, *args)
 
     def _sync_set(self, key: str, state: Any, data: Optional[dict]) -> None:
         with self._connect() as conn:
