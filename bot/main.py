@@ -11,6 +11,7 @@ import logging
 
 from aiohttp import web
 
+from . import executors
 from .admin.server import create_admin_app
 from .bot_manager import BotManager, publish_commands as _publish_commands
 from .config import Config, load_config
@@ -65,6 +66,8 @@ async def main() -> None:
             await web_runner.cleanup()
         # Release the pooled SQLite connections held by the worker threads.
         await asyncio.to_thread(db.close)
+        # Let queued Google/Excel work finish, then drop the slow-work pool.
+        executors.shutdown()
 
 
 async def _start_admin_panel(config: Config, db: Database, manager: BotManager):

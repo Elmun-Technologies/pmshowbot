@@ -26,6 +26,7 @@ from aiogram.types import BufferedInputFile
 from ..config import Config
 from ..constants import DIRECTIONS, DIRECTIONS_CANON
 from ..db import Database, Tenant, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
+from ..executors import run_heavy
 from ..services import assets, decisions, subscription
 from ..security import EncryptionError
 from . import auth, i18n, views
@@ -974,7 +975,7 @@ async def _ticket_preview(request: web.Request) -> web.Response:
     try:
         from ..services.ticket import generate_ticket
         cfg = _config(request)
-        png = await asyncio.to_thread(
+        png = await run_heavy(
             generate_ticket,
             _asset_scope(request),
             number=1,

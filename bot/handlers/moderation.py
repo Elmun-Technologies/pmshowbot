@@ -5,7 +5,6 @@ lives in ``bot.services.decisions`` and is shared with the web admin panel.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aiogram import Bot, F, Router
@@ -16,6 +15,7 @@ from .. import keyboards, texts
 from ..config import Config
 from ..constants import DIRECTIONS
 from ..db import STATUS_APPROVED, Database
+from ..executors import run_heavy
 from ..services import assets, decisions, subscription
 from ..services.ticket import generate_ticket
 
@@ -325,7 +325,7 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
         if app is not None:
             hero = decisions._pick_hero(app.photo_paths)
             hero_note = "фото участника" if hero else "нет фото → заглушка"
-            png = await asyncio.to_thread(
+            png = await run_heavy(
                 generate_ticket,
                 _asset_scope(config),
                 number=app.reg_number or 1,
@@ -338,7 +338,7 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
             )
         else:
             hero_note = "нет заявок → заглушка"
-            png = await asyncio.to_thread(
+            png = await run_heavy(
                 generate_ticket,
                 _asset_scope(config),
                 number=1,
@@ -404,7 +404,7 @@ async def cmd_export(message: Message, config: Config, db: Database) -> None:
 
     from ..services.excel import generate_excel
 
-    xlsx_bytes = await asyncio.to_thread(generate_excel, apps)
+    xlsx_bytes = await run_heavy(generate_excel, apps)
     await message.answer_document(
         BufferedInputFile(
             xlsx_bytes,

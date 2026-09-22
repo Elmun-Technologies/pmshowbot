@@ -1,18 +1,19 @@
 """Append approved applications to a Google Sheet.
 
 Photos are written as ``=IMAGE("url")`` formulas so they render inline in the
-cell. Sync gspread calls are wrapped with ``asyncio.to_thread``.
+cell. Sync gspread calls run on the slow-work pool (see :mod:`bot.executors`)
+so a stalled Google request cannot take the database's threads with it.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 import gspread
 
 from ..constants import MAX_MOD_PHOTOS
-from .google_auth import get_credentials
+from ..executors import run_heavy
+from .google_auth import TIMEOUT as GOOGLE_TIMEOUT, get_credentials
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -36,8 +37,20 @@ HEADER = [
 ] + [f"Изменение {i}" for i in range(1, MAX_MOD_PHOTOS + 1)]
 
 
-def _open_worksheet(credentials_file: str, spreadsheet_id: str):
+def _client(credentials_file: str) -> gspread.Client:
+    """Authorised gspread client with a real request timeout.
+
+    ``gspread`` defaults to ``timeout=None``, i.e. wait forever.  A Google
+    endpoint that accepts the connection and then stalls would otherwise pin a
+    worker thread until the OS gave up.
+    """
     client = gspread.authorize(get_credentials(credentials_file))
+    client.set_timeout(GOOGLE_TIMEOUT)
+    return client
+
+
+def _open_worksheet(credentials_file: str, spreadsheet_id: str):
+    client = _client(credentials_file)
     spreadsheet = client.open_by_key(spreadsheet_id)
     worksheet = spreadsheet.sheet1
     # Ensure a header row exists (only on an empty sheet).
@@ -87,7 +100,7 @@ async def append_application(
     mod_urls: list[str] | None = None,
 ) -> None:
     """Append one approved application row. Raises on failure (caller logs)."""
-    await asyncio.to_thread(
+    await run_heavy(
         _append_application,
         config.google_credentials_file,
         config.spreadsheet_id,
@@ -102,6 +115,6 @@ def smoke_test(config: "Config") -> str:
 
     Used by ``python -m bot.config --check``. Runs synchronously.
     """
-    client = gspread.authorize(get_credentials(config.google_credentials_file))
+    client = _client(config.google_credentials_file)
     spreadsheet = client.open_by_key(config.spreadsheet_id)
     return spreadsheet.title
