@@ -96,6 +96,12 @@ def create_admin_app(
     app.router.add_post("/super-admin/tenants/{slug}/delete", _super_tenant_archive)
     app.router.add_post("/super-admin/tenants/{slug}/restart", _super_tenant_restart)
     app.router.add_get("/super-admin/tenants/{slug}/diag", _super_tenant_diag)
+    app.router.add_get("/super-admin/tenants/{slug}/directions", _super_tenant_directions)
+    app.router.add_get("/super-admin/tenants/{slug}/directions/new", _super_direction_new_get)
+    app.router.add_post("/super-admin/tenants/{slug}/directions/new", _super_direction_new_post)
+    app.router.add_get("/super-admin/tenants/{slug}/directions/{direction_id}/edit", _super_direction_edit_get)
+    app.router.add_post("/super-admin/tenants/{slug}/directions/{direction_id}/edit", _super_direction_edit_post)
+    app.router.add_post("/super-admin/tenants/{slug}/directions/{direction_id}/delete", _super_direction_delete)
     return app
 
 
@@ -675,7 +681,9 @@ async def _broadcast_post(request: web.Request) -> web.Response:
 
     # An empty selection means "don't filter by this" rather than "match nobody".
     langs = [v for v in data.getall("langs", []) if v in ("uz", "ru")] or None
-    directions = [v for v in data.getall("directions", []) if v in DIRECTIONS_CANON] or None
+    # Directions filter: accept any direction string (tenant-specific), not just global canon
+    raw_dirs = [v for v in data.getall("directions", []) if v.strip()]
+    directions = raw_dirs or None
 
     photo_uz_field = data.get("photo_uz")
     photo_ru_field = data.get("photo_ru")
@@ -852,6 +860,8 @@ async def _ticket_assets(request: web.Request) -> web.Response:
 
     msg = request.query.get("msg", "")
     err = request.query.get("error", "")
+    cfg = _config(request)
+    tenant_slug = getattr(cfg, "tenant_slug", None) or getattr(cfg, "asset_scope", None) or "promotors"
     return _html(
         request,
         views.ticket_assets_page(
@@ -862,15 +872,16 @@ async def _ticket_assets(request: web.Request) -> web.Response:
             directions=direction_info,
             message=msg,
             error=err,
+            tenant_slug=tenant_slug,
         ),
     )
 
 
 async def _ticket_preview(request: web.Request) -> web.Response:
-    """Render a sample ticket with current assets."""
+    """Render a sample ticket with current assets (real logic = preview logic)."""
     try:
         from ..services.ticket import generate_ticket
-        # Use a dummy hero-less ticket so logos are clearly visible
+        cfg = _config(request)
         png = await asyncio.to_thread(
             generate_ticket,
             _asset_scope(request),
@@ -878,9 +889,10 @@ async def _ticket_preview(request: web.Request) -> web.Response:
             plate="01A777AA",
             direction="Adrenaline Drift",
             name="Test User",
-            tenant_name=getattr(_config(request), "tenant_name", ""),
+            tenant_name=getattr(cfg, "tenant_name", ""),
             lang="ru",
             hero_image_path=None,
+            tenant_config=cfg,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("ticket preview failed: %s", exc)
@@ -1065,6 +1077,12 @@ def _tenant_form_values(data, *, editing: bool = False) -> dict[str, Any]:
         "spreadsheet_id": str(data.get("spreadsheet_id", "")).strip(),
         "drive_folder_id": str(data.get("drive_folder_id", "")).strip(),
         "is_active": str(data.get("is_active", "")) in {"1", "true", "on"},
+        "event_date_text_ru": str(data.get("event_date_text_ru", "")).strip(),
+        "event_date_text_uz": str(data.get("event_date_text_uz", "")).strip(),
+        "event_venue_text_ru": str(data.get("event_venue_text_ru", "")).strip(),
+        "event_venue_text_uz": str(data.get("event_venue_text_uz", "")).strip(),
+        "event_guest_date_text_ru": str(data.get("event_guest_date_text_ru", "")).strip(),
+        "event_guest_date_text_uz": str(data.get("event_guest_date_text_uz", "")).strip(),
     }
     token = str(data.get("bot_token", "")).strip()
     password = str(data.get("admin_password", "")).strip()
@@ -1289,6 +1307,132 @@ async def _tenant_settings_post(request: web.Request) -> web.Response:
             status=400,
         )
     raise web.HTTPFound(_url(request, "/settings?msg=saved"))
+
+
+# ---------------------------------------------------------------------------
+# Tenant directions CRUD (super-admin)
+# ---------------------------------------------------------------------------
+
+def _direction_form_values(data, existing=None) -> dict:
+    """Parse direction form."""
+    canonical = str(data.get("canonical", "")).strip()
+    label_ru = str(data.get("label_ru", "")).strip()
+    label_uz = str(data.get("label_uz", "")).strip()
+    slug = str(data.get("slug", "")).strip()
+    raw_parent = str(data.get("parent_id", "")).strip()
+    parent_id = None
+    if raw_parent:
+        try:
+            parent_id = int(raw_parent)
+        except ValueError:
+            raise ValueError("parent_id must be integer")
+    raw_sort = str(data.get("sort_order", "0")).strip()
+    try:
+        sort_order = int(raw_sort or 0)
+    except ValueError:
+        sort_order = 0
+    is_active = str(data.get("is_active", "")) in {"1", "true", "on"}
+    if not canonical:
+        raise ValueError("canonical required")
+    if not slug:
+        # auto from canonical
+        slug = canonical.lower().replace(" ", "_")[:40]
+    return {
+        "canonical": canonical,
+        "label_ru": label_ru or canonical,
+        "label_uz": label_uz or canonical,
+        "slug": slug,
+        "parent_id": parent_id,
+        "sort_order": sort_order,
+        "is_active": is_active,
+    }
+
+async def _super_tenant_directions(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    tenant = await db.get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    directions = await db.list_directions(tenant_id=tenant.id, active_only=False)
+    return _html(request, views.super_tenant_directions_page(_lang(request), tenant, directions))
+
+async def _super_direction_new_get(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    tenant = await db.get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    all_dirs = await db.list_directions(tenant_id=tenant.id, active_only=False)
+    # Only roots can be parents (enforce 2-level)
+    parents = [d for d in all_dirs if d.parent_id is None]
+    return _html(request, views.super_direction_form_page(_lang(request), tenant, parents=parents))
+
+async def _super_direction_new_post(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    tenant = await db.get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    data = await request.post()
+    lang = _lang(request)
+    try:
+        vals = _direction_form_values(data)
+        await db.create_direction(tenant_id=tenant.id, **vals)
+    except ValueError as exc:
+        all_dirs = await db.list_directions(tenant_id=tenant.id, active_only=False)
+        parents = [d for d in all_dirs if d.parent_id is None]
+        return _html(
+            request,
+            views.super_direction_form_page(
+                lang, tenant, values=dict(data), parents=parents, error=t(lang, "tenant.direction.form.err_generic", detail=str(exc))
+            ),
+            status=400,
+        )
+    raise web.HTTPFound(f"/super-admin/tenants/{tenant.slug}/directions")
+
+async def _super_direction_edit_get(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    tenant = await db.get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    dir_id = int(request.match_info["direction_id"])
+    direction = await db.get_direction(dir_id, tenant_id=tenant.id)
+    if direction is None:
+        raise web.HTTPNotFound(text="Direction not found")
+    all_dirs = await db.list_directions(tenant_id=tenant.id, active_only=False)
+    parents = [d for d in all_dirs if d.parent_id is None and d.id != direction.id]
+    return _html(request, views.super_direction_form_page(_lang(request), tenant, direction=direction, parents=parents))
+
+async def _super_direction_edit_post(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    tenant = await db.get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    dir_id = int(request.match_info["direction_id"])
+    data = await request.post()
+    lang = _lang(request)
+    try:
+        vals = _direction_form_values(data)
+        await db.update_direction(dir_id, tenant_id=tenant.id, **vals)
+    except ValueError as exc:
+        all_dirs = await db.list_directions(tenant_id=tenant.id, active_only=False)
+        parents = [d for d in all_dirs if d.parent_id is None and d.id != dir_id]
+        direction = await db.get_direction(dir_id, tenant_id=tenant.id)
+        return _html(
+            request,
+            views.super_direction_form_page(
+                lang, tenant, direction=direction, values=dict(data), parents=parents, error=t(lang, "tenant.direction.form.err_generic", detail=str(exc))
+            ),
+            status=400,
+        )
+    raise web.HTTPFound(f"/super-admin/tenants/{tenant.slug}/directions")
+
+async def _super_direction_delete(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    tenant = await db.get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text=t(_lang(request), "error.tenant_not_found"))
+    dir_id = int(request.match_info["direction_id"])
+    await db.delete_direction(dir_id, tenant_id=tenant.id)
+    raise web.HTTPFound(f"/super-admin/tenants/{tenant.slug}/directions")
+
 
 def _int_or_404(value: str) -> int:
     try:

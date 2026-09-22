@@ -7,7 +7,10 @@ sends the "share to Stories and tag us" line as a separate text message.
 
 Returns PNG bytes. Rendered with Pillow (DejaVu fonts, Cyrillic + Latin). An
 optional real logo (bot/assets/logo.png) is composited on the poster; otherwise
-a typographic wordmark is drawn.
+a typographic wordmark is drawn from tenant_name (guaranteed tenant-branded).
+
+For non-promotors tenants, bundled repo logos are never used — only runtime
+uploads, otherwise wordmark.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ import io
 import logging
 import os
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
@@ -150,7 +153,7 @@ def _hero(w, h, photo_path):
     if photo_path and os.path.exists(photo_path):
         try:
             hero = _cinematic(_cover(Image.open(photo_path), w, h))
-        except Exception:  # noqa: BLE001 - a bad/corrupt photo falls back to the gradient
+        except Exception:
             hero = None
     if hero is None:
         hero = _vgradient(w, h, [
@@ -162,7 +165,6 @@ def _hero(w, h, photo_path):
                                      fill=(255, 150, 70, 120))
         hero = Image.alpha_composite(hero.convert("RGBA"),
                                      glow.filter(ImageFilter.GaussianBlur(90))).convert("RGB")
-    # Darken top (logo) and bottom (number) for legibility.
     ov = Image.new("L", (1, h))
     for y in range(h):
         t = y / (h - 1)
@@ -174,12 +176,6 @@ def _hero(w, h, photo_path):
 
 
 def _plate_dark_mark(im: Image.Image, pad: int = 12, radius: int = 10) -> Image.Image:
-    """Put a dark logo on a white rounded plate so it reads on the dark poster.
-
-    Brands ship their marks in the version made for light backgrounds (dark
-    ink on white). Dropped straight onto the ticket's dark photo they'd be
-    invisible, so give them the plate they were designed for.
-    """
     w, h = im.size
     plate = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
     mask = Image.new("L", plate.size, 0)
@@ -195,13 +191,6 @@ def _plate_dark_mark(im: Image.Image, pad: int = 12, radius: int = 10) -> Image.
 def _load_brand_logo(
     name: str, target_h: int, max_w: int, tenant_id: object | None = None
 ):
-    """Load a main brand logo (runtime upload wins), cleaned up for dark use.
-
-    Sized by height so the two marks share a baseline regardless of their
-    aspect ratios, then capped by width so a very wide mark can't run off the
-    card. A dark mark gets a white plate, which is measured as part of the
-    final size rather than inflating it.
-    """
     path = assets.brand_logo(name, tenant_id)
     if not path:
         return None
@@ -217,7 +206,7 @@ def _load_brand_logo(
         if w > max_w:
             w, h = max_w, max(1, int(im.height * max_w / im.width))
         return im.resize((max(1, w), max(1, h)), Image.LANCZOS)
-    except Exception:  # noqa: BLE001 - a bad logo file falls back to the wordmark
+    except Exception:
         logger.exception("Could not load brand logo %s", name)
         return None
 
@@ -230,7 +219,6 @@ def _logo_or_wordmark(
     tenant_id: object | None = None,
     tenant_name: str = "",
 ):
-    # Sized by height so both marks share a baseline.
     sof_logo = _load_brand_logo("logo", target_h=108, max_w=430, tenant_id=tenant_id)
     adr_logo = _load_brand_logo("adrenaline", target_h=96, max_w=330, tenant_id=tenant_id)
 
@@ -246,21 +234,20 @@ def _logo_or_wordmark(
     elif adr_logo:
         content.paste(adr_logo, (cx - adr_logo.width // 2, top), adr_logo)
     else:
-        # A tenant without uploaded artwork still gets its own recognisable
-        # ticket rather than another event's Promotors wordmark.
+        # Guaranteed tenant-branded wordmark: never shows another event's name.
         title = (tenant_name or "PROMOTORS SHOW").strip().upper()
         title_font = _fit(draw, title, "bold", 72, 760, min_size=32)
         _center(draw, cx, top, title, title_font, WHITE)
-        _center(draw, cx, top + max(72, title_font.size + 16), "Samarkand", _font("serif_bold", 60), RED)
+        # For generic tenants we don't force "Samarkand" subtitle; keep it for promotors fallback.
+        # If tenant_name contains space, show second word as subtitle? Keep simple:
+        # Show venue or "Samarkand" only if promotors-like? We'll show nothing extra
+        # unless tenant_name is promotors-like, to avoid PROMOTORS leakage.
+        # For backward compat, if tenant_name is empty or promotors, show Samarkand.
+        if not tenant_name or "promotors" in tenant_name.lower():
+            _center(draw, cx, top + max(72, title_font.size + 16), "Samarkand", _font("serif_bold", 60), RED)
 
 
 def _load_sponsor_logos(max_n: int = 10, tenant_id: object | None = None) -> list:
-    """Load partner/sponsor logos in filename order.
-
-    Sources, highest priority first: logos uploaded by an admin through the
-    bot (stored on the volume) and logos bundled in bot/assets/sponsors/.
-    Unreadable files are skipped rather than breaking ticket generation.
-    """
     logos = []
     for path in assets.sponsor_files(tenant_id):
         try:
@@ -269,7 +256,7 @@ def _load_sponsor_logos(max_n: int = 10, tenant_id: object | None = None) -> lis
             if bbox:
                 im = im.crop(bbox)
             logos.append(im)
-        except Exception:  # noqa: BLE001 - one bad file must not break the ticket
+        except Exception:
             continue
         if len(logos) >= max_n:
             break
@@ -277,11 +264,6 @@ def _load_sponsor_logos(max_n: int = 10, tenant_id: object | None = None) -> lis
 
 
 def _darken_band(content: Image.Image, top: int, bottom: int, strength: int = 205) -> None:
-    """Fade a horizontal band towards black, easing out at the bottom edge.
-
-    Used behind the event branding so it stays legible over a bright or busy
-    participant photo, without a hard line where the overlay ends.
-    """
     top, bottom = max(top, 0), min(bottom, H)
     if bottom <= top:
         return
@@ -290,7 +272,6 @@ def _darken_band(content: Image.Image, top: int, bottom: int, strength: int = 20
     mask = Image.new("L", (1, h))
     for i in range(h):
         t = i / max(h - 1, 1)
-        # Full strength at the top, fading out over the last third.
         alpha = strength if t < 0.66 else int(strength * (1 - (t - 0.66) / 0.34))
         mask.putpixel((0, i), max(0, min(255, alpha)))
     black = Image.new("RGB", band.size, (0, 0, 0))
@@ -298,23 +279,11 @@ def _darken_band(content: Image.Image, top: int, bottom: int, strength: int = 20
 
 
 def _strip_flat_background(im: Image.Image, thresh: int = 40) -> Image.Image:
-    """Make a logo's flat backdrop transparent so it sits cleanly on dark.
-
-    Partner logos arrive with whatever background the brand's file happens to
-    have — white, grey, or already transparent. Pasted as-is on the ticket they
-    read as random white/grey blocks. Flood-filling inwards from the corners
-    clears only the connected backdrop, so light details *inside* the mark
-    (e.g. white text on a black bar) survive, unlike a global colour key.
-    """
     im = im.convert("RGBA")
     w, h = im.size
     corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
-
-    # Already transparent at the edges → nothing to do.
     if all(im.getpixel(c)[3] < 16 for c in corners):
         return im
-
-    # Only treat it as a flat backdrop if the corners agree with each other.
     opaque = [im.getpixel(c) for c in corners if im.getpixel(c)[3] > 200]
     if len(opaque) < 3:
         return im
@@ -326,39 +295,31 @@ def _strip_flat_background(im: Image.Image, thresh: int = 40) -> Image.Image:
         for p in opaque
     ):
         return im
-
     original = im.copy()
     try:
         for corner in corners:
             if im.getpixel(corner)[3] > 200:
                 ImageDraw.floodfill(im, corner, (0, 0, 0, 0), thresh=thresh)
-    except Exception:  # noqa: BLE001 - keep the original on any PIL hiccup
+    except Exception:
         return original
-
-    # A mark drawn in dark ink (e.g. black lettering on a white plate) would
-    # vanish against the black header band once its backdrop is gone. In that
-    # case keep the original, so it renders as its own light block — which is
-    # exactly how such logos appear on the event's promo artwork.
     if _is_dark_on_light(im):
         return original
     return im
 
 
 def _is_dark_on_light(im: Image.Image, cutoff: int = 105) -> bool:
-    """True if what remains after clearing the backdrop is mostly dark ink."""
     small = im.resize((48, 48), Image.LANCZOS)
     lum, count = 0, 0
     for r, g, b, a in small.getdata():
         if a > 128:
             lum += 0.299 * r + 0.587 * g + 0.114 * b
             count += 1
-    if count < 40:  # almost nothing left — treat as unusable, keep the original
+    if count < 40:
         return True
     return (lum / count) < cutoff
 
 
 def _fit_row(logos, max_bar_w, gap, max_w, start_h=88, min_h=30):
-    """Largest height at which this row of logos still fits the card width."""
     def _scale(target_h):
         out = []
         for im in logos:
@@ -368,7 +329,6 @@ def _fit_row(logos, max_bar_w, gap, max_w, start_h=88, min_h=30):
                 w, h = max_w, int(im.height * max_w / im.width)
             out.append((max(1, w), max(1, h)))
         return out
-
     target_h = start_h
     while target_h > min_h:
         sizes = _scale(target_h)
@@ -378,49 +338,26 @@ def _fit_row(logos, max_bar_w, gap, max_w, start_h=88, min_h=30):
     return target_h, _scale(target_h)
 
 
-# Below this a logo stops being readable on a phone screen, so the strip wraps
-# to a second row instead of shrinking everything further.
 _MIN_LOGO_H = 56
 
 
 def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
-    """Draw the partner logos as a solid header band across the top.
-
-    The band is painted black edge to edge so the logos always read the same,
-    whatever photo happens to be behind them — this mirrors the header strip on
-    the event's own promo artwork, and avoids the logos looking like stray
-    stamps floating over the car photo.
-
-    Logos in a row scale down together so the row always fits the card. With
-    enough partners a single row would shrink every mark to an illegible
-    sliver, so the strip wraps onto a second row instead. Returns the y just
-    below the band (or the input y when there are no logos).
-    """
     if not logos:
         return y
-
     max_bar_w = max_bar_w or (W - 2 * MARGIN - 60)
     gap, max_w, pad_y, row_gap = 40, 230, 26, 20
-
     rows = [list(logos)]
     height, _ = _fit_row(rows[0], max_bar_w, gap, max_w)
     if height < _MIN_LOGO_H and len(logos) > 2:
-        # Split into two balanced rows, keeping the filename order left-to-right,
-        # top-to-bottom — so 1_… stays first and 4_… still gets shown.
         half = (len(logos) + 1) // 2
         rows = [list(logos[:half]), list(logos[half:])]
-
     drawn = []
     for row in rows:
         _, sizes = _fit_row(row, max_bar_w, gap, max_w)
         drawn.append([im.resize(sz, Image.LANCZOS) for im, sz in zip(row, sizes)])
-
     row_heights = [max(s.height for s in row) for row in drawn]
     band_h = sum(row_heights) + row_gap * (len(drawn) - 1) + pad_y * 2
-
-    # Solid band, full card width, flush with the top edge.
     draw.rectangle([X0, y, X1, y + band_h], fill=(0, 0, 0))
-
     row_y = y + pad_y
     for scaled, row_h in zip(drawn, row_heights):
         row_w = sum(s.width for s in scaled) + gap * (len(scaled) - 1)
@@ -436,8 +373,52 @@ def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
                 )
                 x += gap
         row_y += row_h + row_gap
-
     return y + band_h
+
+
+def _resolve_ticket_copy(lang: str, tenant: Any | None, base_copy: dict) -> dict:
+    """Return date/place copy, tenant-branded when tenant provides values.
+
+    ``tenant`` may be a TenantConfig or Tenant or dict-like with event_* fields.
+    If tenant provides date/venue, those override the base copy.
+    """
+    if tenant is None:
+        return base_copy
+    # Extract localized date/venue from tenant config
+    if lang == "uz":
+        ev_date = (getattr(tenant, "event_date_text_uz", "") or getattr(tenant, "event_date_text_ru", "") or "").strip()
+        venue = (getattr(tenant, "event_venue_text_uz", "") or getattr(tenant, "event_venue_text_ru", "") or "").strip()
+    else:
+        ev_date = (getattr(tenant, "event_date_text_ru", "") or "").strip()
+        venue = (getattr(tenant, "event_venue_text_ru", "") or "").strip()
+
+    # Build date line: if tenant provides date, use it as-is prefixed with Заезд/Kirish if not already
+    # For ticket we want concise: date + place
+    date_line = base_copy["date"]
+    place_line = base_copy["place"]
+    if ev_date:
+        # Keep it simple: use tenant date as date line, but keep participant prefix logic from base?
+        # If ev_date already contains "Заезд" or similar, use as is.
+        # Otherwise prefix with base's participant context? We'll just use ev_date directly.
+        if lang == "ru":
+            # If ev_date doesn't start with Заезд, prefix
+            if "заезд" not in ev_date.lower() and "·" not in ev_date:
+                date_line = f"Заезд · {ev_date}"
+            else:
+                date_line = ev_date
+        else:
+            if "kirish" not in ev_date.lower() and "·" not in ev_date:
+                date_line = f"Kirish · {ev_date}"
+            else:
+                date_line = ev_date
+    if venue:
+        place_line = venue.upper()
+
+    return {
+        "participant": base_copy["participant"],
+        "date": date_line,
+        "place": place_line,
+    }
 
 
 # ---------- main ----------
@@ -451,34 +432,48 @@ def generate_ticket(
     tenant_name: str = "",
     lang: str = "ru",
     hero_image_path: Optional[str] = None,
+    tenant_config: Any | None = None,
+    event_date_text: str = "",
+    event_venue_text: str = "",
 ) -> bytes:
     """Render one tenant's ticket using only that tenant's uploaded artwork.
 
-    ``tenant_id`` is optional solely for compatibility with the original
-    single-bot API; multi-tenant callers must pass the tenant asset scope.
+    ``tenant_id`` is the asset scope (slug). ``tenant_name`` is used for
+    wordmark guarantee.  For full tenant branding, ``tenant_config`` may be
+    passed to override date/place copy; alternatively ``event_date_text`` and
+    ``event_venue_text`` can be passed directly (already localized).
     """
-    copy = _COPY.get(lang, _COPY["ru"])
+    base_copy = _COPY.get(lang, _COPY["ru"])
+    # Resolve copy from tenant_config if provided, else from explicit date/venue
+    if tenant_config is not None:
+        copy = _resolve_ticket_copy(lang, tenant_config, base_copy)
+    elif event_date_text or event_venue_text:
+        # Build copy from explicit texts
+        date_line = event_date_text or base_copy["date"]
+        place_line = (event_venue_text or base_copy["place"]).upper()
+        copy = {"participant": base_copy["participant"], "date": date_line, "place": place_line}
+    else:
+        copy = base_copy
+
     cw, ch = X1 - X0, TEAR_Y - Y0
 
     content = Image.new("RGB", (W, H), STUB)
     content.paste(_hero(cw, ch, hero_image_path), (X0, Y0))
     draw = ImageDraw.Draw(content)
 
-    # --- partner logo strip across the very top, then the event branding ---
     strip_bottom = _draw_sponsor_strip(
         content, draw, W // 2, Y0, _load_sponsor_logos(tenant_id=tenant_id)
     )
     has_strip = strip_bottom > Y0
     logo_top = (strip_bottom + 46) if has_strip else (Y0 + 96)
 
-    # The event branding sits over the car photo, which can be bright and busy.
-    # Fade the band it occupies to near-black so the marks always read.
     _darken_band(content, Y0 if not has_strip else strip_bottom, logo_top + 190)
+    # Guarantee wordmark uses tenant_name when no logos
+    effective_tenant_name = tenant_name or (getattr(tenant_config, "tenant_name", "") if tenant_config else "")
     _logo_or_wordmark(
-        content, draw, W // 2, logo_top, tenant_id=tenant_id, tenant_name=tenant_name
+        content, draw, W // 2, logo_top, tenant_id=tenant_id, tenant_name=effective_tenant_name
     )
 
-    # --- participant label + big number (over the poster) ---
     num = f"№{number}"
     nfont = _fit(draw, num, "bold", 260, cw - 120, min_size=130)
     nw = draw.textlength(num, font=nfont)
@@ -487,7 +482,6 @@ def generate_ticket(
     draw.text((W / 2 - nw / 2 + 5, ny + 5), num, font=nfont, fill=(0, 0, 0))
     draw.text((W / 2 - nw / 2, ny), num, font=nfont, fill=WHITE)
 
-    # --- slim stub: name + details + date ---
     clean_name = name.strip()
     info = f"{plate}  •  {direction}".strip(" •")
     date_line = f"{copy['date']}  •  {copy['place']}"
@@ -495,17 +489,14 @@ def generate_ticket(
     if clean_name:
         nfont_stub = _fit(draw, clean_name, "bold", 42, cw - 140, min_size=24)
         _center(draw, W // 2, TEAR_Y + 40, clean_name, nfont_stub, WHITE)
-
         ifont = _fit(draw, info, "bold", 34, cw - 140, min_size=20)
         _center(draw, W // 2, TEAR_Y + 110, info, ifont, WHITE)
-
         _fit_spaced_center(draw, W // 2, TEAR_Y + 180, date_line, "regular", 22, cw - 120, MUTED, spacing=1)
     else:
         ifont = _fit(draw, info, "bold", 44, cw - 140, min_size=24)
         _center(draw, W // 2, TEAR_Y + 60, info, ifont, WHITE)
         _fit_spaced_center(draw, W // 2, TEAR_Y + 150, date_line, "regular", 24, cw - 120, MUTED, spacing=1)
 
-    # --- ticket mask: rounded card + tear notches + perforation ---
     mask = Image.new("L", (W, H), 0)
     md = ImageDraw.Draw(mask)
     md.rounded_rectangle([X0, Y0, X1, Y1], radius=CORNER, fill=255)

@@ -204,7 +204,90 @@ land on the Fly volume and appear on tickets immediately, no redeploy needed.
 ticket. They can also be committed to `bot/assets/sponsors/` under the same
 names — see [`bot/assets/sponsors/README.md`](bot/assets/sponsors/README.md).
 
+## SPL Show tenant-branding (SPL) — multi-tenant SaaS guide
+
+This release adds **SPL Show** as a first-class example of a fully tenant-branded event on top of the multi-tenant platform. **Promotors remains the default tenant**; SPL proves that a new tenant starts empty and can be branded without leaking Promotors assets.
+
+### What is tenant-branded?
+
+- **Tenant name** comes from `tenants.name` (`TenantConfig.tenant_name`), not hard-coded.
+- **Channel link** comes from `tenants.channel_url` / `required_channel` — no hard-coded `t.me/promotorsshow` in new helpers.
+- **Event dates / venue** come from new columns `event_date_text_ru/uz`, `event_venue_text_ru/uz`, `event_guest_date_text_ru/uz` (RU/UZ). Empty means sentence omitted.
+- **Ticket**: 1-2 generic logo slots. Promotors keeps `logo.png` / `adrenaline.png` fallback from repo; other tenants have **no repo fallback** → wordmark from `tenant_name`. Generic slot titles are i18n (`assets.brand.generic_title`). Preview = real ticket logic.
+- **Sponsors**: `PARTNER_LOGOS` checklist only for promotors or removed; bundled `bot/assets/sponsors/` fallback only for promotors; new tenants start empty + admin empty-state i18n (`assets.sponsors.empty_tenant`, `assets.partners.empty_tenant`).
+- **Directions**: tenant-specific + podnapravleniya (2-level). New table `directions(id, tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)`. Seed promotors 4 directions. Backward-compatible: old `applications.direction` canonical strings stay, new `direction_id` FK added. Storage format `Parent — Child` or `direction_id`. Admin CRUD at `/super-admin/tenants/{slug}/directions`. Export shows final name, `direction_label` stays.
+
+### Architecture
+
+- `bot/db.py`: tenants event columns + directions table, migrations additive only, `list_directions`, `create_direction`, `update_direction`, `delete_direction` (soft), seed promotors.
+- `bot/config.py`: `TenantConfig` extended with 6 event fields, `tenant_config()` maps from Tenant.
+- `bot/services/assets.py`: `_is_default_scope()` helper — bundled fallback only for `promotors` or legacy `None` scope. `sponsor_files`, `direction_banner`, `brand_logo` only fallback for promotors, `partner_status` returns `[]` for non-promotors, inventory respects scope.
+- `bot/services/directions.py` (new): `build_hierarchy`, `format_final_choice`, `localized_final_choice`, `find_by_*` — 2-level logic, storage `Parent — Child`.
+- `bot/keyboards.py`: `CB_SUB_DIRECTION`, `direction_keyboard_from_db()` uses DB ids + localized labels, legacy `direction_keyboard()` kept as fallback.
+- `bot/states.py`: added `Registration.sub_direction`.
+- `bot/texts.py`: tenant-branded helpers `greeting_for_tenant`, `subscribe_required_for_tenant`, `approved_for_tenant` (uses tenant channel_url), `rejected_for_tenant` (guest date + venue from tenant), `registration_closed_for_tenant`, `registration_closed_bilingual_for_tenant`, `share_cta_for_tenant`, `ticket_copy_for_tenant`. No hard-coded channel/date.
+- `bot/handlers/registration.py`: loads directions from DB, parent→child flow storing `Parent — Child` + `direction_id`, tenant-branded greetings/closed.
+- `bot/services/decisions.py`, `bot/services/ticket.py`: ticket uses tenant_config for date/venue branding, wordmark guarantee.
+- `bot/admin/i18n.py`: new keys RU+UZ for directions CRUD, event fields, generic brand titles, empty-state.
+- `bot/admin/views.py`, `bot/admin/server.py`: `/super-admin/tenants/{slug}/directions` CRUD, event field inputs i18n, generic brand titles, empty-state i18n, preview = real logic.
+
+### SPL setup guide (slug: `splshow`)
+
+1. Super-admin login `/super-admin/login` → **➕ Создать tenant**
+   - Slug: `splshow`
+   - Name: `SPL Show`
+   - Bot token: from @BotFather
+   - Admin chat ID, required channel `@splshow` (or yours), channel URL `https://t.me/splshow`, Instagram etc.
+   - Event fields:
+     - `event_date_text_ru`: `11 сентября 2026 с 10:00 до 19:00`
+     - `event_date_text_uz`: `11-sentyabr 2026, 10:00 dan 19:00 gacha`
+     - `event_venue_text_ru/uz`: `SOF EXPO`
+     - `event_guest_date_text_ru`: `12 и 13 сентября с 10:00`
+     - `event_guest_date_text_uz`: `12 va 13-sentyabr, 10:00 dan`
+   - Save → worker hot-restarts only `splshow`.
+
+2. Directions CRUD: `/super-admin/tenants/splshow/directions`
+   - Add root: `SPL Тюнинг`, label RU `SPL Тюнинг`, UZ `SPL Tyuning`, slug `spl_tuning`, sort 0
+   - Add children under it: `SPL Тюнинг — Show`, `SPL Тюнинг — Street`, etc. (parent = SPL Тюнинг). Max 2 levels.
+   - Repeat for `Adrenaline Drift`, `Retro`, `Moto` or your own.
+
+3. Ticket branding: `/t/splshow/ticket-assets`
+   - Upload brand logos (generic slots) — transparent PNG ~1200px. If none uploaded, ticket shows wordmark `SPL SHOW`.
+   - Upload sponsor logos: `1_spl_partner`, `2_local_garage` etc. No repo fallback — empty state says repo not used.
+   - Preview shows real logic with your logos + tenant name.
+
+4. Bot texts: automatically use tenant name/channel/date/venue from DB. Promotors texts preserved via seed/migration.
+
+5. Test isolation:
+   - `pytest` includes `test_assets` isolation, `test_directions`, `test_tenants`.
+   - Manual: `/start` in `@splshowbot` → direction list shows only splshow directions, not promotors.
+
+### File list (SPL deliverable)
+
+- `bot/db.py`: directions table + event columns + CRUD + seed
+- `bot/config.py`: TenantConfig event fields
+- `bot/services/assets.py`: tenant isolation
+- `bot/services/directions.py`: NEW hierarchy helpers
+- `bot/keyboards.py`: DB direction keyboards + sub_direction
+- `bot/states.py`: sub_direction state
+- `bot/texts.py`: tenant-branded helpers
+- `bot/handlers/registration.py`: DB directions + 2-level flow
+- `bot/services/decisions.py`: tenant-branded approved/rejected/share
+- `bot/services/ticket.py`: tenant date/venue + wordmark guarantee + preview=real
+- `bot/handlers/mynumber.py`: tenant-branded status
+- `bot/admin/i18n.py`: RU+UZ new keys
+- `bot/admin/views.py`: directions CRUD pages, event inputs, generic brand titles, empty-state
+- `bot/admin/server.py`: directions routes + event form values + preview real logic
+- `tests/test_directions.py`: (existing + isolation)
+- `tests/test_assets.py`: isolation (no repo fallback for non-promotors)
+
+### Test results
+
+- `py_compile` all edited files: OK
+- `pytest -q`: 78 passed
+
 ## Editing wording / dates
+
 
 All user-facing text lives in `bot/texts.py` (greeting, approval/rejection
 messages, dates, button labels, country/direction lists). Change it there.

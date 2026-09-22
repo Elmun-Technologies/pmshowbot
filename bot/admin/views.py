@@ -717,6 +717,7 @@ def ticket_assets_page(
     directions: list[dict],
     message: str = "",
     error: str = "",
+    tenant_slug: str = "promotors",
 ) -> str:
     lang = i18n.normalize_lang(lang)
     # Flash codes arrive via query params; unknown codes fall back to a
@@ -766,7 +767,11 @@ def ticket_assets_page(
         '</div>'
     )
 
-    # Brand logos
+    # Brand logos — tenant-branded titles
+    is_default_tenant = tenant_slug in (None, "", "promotors")
+    brand_title_key = "assets.brand.title" if is_default_tenant else "assets.brand.generic_title"
+    brand_hint_key = "assets.brand.hint" if is_default_tenant else "assets.brand.generic_hint"
+
     brand_cards = ""
     for key in ("logo", "adrenaline"):
         info = brand.get(key, {})
@@ -785,8 +790,13 @@ def ticket_assets_page(
             f'<span class="badge badge-{"approved" if exists else "rejected"}">'
             f'{escape(status)}</span>'
         )
-        title_map = {"logo": "PROMOTORS SHOW (logo.png)", "adrenaline": "Adrenaline Rush (adrenaline.png)"}
-        title = title_map.get(key, key)
+        if is_default_tenant:
+            title_map = {"logo": "PROMOTORS SHOW (logo.png)", "adrenaline": "Adrenaline Rush (adrenaline.png)"}
+            title = title_map.get(key, key)
+        else:
+            # Generic slot titles i18n
+            title_map = {"logo": f"{tenant_slug} logo", "adrenaline": f"{tenant_slug} secondary logo"}
+            title = title_map.get(key, key)
 
         brand_cards += (
             '<div class="asset-card">'
@@ -815,8 +825,8 @@ def ticket_assets_page(
 
     brand_section = (
         '<div class="section">'
-        f'<h2>{t(lang, "assets.brand.title")}</h2>'
-        f'<p class="muted">{t(lang, "assets.brand.hint")}</p>'
+        f'<h2>{t(lang, brand_title_key)}</h2>'
+        f'<p class="muted">{t(lang, brand_hint_key)}</p>'
         f'<div class="asset-grid">{brand_cards}</div></div>'
     )
 
@@ -837,16 +847,25 @@ def ticket_assets_page(
             f'<td>{escape(p["title"])}</td>'
             f'<td>{escape(src)}</td></tr>'
         )
-    partner_table = (
-        '<div class="section">'
-        f'<h2>{t(lang, "assets.partners.title")}</h2>'
-        f'<p class="muted">{t(lang, "assets.partners.hint")}</p>'
-        '<table><thead><tr>'
-        f'<th>{t(lang, "assets.partners.col_name")}</th>'
-        f'<th>{t(lang, "assets.partners.col_description")}</th>'
-        f'<th>{t(lang, "assets.partners.col_status")}</th>'
-        f'</tr></thead><tbody>{partner_rows}</tbody></table></div>'
-    )
+    # For non-promotors tenants, partners from repo are hidden (empty) — show tenant-specific empty state
+    if not partner_rows and not is_default_tenant:
+        partner_table = (
+            '<div class="section">'
+            f'<h2>{t(lang, "assets.partners.title")}</h2>'
+            f'<p class="muted">{t(lang, "assets.partners.empty_tenant")}</p>'
+            '</div>'
+        )
+    else:
+        partner_table = (
+            '<div class="section">'
+            f'<h2>{t(lang, "assets.partners.title")}</h2>'
+            f'<p class="muted">{t(lang, "assets.partners.hint")}</p>'
+            '<table><thead><tr>'
+            f'<th>{t(lang, "assets.partners.col_name")}</th>'
+            f'<th>{t(lang, "assets.partners.col_description")}</th>'
+            f'<th>{t(lang, "assets.partners.col_status")}</th>'
+            f'</tr></thead><tbody>{partner_rows}</tbody></table></div>'
+        )
 
     # Sponsor logos grid
     sponsor_cards = ""
@@ -876,7 +895,8 @@ def ticket_assets_page(
             '</form></div></div>'
         )
     if not sponsor_cards:
-        sponsor_cards = f'<p class="muted">{t(lang, "assets.sponsors.empty")}</p>'
+        empty_key = "assets.sponsors.empty" if is_default_tenant else "assets.sponsors.empty_tenant"
+        sponsor_cards = f'<p class="muted">{t(lang, empty_key)}</p>'
 
     upload_sponsor_form = (
         '<div class="upload-box">'
@@ -1111,6 +1131,7 @@ def super_dashboard_page(lang: str, tenants, application_counts: dict[int, int])
             f'<td>{application_counts.get(tenant.id, 0)}</td>'
             '<td style="white-space:nowrap">'
             f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/edit">{t(lang, "superdash.edit")}</a> '
+            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/directions">{t(lang, "tenant.directions.manage")}</a> '
             f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/diag">{t(lang, "superdash.diagnostics")}</a> '
             f'<a class="btn btn-ghost btn-small" href="/t/{slug}/">{t(lang, "common.open")}</a>'
             '<form method="post" action="/super-admin/tenants/' + slug + '/toggle" style="display:inline">'
@@ -1231,6 +1252,20 @@ def super_tenant_form_page(
         f'<input type="text" name="spreadsheet_id" value="{_form_value(values, tenant, "spreadsheet_id")}" style="width:100%"></div>'
         f'<div class="k">{t(lang, "tenant.form.drive_folder_id")}</div><div>'
         f'<input type="text" name="drive_folder_id" value="{_form_value(values, tenant, "drive_folder_id")}" style="width:100%"></div>'
+        f'<div class="k" style="grid-column:1 / -1; margin-top:12px; font-weight:700">{t(lang, "tenant.form.event_section")}</div>'
+        f'<div class="k">{t(lang, "tenant.form.event_date_text_ru")}</div><div>'
+        f'<input type="text" name="event_date_text_ru" value="{_form_value(values, tenant, "event_date_text_ru")}" placeholder="11 сентября 2026 с 10:00 до 19:00" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_date_text_uz")}</div><div>'
+        f'<input type="text" name="event_date_text_uz" value="{_form_value(values, tenant, "event_date_text_uz")}" placeholder="11-sentyabr 2026, 10:00 dan 19:00 gacha" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_venue_text_ru")}</div><div>'
+        f'<input type="text" name="event_venue_text_ru" value="{_form_value(values, tenant, "event_venue_text_ru")}" placeholder="SOF EXPO" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_venue_text_uz")}</div><div>'
+        f'<input type="text" name="event_venue_text_uz" value="{_form_value(values, tenant, "event_venue_text_uz")}" placeholder="SOF EXPO" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_guest_date_text_ru")}</div><div>'
+        f'<input type="text" name="event_guest_date_text_ru" value="{_form_value(values, tenant, "event_guest_date_text_ru")}" placeholder="12 и 13 сентября с 10:00" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_guest_date_text_uz")}</div><div>'
+        f'<input type="text" name="event_guest_date_text_uz" value="{_form_value(values, tenant, "event_guest_date_text_uz")}" placeholder="12 va 13-sentyabr, 10:00 dan" style="width:100%"></div>'
+        f'<div class="k"></div><div><small class="muted">{t(lang, "tenant.form.event_hint")}</small></div>'
         f'<div class="k">{t(lang, "tenant.form.admin_password")}</div><div>'
         '<input type="password" name="admin_password" placeholder="***" style="width:100%">'
         f'<small class="muted">{t(lang, "tenant.form.password_stored")}</small></div>'
@@ -1275,6 +1310,14 @@ def tenant_settings_page(lang: str, tenant, message: str = "", error: str = "") 
         + field("instagram_url", t(lang, "settings.instagram_url"), tenant.instagram_url)
         + field("spreadsheet_id", t(lang, "settings.spreadsheet_id"), tenant.spreadsheet_id)
         + field("drive_folder_id", t(lang, "settings.drive_folder_id"), tenant.drive_folder_id)
+        + f'<div class="k" style="grid-column:1 / -1; margin-top:12px; font-weight:700">{t(lang, "settings.event_section")}</div>'
+        + field("event_date_text_ru", t(lang, "settings.event_date_text_ru"), getattr(tenant, "event_date_text_ru", ""))
+        + field("event_date_text_uz", t(lang, "settings.event_date_text_uz"), getattr(tenant, "event_date_text_uz", ""))
+        + field("event_venue_text_ru", t(lang, "settings.event_venue_text_ru"), getattr(tenant, "event_venue_text_ru", ""))
+        + field("event_venue_text_uz", t(lang, "settings.event_venue_text_uz"), getattr(tenant, "event_venue_text_uz", ""))
+        + field("event_guest_date_text_ru", t(lang, "settings.event_guest_date_text_ru"), getattr(tenant, "event_guest_date_text_ru", ""))
+        + field("event_guest_date_text_uz", t(lang, "settings.event_guest_date_text_uz"), getattr(tenant, "event_guest_date_text_uz", ""))
+        + f'<div class="k"></div><div><small class="muted">{t(lang, "settings.event_hint")}</small></div>'
         + f'<div class="k">{t(lang, "settings.new_password")}</div>'
         '<div><input type="password" name="admin_password" '
         f'placeholder="{t(lang, "settings.new_password_hint")}" style="width:100%"></div>'
@@ -1307,3 +1350,138 @@ def tenant_diag_page(lang: str, tenant, checks: list[tuple[str, bool, str]]) -> 
         f'</tr></thead><tbody>{rows}</tbody></table></div>'
     )
     return _super_page(t(lang, "diag.page_title"), body, lang)
+
+
+def super_tenant_directions_page(lang: str, tenant, directions) -> str:
+    """List tenant directions with hierarchy, localized."""
+    lang = i18n.normalize_lang(lang)
+    # Build parent lookup
+    id_to_dir = {d.id: d for d in directions}
+    # Sort: parents first then children
+    roots = [d for d in directions if d.parent_id is None]
+    roots_sorted = sorted(roots, key=lambda d: (d.sort_order, d.id))
+    rows = ""
+    for root in roots_sorted:
+        status = t(lang, "tenant.directions.active") if root.is_active else t(lang, "tenant.directions.inactive")
+        parent_label = "—"
+        rows += (
+            f'<tr><td><b>{escape(root.label_ru if lang=="ru" else root.label_uz)}</b><br>'
+            f'<small class="muted">{escape(root.canonical)}</small></td>'
+            f'<td><code>{escape(root.slug)}</code></td>'
+            f'<td>{escape(parent_label)}</td>'
+            f'<td>{root.sort_order}</td>'
+            f'<td>{escape(status)}</td>'
+            f'<td style="white-space:nowrap">'
+            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{escape(tenant.slug)}/directions/{root.id}/edit">{t(lang, "tenant.directions.edit")}</a> '
+            f'<form method="post" action="/super-admin/tenants/{escape(tenant.slug)}/directions/{root.id}/delete" style="display:inline">'
+            f'<button class="btn btn-reject btn-small" type="submit" onclick="return confirm(\'{_js_confirm(t(lang, "tenant.directions.confirm_delete"))}\')">{t(lang, "tenant.directions.delete")}</button></form>'
+            f'</td></tr>'
+        )
+        children = [d for d in directions if d.parent_id == root.id]
+        for child in sorted(children, key=lambda d: (d.sort_order, d.id)):
+            status_c = t(lang, "tenant.directions.active") if child.is_active else t(lang, "tenant.directions.inactive")
+            rows += (
+                f'<tr><td style="padding-left:24px">↳ {escape(child.label_ru if lang=="ru" else child.label_uz)}<br>'
+                f'<small class="muted">{escape(child.canonical)}</small></td>'
+                f'<td><code>{escape(child.slug)}</code></td>'
+                f'<td>{escape(root.label_ru if lang=="ru" else root.label_uz)}</td>'
+                f'<td>{child.sort_order}</td>'
+                f'<td>{escape(status_c)}</td>'
+                f'<td style="white-space:nowrap">'
+                f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{escape(tenant.slug)}/directions/{child.id}/edit">{t(lang, "tenant.directions.edit")}</a> '
+                f'<form method="post" action="/super-admin/tenants/{escape(tenant.slug)}/directions/{child.id}/delete" style="display:inline">'
+                f'<button class="btn btn-reject btn-small" type="submit" onclick="return confirm(\'{_js_confirm(t(lang, "tenant.directions.confirm_delete"))}\')">{t(lang, "tenant.directions.delete")}</button></form>'
+                f'</td></tr>'
+            )
+    # Orphans (parent not found) as roots
+    orphans = [d for d in directions if d.parent_id is not None and d.parent_id not in id_to_dir]
+    for o in sorted(orphans, key=lambda d: (d.sort_order, d.id)):
+        status_o = t(lang, "tenant.directions.active") if o.is_active else t(lang, "tenant.directions.inactive")
+        rows += (
+            f'<tr><td>{escape(o.label_ru if lang=="ru" else o.label_uz)}<br><small class="muted">{escape(o.canonical)}</small></td>'
+            f'<td><code>{escape(o.slug)}</code></td>'
+            f'<td class="muted">orphan {o.parent_id}</td>'
+            f'<td>{o.sort_order}</td>'
+            f'<td>{escape(status_o)}</td>'
+            f'<td><a class="btn btn-ghost btn-small" href="/super-admin/tenants/{escape(tenant.slug)}/directions/{o.id}/edit">{t(lang, "tenant.directions.edit")}</a></td></tr>'
+        )
+    if not rows:
+        rows = f'<tr><td colspan="6" class="muted">{t(lang, "tenant.directions.empty")}</td></tr>'
+
+    body = (
+        f'<p><a href="/super-admin/tenants/{escape(tenant.slug)}/edit">{t(lang, "tenant.directions.back")}</a></p>'
+        f'<div class="section"><div style="display:flex;justify-content:space-between;align-items:center">'
+        f'<h2>{t(lang, "tenant.directions.heading", name=escape(tenant.name))}</h2>'
+        f'<a class="btn btn-primary" href="/super-admin/tenants/{escape(tenant.slug)}/directions/new">{t(lang, "tenant.directions.create")}</a>'
+        f'</div>'
+        '<div style="overflow-x:auto"><table><thead><tr>'
+        f'<th>{t(lang, "tenant.directions.col_name")}</th>'
+        f'<th>{t(lang, "tenant.directions.col_canonical")}</th>'
+        f'<th>{t(lang, "tenant.directions.col_parent")}</th>'
+        f'<th>{t(lang, "tenant.directions.col_sort")}</th>'
+        f'<th>{t(lang, "tenant.directions.col_status")}</th>'
+        f'<th>{t(lang, "tenant.directions.col_actions")}</th>'
+        '</tr></thead><tbody>' + rows + '</tbody></table></div></div>'
+    )
+    return _super_page(t(lang, "tenant.directions.page_title"), body, lang)
+
+
+def super_direction_form_page(lang: str, tenant, direction=None, parents=None, values=None, error="") -> str:
+    lang = i18n.normalize_lang(lang)
+    editing = direction is not None
+    title = t(lang, "tenant.direction.edit.title", name=tenant.name) if editing else t(lang, "tenant.direction.create.title", name=tenant.name)
+    action = (
+        f"/super-admin/tenants/{escape(tenant.slug)}/directions/{direction.id}/edit"
+        if editing else f"/super-admin/tenants/{escape(tenant.slug)}/directions/new"
+    )
+    err_html = f'<div class="err">{escape(error)}</div>' if error else ""
+
+    def fv(field, default=""):
+        if values is not None and field in values:
+            return escape(str(values[field] or ""))
+        if direction is not None:
+            return escape(str(getattr(direction, field, default) or ""))
+        return escape(str(default))
+
+    # Parent select
+    parents = parents or []
+    parent_options = '<option value="">— (root)</option>'
+    current_parent = fv("parent_id")
+    # Also consider values dict for parent_id
+    try:
+        cur_pid = int(current_parent) if current_parent else None
+    except:
+        cur_pid = None
+    for p in parents:
+        sel = " selected" if cur_pid is not None and p.id == cur_pid else ""
+        # For edit, also check direction.parent_id
+        if not sel and direction and direction.parent_id == p.id:
+            sel = " selected"
+        parent_options += f'<option value="{p.id}"{sel}>{escape(p.label_ru)} ({escape(p.canonical)})</option>'
+
+    # is_active checkbox
+    if values is not None:
+        is_active_checked = str(values.get("is_active", "")) in {"1", "true", "on", "True"}
+    elif direction is not None:
+        is_active_checked = bool(direction.is_active)
+    else:
+        is_active_checked = True
+    active_attr = " checked" if is_active_checked else ""
+
+    body = (
+        f'<p><a href="/super-admin/tenants/{escape(tenant.slug)}/directions">{t(lang, "common.back")}</a></p>'
+        f'<div class="section"><h2>{title}</h2>' + err_html +
+        f'<form method="post" action="{action}">'
+        '<div class="kv" style="grid-template-columns:190px minmax(0,1fr)">'
+        f'<div class="k">{t(lang, "tenant.direction.form.canonical")}</div><div><input type="text" name="canonical" required value="{fv("canonical")}" style="width:100%"><small class="muted">{t(lang, "tenant.direction.form.hint_canonical")}</small></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.label_ru")}</div><div><input type="text" name="label_ru" value="{fv("label_ru")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.label_uz")}</div><div><input type="text" name="label_uz" value="{fv("label_uz")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.slug")}</div><div><input type="text" name="slug" value="{fv("slug")}" pattern="[A-Za-z0-9_-]{1,64}" style="width:100%"><small class="muted">{t(lang, "tenant.direction.form.hint_slug")}</small></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.parent")}</div><div><select name="parent_id" style="width:100%">{parent_options}</select></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.sort_order")}</div><div><input type="number" name="sort_order" value="{fv("sort_order", "0")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.is_active")}</div><div><label><input type="checkbox" name="is_active" value="1"{active_attr}> {t(lang, "common.active")}</label></div>'
+        '</div><div class="actions">'
+        f'<button class="btn btn-primary" type="submit">{t(lang, "common.save")}</button>'
+        '</div></form></div>'
+    )
+    return _super_page(title, body, lang)
