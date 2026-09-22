@@ -315,7 +315,7 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
 ### Test results
 
 - `py_compile` all edited files: OK
-- `pytest -q`: 166 passed (includes the end-to-end form on a real dispatcher)
+- `pytest -q`: 167 passed (includes the end-to-end form on a real dispatcher)
 
 ## Reliability on event day
 
@@ -342,6 +342,10 @@ Operational notes:
   in-memory storage instead of stopping the bot.
 - Every failure is logged with the tenant slug and update id — search the log
   for `"failed:"` when a participant reports a silent bot.
+- The photo ledger is keyed by the worker's **identity**: aiogram's `Bot`
+  compares equal to any other `Bot` with the same token, so a ledger keyed by
+  the object itself would follow a hot-reloaded worker into its replacement
+  (stale "this side failed" entries decide which slot the next photo fills).
 - Photos: an update is answered before its photo is on disk; the resend asks
   («⚠️ Не удалось сохранить фото (…). Пришлите его, пожалуйста») name the side
   once the download really fails, and the form refuses to be accepted while a

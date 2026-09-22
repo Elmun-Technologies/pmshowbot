@@ -26,6 +26,8 @@ Four scenarios are measured, because they behave differently:
    once;
 3. **the first photo stalled** — three more photos and a text message behind a
    stream that never starts: the reported hang;
+   **the whole form over a slow link** — one photo streaming for 3 s, from
+   ``/start`` to the confirmation;
 4. **the same banner twice** — two registrations, one upload.
 
 Before ``bot.services.media.PhotoIngest`` the photo step answered only after the
@@ -39,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import os
 import sys
 import time
@@ -373,10 +376,93 @@ def _key(harness: BotHarness):
     return StorageKey(bot_id=harness.bot.id, chat_id=USER, user_id=USER)
 
 
+async def scenario_whole_form_behind_a_slow_link() -> None:
+    """The whole form while Telegram is slow: does any step go quiet?
+
+    One photo's stream takes six seconds — slow, but still inside the 15 s cap,
+    so it does arrive in the end.  Nothing the participant does may wait for it:
+    every answer up to and including the phone question must arrive within a
+    second.  The confirmation is the one exception, because the application row
+    is only written once the photos are on the volume — and even that wait has
+    to be *announced* (``PHOTOS_SAVING``) instead of looking like a freeze.
+    """
+    import bot.services.media as media
+    from bot.texts import T
+
+    harness = await new_harness(StallingSession(stall=6.0))
+    try:
+        recorder = Recorder()
+        await recorder.feed("1. /start → language", lambda: harness.send_command(USER))
+        await recorder.feed("2. language", lambda: harness.tap(USER, "lang:ru"))
+        await recorder.feed("3. country", lambda: harness.tap(USER, "country:0"))
+        await recorder.feed("4. plate", lambda: harness.send_text(USER, "01A123BC"))
+        directions = await harness.db.list_directions(
+            tenant_id=harness.tenant.id, active_only=True
+        )
+        if directions:
+            await recorder.feed(
+                "5. direction", lambda: harness.tap(USER, f"direction:{directions[0].id}")
+            )
+        for index in range(4):
+            await recorder.feed(
+                f"{6 + index}. photo {index + 1} (one stream takes 6 s)",
+                lambda index=index: harness.send_photo(USER, f"slow-{index}"),
+            )
+        await recorder.feed(
+            "10. mods photo", lambda: harness.send_photo(USER, "slow-mod")
+        )
+        await recorder.feed(
+            "11. mods done", lambda: harness.tap(USER, "modsdone", text="mods card")
+        )
+        data = await harness.dispatcher.storage.get_data(_key(harness))
+        pending = [
+            os.path.basename(path)
+            for path, state in media.ingest.statuses(harness.bot, USER).items()
+            if state == "pending"
+        ]
+        print(f"   still downloading before the phone step: {pending or 'nothing'}")
+        await recorder.feed(
+            "12. phone → confirmation", lambda: harness.send_contact(USER)
+        )
+        report("the whole form, one photo streaming for 6 s", recorder.rows)
+
+        texts = harness.private_texts(USER)
+        saving = T("ru").PHOTOS_SAVING in texts
+        thanks = any(line.startswith(T("ru").THANKS.splitlines()[0][:20]) for line in texts)
+        failed = media.ingest.failed(harness.bot, USER)
+        print(f"said \"saving photos\" before the confirmation : {saving}")
+        print(f"confirmed the application                      : {thanks}")
+        if failed:
+            print("downloads that failed:", [os.path.basename(u.path) for u in failed])
+
+        await media.ingest.wait(harness.bot, USER, timeout=20)
+        app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
+        on_disk = [os.path.exists(p) for p in app.photo_paths + app.mod_paths]
+        print(
+            f"application row: {len(app.photo_paths)} sides + "
+            f"{len(app.mod_paths)} mods, all on the volume: {all(on_disk)}"
+        )
+
+        worst = max(row[1] for row in recorder.rows[:-1])
+        last = recorder.rows[-1][1]
+        assert worst < 1.0, f"a step waited behind the slow stream: {worst:.2f} s"
+        assert not failed, f"a download failed for no reason: {failed}"
+        assert thanks, "the form never confirmed"
+        assert saving, "the confirmation waited for the photo without saying so"
+        assert len(app.photo_paths) == 4 and len(app.mod_paths) == 1, (
+            f"the application lost photos: {app.photo_paths} + {app.mod_paths}"
+        )
+        assert all(on_disk), "a photo never reached the volume"
+    finally:
+        await harness.stop()
+
+
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     await scenario_sequential()
     await scenario_album()
     await scenario_stalled_first_photo()
+    await scenario_whole_form_behind_a_slow_link()
     await scenario_banner_reuse()
 
 

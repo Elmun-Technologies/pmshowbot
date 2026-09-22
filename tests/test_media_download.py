@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import gc
 import io
 import os
 import sys
@@ -320,6 +321,53 @@ def test_a_download_that_dies_with_the_process_is_fetched_again():
     asyncio.run(run())
 
 
+def test_a_replaced_worker_does_not_inherit_the_ledger():
+    """Two workers with the same token are two ledgers, not one.
+
+    aiogram's ``Bot.__eq__``/``__hash__`` are built from the token, so a ledger
+    keyed by the Bot object hands a freshly built worker the ledger of the one
+    it replaced — including the failures that decide which slot the
+    participant's next photo fills.  Found by the diagnostics, where a failed
+    upload from one scenario turned up in the next one's application check.
+    """
+
+    async def run():
+        first = BotHarness()
+        await first.start()
+        second = BotHarness()
+        await second.start()
+        try:
+            assert first.bot == second.bot, "the trap this test guards is gone"
+            media.ingest.submit(
+                first.bot,
+                user_id=USER,
+                chat_id=USER,
+                file_id="probe",
+                path=os.path.join(first.media_dir, "probe.jpg"),
+                kind="side",
+                index=0,
+            )
+            await media.ingest.wait(first.bot, USER, timeout=10)
+            assert media.ingest.statuses(first.bot, USER), "the upload was not recorded"
+
+            assert media.ingest.statuses(second.bot, USER) == {}, (
+                "a fresh worker inherited another worker's ledger"
+            )
+            assert media.ingest.failed(second.bot, USER) == []
+
+            key = id(first.bot)
+            await first.stop()
+            del first
+            gc.collect()
+            assert key not in media.ingest._records, (
+                "the ledger kept a dead worker's entry"
+            )
+        finally:
+            await second.stop()
+
+    asyncio.run(run())
+
+
 def _key(harness: BotHarness):
     from aiogram.fsm.storage.base import StorageKey
 
@@ -366,4 +414,5 @@ if __name__ == "__main__":
     test_a_missing_side_keeps_the_form_open_instead_of_accepting_it()
     test_a_download_that_dies_with_the_process_is_fetched_again()
     test_all_four_photos_are_written_on_the_volume()
+    test_a_replaced_worker_does_not_inherit_the_ledger()
     print("All media-download tests passed.")

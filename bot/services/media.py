@@ -286,23 +286,31 @@ class PhotoIngest:
     """
 
     def __init__(self) -> None:
-        # bot -> user id -> path -> Upload.  The Bot itself is the key, held
-        # weakly: it keeps two tenants (each with its own bot and its own
-        # volume) apart without an API call to learn the bot's id, and a worker
-        # that is replaced on a hot reload does not keep its client alive here.
-        self._records: "weakref.WeakKeyDictionary[Any, dict[int, dict[str, Upload]]]" = (
-            weakref.WeakKeyDictionary()
-        )
+        # id(bot) -> user id -> path -> Upload.
+        #
+        # Keyed by *identity*, not by the bot object itself: aiogram gives Bot a
+        # ``__eq__``/``__hash__`` over its token, so two workers built from the
+        # same token compare equal and a plain dict (or a WeakKeyDictionary of
+        # bots) would hand the new worker the ledger of the one it replaced —
+        # including the failures it recorded, which decide which slot the
+        # participant's next photo fills.  The weakref below drops the entry
+        # when that worker goes away, so identity is never reused.
+        self._records: dict[int, dict[int, dict[str, Upload]]] = {}
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
     def _ledger(self, bot: Any, user_id: int) -> dict[str, Upload]:
         """The per-participant part of the ledger, created on first use."""
-        per_user = self._records.get(bot)
+        key = id(bot)
+        per_user = self._records.get(key)
         if per_user is None:
             per_user = {}
-            self._records[bot] = per_user
+            self._records[key] = per_user
+            try:
+                weakref.finalize(bot, self._records.pop, key, None)
+            except TypeError:  # pragma: no cover - a bot that cannot be watched
+                logger.debug("Bot %r cannot be watched for ledger cleanup", bot)
         return per_user.setdefault(int(user_id), {})
 
     def _prune(self, records: dict[str, Upload]) -> None:
