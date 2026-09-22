@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -23,6 +24,8 @@ from typing import Any, Mapping, Optional
 
 from .security import EncryptionError, TokenCipher, hash_password, is_password_hash
 from .sqlite_pool import connect_sqlite
+
+logger = logging.getLogger(__name__)
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
@@ -231,10 +234,37 @@ SPL_CLEARED_EVENT_FIELDS = ("event_guest_date_text_ru", "event_guest_date_text_u
 _SPL_SLUGS = frozenset({"splshow", "spl", "spl-show"})
 _SPL_NAMES = frozenset({"spl show", "spl"})
 
+# «Заезд показывает 3 октября, а на самом деле 2» — the SPL Show arrival is
+# 2 October 17:00–22:00 (the *show* day is the 3rd: that is what the participant
+# note says).  A stored arrival date naming the 3rd is wrong no matter how it got
+# there — the panel, an older seed, a copy/paste — and the client reads it in the
+# first line of the approval.  The value is corrected on startup, with a log
+# line, instead of waiting for somebody to find the right field in the panel.
+_THIRD_OF_OCTOBER = re.compile(
+    r"(?<![\d])0?3\s*[.\-/]?\s*(?:0?10(?:[.\-/]\s*\d{2,4})?|октябр\w*|окт\w*|oktyabr\w*|okt\w*)",
+    re.IGNORECASE,
+)
+SPL_ARRIVAL_FIELDS = ("event_date_text_ru", "event_date_text_uz")
+
+
+def mentions_third_of_october(text: str) -> bool:
+    """True when an event date names 3 October (in any of the usual spellings)."""
+    return bool(_THIRD_OF_OCTOBER.search(text or ""))
+
 
 def is_spl_tenant(slug: str, name: str = "") -> bool:
-    """True for the SPL Show tenant, whatever slug the panel used."""
-    return (slug or "").strip().lower() in _SPL_SLUGS or (name or "").strip().lower() in _SPL_NAMES
+    """True for the SPL Show tenant, whatever slug the panel used.
+
+    The exact slugs and names are the documented ones; the extra "spl" + "show"
+    check covers a tenant created by hand as «SPL Show 2026» or
+    ``spl-show-tashkent`` — for those the seed (and the 3-October arrival-date
+    correction above) has to work too, or the wrong date stays forever.
+    """
+    slug = (slug or "").strip().lower()
+    name = (name or "").strip().lower()
+    if slug in _SPL_SLUGS or name in _SPL_NAMES:
+        return True
+    return any("spl" in value and "show" in value for value in (slug, name))
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +861,29 @@ class Database:
                     current = ""
                 if current in _SPL_STALE_EVENT_VALUES:
                     updates[key] = ""
+            # The arrival date is the one line the client reads first («Заезд
+            # участников — …») and prints on the ticket, so a 3-October value is
+            # corrected even when it is not one of the known stale strings: a
+            # hand-typed value in the panel is exactly how it got there.
+            for key in SPL_ARRIVAL_FIELDS:
+                if key not in cols or key in updates:
+                    continue
+                try:
+                    current = str(row[key] or "").strip()
+                except (KeyError, IndexError):
+                    current = ""
+                if current and mentions_third_of_october(current):
+                    correct = SPL_EVENT_COPY[key]
+                    if current != correct:
+                        logger.warning(
+                            "[%s] Arrival date %r names 3 October — the SPL Show arrival is "
+                            "2 October; correcting it to %r (change it in the panel if the "
+                            "client confirms otherwise)",
+                            row["slug"],
+                            current,
+                            correct,
+                        )
+                    updates[key] = correct
             if not updates:
                 continue
             set_clause = ", ".join(f"{k} = ?" for k in updates)

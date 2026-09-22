@@ -542,36 +542,45 @@ async def _application_detail(request: web.Request) -> web.Response:
 
 
 async def _approve(request: web.Request) -> web.Response:
+    """Decide in SQLite, then deliver behind the redirect.
+
+    The HTTP request used to wait for the whole delivery (render + upload), so a
+    panel click could sit for half a minute on a slow uplink and the redirect
+    only came back when the participant already had their ticket.  The decision
+    is synchronous; the participant's notification, the ticket and the sheet
+    append are spawned and survive the response.
+    """
     db = _db(request)
     bot = _bot(request)
     config = _config(request)
     lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
-    await decisions.approve_application(
-        bot,
-        config,
-        db,
-        app_id,
-        moderator=t(lang, "moderation.via_panel"),
-        announce_in_chat=True,
-    )
+    moderator = t(lang, "moderation.via_panel")
+    app = await decisions.claim_approval(db, app_id, moderator)
+    if app is not None:
+        decisions.spawn(
+            decisions.deliver_approval(
+                bot, config, app, moderator=moderator, announce_in_chat=True
+            )
+        )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
 
 async def _reject(request: web.Request) -> web.Response:
+    """Reject in SQLite, then deliver behind the redirect (see :func:`_approve`)."""
     db = _db(request)
     bot = _bot(request)
     config = _config(request)
     lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
-    await decisions.reject_application(
-        bot,
-        config,
-        db,
-        app_id,
-        moderator=t(lang, "moderation.via_panel"),
-        announce_in_chat=True,
-    )
+    moderator = t(lang, "moderation.via_panel")
+    app = await decisions.claim_rejection(db, app_id, moderator)
+    if app is not None:
+        decisions.spawn(
+            decisions.deliver_rejection(
+                bot, config, app, moderator=moderator, announce_in_chat=True
+            )
+        )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
 
@@ -609,16 +618,17 @@ async def _change_status(request: web.Request) -> web.Response:
     status = str(data.get("status", ""))
     if status not in _VALID_STATUSES or bot is None:
         raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change=error"))
-    ok = await decisions.set_status(
-        bot,
-        config,
-        db,
-        app_id,
-        status,
-        moderator=t(lang, "moderation.via_panel"),
-        announce_in_chat=True,
-    )
-    raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if ok else 'error'}"))
+    moderator = t(lang, "moderation.via_panel")
+    app = await decisions.claim_status(db, app_id, status, moderator)
+    if app is not None:
+        # Delivery (notification, ticket, sheet) runs behind the redirect: the
+        # panel must not hang on a multi-megabyte upload.
+        decisions.spawn(
+            decisions.deliver_status(
+                bot, config, app, status, moderator=moderator, announce_in_chat=True
+            )
+        )
+    raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if app is not None else 'error'}"))
 
 
 async def _resend_ticket(request: web.Request) -> web.Response:

@@ -16,7 +16,7 @@ from .admin.server import create_admin_app
 from .bot_manager import BotManager, publish_commands as _publish_commands
 from .config import Config, load_config
 from .db import DEFAULT_TENANT_SLUG, Database
-from .services import assets, media
+from .services import assets, decisions, media
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +65,12 @@ async def main() -> None:
         # this coroutine alive lets aiohttp and every tenant share one loop.
         await asyncio.Event().wait()
     finally:
+        # A decision answered a second ago may still be delivering its ticket.
+        # Wait for those tasks *before* the bots are closed: shutting the
+        # sessions down first would turn an in-flight ticket into «session is
+        # closed», which is exactly how "the participant never got the ticket"
+        # happens on a redeploy.
+        await decisions.wait_background(timeout=20.0)
         await manager.shutdown()
         if web_runner is not None:
             await web_runner.cleanup()
