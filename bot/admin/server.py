@@ -651,6 +651,19 @@ def _ticket_job_key(request: web.Request, app_id: int) -> tuple:
 
 def _set_ticket_job(key: tuple, status: str, error: str = "") -> None:
     _TICKET_JOBS[key] = {"status": status, "error": error, "updated_at": time.time()}
+    # Defensive cap: jobs of deleted applications are never re-read and would
+    # otherwise outlive the TTL pruning.  In-flight jobs are always kept.
+    if len(_TICKET_JOBS) > 1024:
+        terminal = sorted(
+            (
+                (k, v["updated_at"])
+                for k, v in _TICKET_JOBS.items()
+                if v["status"] in ("sent", "failed")
+            ),
+            key=lambda kv: kv[1],
+        )
+        for k, _ in terminal[: len(_TICKET_JOBS) - 1024]:
+            _TICKET_JOBS.pop(k, None)
 
 
 def _ticket_job(key: tuple) -> Optional[dict]:
@@ -732,6 +745,15 @@ _ticket_preview_cache: dict[tuple, tuple[float, bytes]] = {}
 
 def _ticket_preview_key(request: web.Request, app) -> tuple:
     return (_asset_scope(request), app.id, app.reg_number)
+
+
+def _invalidate_ticket_previews() -> None:
+    """Drop cached per-application renders: the artwork changed under them.
+
+    An admin who re-uploads a logo expects the application-page preview to
+    show the new design at once, not up to ten minutes later.
+    """
+    _ticket_preview_cache.clear()
 
 
 async def _application_ticket_preview(request: web.Request) -> web.Response:
@@ -1251,6 +1273,7 @@ async def _brand_upload(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("brand upload failed")
         raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=brand_uploaded"))
 
 
@@ -1259,6 +1282,7 @@ async def _brand_delete(request: web.Request) -> web.Response:
     brand_name = str(data.get("brand_name", "")).strip()
     if brand_name in assets.BRAND_LOGOS:
         assets.delete_asset("brand", brand_name, _asset_scope(request))
+        _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=brand_deleted"))
 
 
@@ -1280,6 +1304,7 @@ async def _sponsor_upload(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("sponsor upload failed")
         raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=sponsor_uploaded"))
 
 
@@ -1290,6 +1315,7 @@ async def _sponsor_delete(request: web.Request) -> web.Response:
     name = os.path.splitext(name)[0]
     if assets.is_safe_name(name):
         assets.delete_asset("sponsors", name, _asset_scope(request))
+        _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=sponsor_deleted"))
 
 
@@ -1309,6 +1335,7 @@ async def _direction_upload(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("direction upload failed")
         raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=direction_uploaded"))
 
 
@@ -1317,6 +1344,7 @@ async def _direction_delete(request: web.Request) -> web.Response:
     slug = str(data.get("slug", "")).strip()
     if slug in _direction_slugs():
         assets.delete_asset("directions", slug, _asset_scope(request))
+        _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=direction_deleted"))
 
 

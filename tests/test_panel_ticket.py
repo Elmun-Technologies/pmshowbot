@@ -319,10 +319,88 @@ def test_the_ticket_assets_sample_preview_uses_the_latest_application():
         asyncio.run(run())
 
 
+def test_preview_cache_follows_asset_changes():
+    """A logo upload must reach the application-page preview immediately.
+
+    Without invalidation a re-branded ticket would keep showing the old
+    design on the application page for up to the cache TTL (ten minutes) —
+    while the ticket-assets sample (always re-rendered) already showed the
+    new one, which reads as a broken preview.
+    """
+    import aiohttp
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from bot.services import assets as assets_service
+
+    with tempfile.TemporaryDirectory() as tmp:
+        assets_service.configure(tmp)
+        try:
+            db, app_id = _seed(tmp)
+            admin_app = _panel(db, tmp)
+            headers = _headers()
+            admin_server._ticket_preview_cache.clear()
+
+            async def run():
+                calls = [0]
+                real = decisions.generate_ticket
+
+                def spy(*args, **kwargs):
+                    calls[0] += 1
+                    return real(*args, **kwargs)
+
+                decisions.generate_ticket = spy
+                try:
+                    async with TestClient(TestServer(admin_app)) as client:
+                        # First request renders, the second is a cache hit.
+                        r1 = await client.get(
+                            f"/application/{app_id}/ticket.png", headers=headers
+                        )
+                        r2 = await client.get(
+                            f"/application/{app_id}/ticket.png", headers=headers
+                        )
+                        assert r1.status == 200 and r2.status == 200
+                        assert (await r2.read())[:8] == PNG_MAGIC
+                        assert calls[0] == 1, "the preview cache did not work"
+
+                        # Upload a sponsor logo through the panel…
+                        form = aiohttp.FormData()
+                        form.add_field("name", "1_new_partner")
+                        form.add_field(
+                            "file",
+                            b"\x89PNG\r\n\x1a\npartner-logo",
+                            filename="1_new_partner.png",
+                            content_type="image/png",
+                        )
+                        up = await client.post(
+                            "/ticket-assets/sponsor/upload",
+                            data=form,
+                            headers=headers,
+                            allow_redirects=False,
+                        )
+                        assert up.status == 302
+                        assert "msg=sponsor_uploaded" in up.headers["Location"]
+
+                        # …so the next preview re-renders with the new artwork.
+                        r3 = await client.get(
+                            f"/application/{app_id}/ticket.png", headers=headers
+                        )
+                        assert r3.status == 200
+                        assert calls[0] == 2, (
+                            "a logo upload did not invalidate the preview cache"
+                        )
+                finally:
+                    decisions.generate_ticket = real
+
+            asyncio.run(run())
+        finally:
+            assets_service.configure(None)
+
+
 if __name__ == "__main__":
     test_the_application_page_previews_the_participants_actual_ticket()
     test_pending_applications_have_no_ticket_preview()
     test_panel_resend_answers_before_the_upload_and_reports_the_result()
     test_panel_resend_failure_shows_the_readable_reason_in_uz()
     test_the_ticket_assets_sample_preview_uses_the_latest_application()
+    test_preview_cache_follows_asset_changes()
     print("All panel ticket tests passed.")
