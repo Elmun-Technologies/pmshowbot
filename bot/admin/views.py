@@ -1,19 +1,22 @@
-"""Server-rendered HTML for the admin panel (no external template engine)."""
+"""Server-rendered HTML for the admin panel (no external template engine).
+
+Every view receives the panel locale (``"ru"`` or ``"uz"``) and pulls its
+strings from :mod:`.i18n` via :func:`~.i18n.t`, so views never branch on the
+language themselves.  The RU | O‘Z switcher is rendered by the layout helpers
+(``_page`` / ``_super_page``) and on the login pages; it uses safe relative
+``?lang=`` links produced by :func:`~.i18n.lang_switcher`.
+"""
 from __future__ import annotations
 
 from html import escape
 from typing import Iterable, Optional
-import os
 import time
 
-from ..constants import DIRECTIONS_CANON, SIDES, SIDE_LABELS_RU
+from ..constants import DIRECTIONS_CANON, SIDES
 from ..db import Application, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
+from . import i18n
+from .i18n import t
 
-_STATUS_RU = {
-    STATUS_PENDING: "На рассмотрении",
-    STATUS_APPROVED: "Одобрено",
-    STATUS_REJECTED: "Отклонено",
-}
 _STATUS_CLASS = {
     STATUS_PENDING: "badge-pending",
     STATUS_APPROVED: "badge-approved",
@@ -69,13 +72,21 @@ input[type=text], input[type=password], input[type=file] { padding: 8px 10px; bo
 .kv { display: grid; grid-template-columns: 160px 1fr; gap: 8px 16px; font-size: 15px; }
 .kv .k { color: #6b7280; }
 .actions { margin-top: 18px; display: flex; gap: 10px; }
-.login-wrap { max-width: 340px; margin: 80px auto; }
+.login-wrap { max-width: 340px; margin: 40px auto; }
+.login-lang { display: flex; justify-content: center; margin: 26px 0 10px; }
 .err { background: #fee2e2; color: #991b1b; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
 .ok { background: #d1fae5; color: #065f46; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
 .muted { color: #6b7280; }
 .bar { display:flex; align-items:center; gap:8px; margin:6px 0; }
 .bar .track { flex:1; height:10px; background:#ede9fe; border-radius:6px; overflow:hidden; }
 .bar .fill { height:100%; background:#7c3aed; }
+.lang-switch { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.lang-switch a { color: #5b21b6; padding-bottom: 2px; }
+.lang-switch a.cur { color: #4c1d95; border-bottom: 2px solid #4c1d95; }
+.lang-switch .sep { color: #c4b5fd; margin: 0 6px; }
+header .lang-switch a { color: #c4b5fd; }
+header .lang-switch a.cur { color: #fff; border-bottom-color: #fff; }
+header .lang-switch .sep { color: #6d5aa8; }
 
 /* Ticket assets */
 .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: 12px; }
@@ -91,8 +102,20 @@ input[type=text], input[type=password], input[type=file] { padding: 8px 10px; bo
 """
 
 
-def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
-    nav_html = ""
+def _html_lang_attribute(lang: str) -> str:
+    return i18n.normalize_lang(lang)
+
+
+def _page(
+    title: str,
+    body: str,
+    lang: str,
+    active: str = "",
+    nav: bool = True,
+) -> str:
+    """Layout for the tenant-admin panel with the language switcher."""
+    lang = i18n.normalize_lang(lang)
+    switcher = i18n.lang_switcher(lang)
     if nav:
         def link(href: str, label: str, key: str) -> str:
             cls = ' class="active"' if active == key else ""
@@ -100,56 +123,63 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
 
         nav_html = (
             '<header>'
-            '<span class="brand">🚗 Promotors Show — Admin</span>'
-            f'<nav>{link("/", "Дашборд", "home")} '
-            f'{link("/applications", "Заявки", "apps")} '
-            f'{link("/ticket-assets", "🎫 Билеты", "ticket")} '
-            f'{link("/broadcast", "📢 Рассылка", "broadcast")} '
-            f'{link("/settings", "⚙️ Настройки", "settings")} '
-            f'{link("/export.xlsx", "📊 Excel", "export")} '
-            f'{link("/export.csv", "CSV", "export_csv")}</nav>'
+            f'<span class="brand">🚗 Promotors Show — {t(lang, "nav.brand_suffix")}</span>'
+            f'<nav>{link("/", t(lang, "nav.dashboard"), "home")} '
+            f'{link("/applications", t(lang, "nav.applications"), "apps")} '
+            f'{link("/ticket-assets", t(lang, "nav.tickets"), "ticket")} '
+            f'{link("/broadcast", t(lang, "nav.broadcast"), "broadcast")} '
+            f'{link("/settings", t(lang, "nav.settings"), "settings")} '
+            f'{link("/export.xlsx", t(lang, "nav.export_excel"), "export")} '
+            f'{link("/export.csv", t(lang, "nav.export_csv"), "export_csv")}</nav>'
             '<span class="spacer"></span>'
-            '<a href="/logout" style="color:#ddd6fe">Выйти</a>'
+            f'{switcher}'
+            f'<a href="/logout" style="color:#ddd6fe">{t(lang, "common.logout")}</a>'
             '</header>'
         )
+        switcher_html = ""
+    else:
+        nav_html = ""
+        switcher_html = f'<div class="login-lang">{switcher}</div>'
     return (
-        "<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
+        f"<!doctype html><html lang='{_html_lang_attribute(lang)}'>"
+        "<head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{escape(title)}</title><style>{_CSS}</style></head>"
-        f"<body>{nav_html}<main>{body}</main></body></html>"
+        f"<body>{nav_html}<main>{switcher_html}{body}</main></body></html>"
     )
 
 
-def login_page(error: bool = False) -> str:
-    err = '<div class="err">Неверный пароль</div>' if error else ""
+def login_page(lang: str, error: bool = False) -> str:
+    lang = i18n.normalize_lang(lang)
+    err = f'<div class="err">{t(lang, "login.wrong_password")}</div>' if error else ""
     body = (
         '<div class="login-wrap"><div class="section">'
-        '<h2>Вход в админ-панель</h2>'
+        f'<h2>{t(lang, "login.title")}</h2>'
         f'{err}'
         '<form method="post" action="/login">'
         '<div style="margin-bottom:12px"><input type="password" name="password" '
-        'placeholder="Пароль" style="width:100%" autofocus></div>'
-        '<button class="btn btn-primary" type="submit" style="width:100%">Войти</button>'
+        f'placeholder="{t(lang, "login.password_placeholder")}" style="width:100%" autofocus></div>'
+        f'<button class="btn btn-primary" type="submit" style="width:100%">{t(lang, "common.login")}</button>'
         '</form></div></div>'
     )
-    return _page("Вход", body, nav=False)
+    return _page(t(lang, "login.page_title"), body, lang, nav=False)
 
 
-def panel_disabled_page() -> str:
+def panel_disabled_page(lang: str) -> str:
+    lang = i18n.normalize_lang(lang)
     body = (
         '<div class="login-wrap"><div class="section">'
-        '<h2>Панель отключена</h2>'
-        '<p class="muted">Задайте секрет <code>ADMIN_PASSWORD</code>, чтобы включить '
-        'админ-панель.</p></div></div>'
+        f'<h2>{t(lang, "disabled.panel.title")}</h2>'
+        f'<p class="muted">{t(lang, "disabled.panel.body")}</p></div></div>'
     )
-    return _page("Панель отключена", body, nav=False)
+    return _page(t(lang, "disabled.panel.title"), body, lang, nav=False)
 
 
 def _stat_card(n, label: str) -> str:
     return f'<div class="card"><div class="n">{n}</div><div class="l">{escape(label)}</div></div>'
 
 
-def _distribution(title: str, data: dict) -> str:
+def _distribution(lang: str, title: str, data: dict) -> str:
     if not data:
         return ""
     total = sum(data.values()) or 1
@@ -164,25 +194,26 @@ def _distribution(title: str, data: dict) -> str:
     return f'<div class="section"><h2>{escape(title)}</h2>{rows}</div>'
 
 
-def dashboard_page(stats: dict) -> str:
+def dashboard_page(lang: str, stats: dict) -> str:
+    lang = i18n.normalize_lang(lang)
     cards = (
         '<div class="cards">'
-        + _stat_card(stats["total"], "Всего заявок")
-        + _stat_card(stats["pending"], "На рассмотрении")
-        + _stat_card(stats["approved"], "Одобрено")
-        + _stat_card(stats.get("approved_users", stats["approved"]), "Одобр. участники")
-        + _stat_card(stats["rejected"], "Отклонено")
-        + _stat_card(f'№{stats["max_number"]}', "Последний номер")
+        + _stat_card(stats["total"], t(lang, "dash.total_apps"))
+        + _stat_card(stats["pending"], t(lang, "dash.pending"))
+        + _stat_card(stats["approved"], t(lang, "dash.approved"))
+        + _stat_card(stats.get("approved_users", stats["approved"]), t(lang, "dash.approved_users"))
+        + _stat_card(stats["rejected"], t(lang, "dash.rejected"))
+        + _stat_card(f'№{stats["max_number"]}', t(lang, "dash.last_number"))
         + '</div>'
     )
-    
+
     excel_btn = (
         '<div style="margin:20px 0; text-align:right">'
         '<a class="btn btn-primary" href="/export.xlsx" style="padding:10px 20px; font-size:15px">'
-        '📥 Скачать Excel (.xlsx)'
+        f'{t(lang, "dash.download_excel")}'
         '</a> '
         '<a class="btn btn-ghost" href="/ticket-assets" style="padding:10px 20px; font-size:15px">'
-        '🎫 Управление билетами'
+        f'{t(lang, "dash.manage_tickets")}'
         '</a>'
         '</div>'
     )
@@ -190,32 +221,48 @@ def dashboard_page(stats: dict) -> str:
     body = (
         cards
         + excel_btn
-        + _distribution("📊 По направлениям", stats.get("by_direction", {}))
-        + _distribution("🌍 По странам", stats.get("by_country", {}))
-        + _distribution("🌐 По языкам", stats.get("by_language", {}))
-        + _distribution("📅 Заявки по дням (сост. 14 дней)", stats.get("by_date", {}))
+        + _distribution(lang, t(lang, "dash.by_direction"), stats.get("by_direction", {}))
+        + _distribution(lang, t(lang, "dash.by_country"), stats.get("by_country", {}))
+        + _distribution(lang, t(lang, "dash.by_language"), stats.get("by_language", {}))
+        + _distribution(lang, t(lang, "dash.by_date"), stats.get("by_date", {}))
     )
-    return _page("Дашборд", body, active="home")
+    return _page(t(lang, "dash.page_title"), body, lang, active="home")
 
 
-def _status_badge(status: str) -> str:
+def _js_confirm(text: str) -> str:
+    """Escape a localized string for use inside a JS confirm('...')."""
+    return escape(text, quote=True).replace("'", "\\'")
+
+
+def _status_badge(lang: str, status: str) -> str:
     cls = _STATUS_CLASS.get(status, "")
-    label = _STATUS_RU.get(status, status)
+    if status in (STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED):
+        label = t(lang, f"status.{status}")
+    else:
+        label = status
     return f'<span class="badge {cls}">{escape(label)}</span>'
 
 
 def applications_page(
-    apps: Iterable[Application], status_filter: Optional[str], search: str
+    lang: str,
+    apps: Iterable[Application],
+    status_filter: Optional[str],
+    search: str,
 ) -> str:
+    lang = i18n.normalize_lang(lang)
+    # Keep list filters when switching the interface language.
+    extra = i18n.extra_query({"status": status_filter or "", "search": search})
+    switcher = i18n.lang_switcher(lang, extra)
+
     filters = (
         '<div class="filters">'
-        + f'<a class="{ "active" if (status_filter or "all")=="all" else ""}" href="/applications">Все</a>'
-        + f'<a class="{ "active" if status_filter==STATUS_PENDING else ""}" href="/applications?status={STATUS_PENDING}">На рассмотрении</a>'
-        + f'<a class="{ "active" if status_filter==STATUS_APPROVED else ""}" href="/applications?status={STATUS_APPROVED}">Одобрено</a>'
-        + f'<a class="{ "active" if status_filter==STATUS_REJECTED else ""}" href="/applications?status={STATUS_REJECTED}">Отклонено</a>'
+        + f'<a class="{ "active" if (status_filter or "all")=="all" else ""}" href="/applications">{t(lang, "apps.filter_all")}</a>'
+        + f'<a class="{ "active" if status_filter==STATUS_PENDING else ""}" href="/applications?status={STATUS_PENDING}">{t(lang, "status.pending")}</a>'
+        + f'<a class="{ "active" if status_filter==STATUS_APPROVED else ""}" href="/applications?status={STATUS_APPROVED}">{t(lang, "status.approved")}</a>'
+        + f'<a class="{ "active" if status_filter==STATUS_REJECTED else ""}" href="/applications?status={STATUS_REJECTED}">{t(lang, "status.rejected")}</a>'
         + '<form method="get" action="/applications">'
-        + f'<input type="text" name="search" placeholder="Поиск: номер, телефон…" value="{escape(search)}">'
-        + '<button class="btn btn-ghost" type="submit">Найти</button>'
+        + f'<input type="text" name="search" placeholder="{t(lang, "apps.search_placeholder")}" value="{escape(search)}">'
+        + f'<button class="btn btn-ghost" type="submit">{t(lang, "common.search")}</button>'
         + '</form></div>'
     )
 
@@ -235,62 +282,81 @@ def applications_page(
             f"<td>{escape(app.direction)}</td>"
             f"<td>{escape(app.phone)}</td>"
             f"<td>{escape(app.username)}</td>"
-            f"<td>{_status_badge(app.status)}</td>"
-            f'<td><a class="btn btn-ghost" href="/application/{app.id}">Открыть</a></td>'
+            f"<td>{_status_badge(lang, app.status)}</td>"
+            f'<td><a class="btn btn-ghost" href="/application/{app.id}">{t(lang, "common.open")}</a></td>'
             "</tr>"
         )
     if not rows:
-        rows = '<tr><td colspan="9" class="muted" style="padding:24px;text-align:center">Заявок нет</td></tr>'
+        rows = (
+            f'<tr><td colspan="9" class="muted" style="padding:24px;text-align:center">'
+            f'{t(lang, "apps.empty")}</td></tr>'
+        )
 
     table = (
         '<div class="section">'
-        f'<h2>Заявки ({len(apps)})</h2>'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'
+        + f'<h2 style="margin:0">{t(lang, "apps.heading", n=len(apps))}</h2>{switcher}</div>'
         + filters
         + '<div style="overflow-x:auto"><table><thead><tr>'
-        '<th>Номер</th><th>Фото</th><th>Страна</th><th>Гос. номер</th><th>Направление</th>'
-        '<th>Телефон</th><th>Пользователь</th><th>Статус</th><th></th>'
-        '</tr></thead><tbody>'
+        + f'<th>{t(lang, "apps.col_number")}</th>'
+        + f'<th>{t(lang, "apps.col_photo")}</th>'
+        + f'<th>{t(lang, "apps.col_country")}</th>'
+        + f'<th>{t(lang, "apps.col_plate")}</th>'
+        + f'<th>{t(lang, "apps.col_direction")}</th>'
+        + f'<th>{t(lang, "apps.col_phone")}</th>'
+        + f'<th>{t(lang, "apps.col_user")}</th>'
+        + f'<th>{t(lang, "apps.col_status")}</th><th></th>'
+        + '</tr></thead><tbody>'
         + rows
         + '</tbody></table></div></div>'
     )
-    return _page("Заявки", table, active="apps")
+    return _page(t(lang, "apps.page_title"), table, lang, active="apps")
 
 
 def _individual_message_form(
-    app_id: int, sent: bool = False, error: str = ""
+    lang: str, app_id: int, sent: bool = False, error: str = ""
 ) -> str:
+    lang = i18n.normalize_lang(lang)
     notice = ""
     if sent:
-        notice = '<div class="section" style="background:#ecfdf5;margin:0 0 12px"><p>✅ Сообщение отправлено</p></div>'
+        notice = (
+            '<div class="section" style="background:#ecfdf5;margin:0 0 12px">'
+            f'<p>{t(lang, "msg.sent")}</p></div>'
+        )
     elif error:
         notice = f'<div class="err">{escape(error)}</div>'
     return (
-        '<div class="section"><h2>✉️ Личное сообщение</h2>'
+        f'<div class="section"><h2>{t(lang, "msg.title")}</h2>'
         + notice
-        + '<p class="muted">Сообщение уйдёт только этому пользователю, тем же ботом.</p>'
+        + f'<p class="muted">{t(lang, "msg.hint")}</p>'
         f'<form method="post" action="/application/{app_id}/message">'
         '<textarea name="text" maxlength="3500" rows="5" '
         'style="width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;'
-        'font-size:15px;font-family:inherit" placeholder="Текст сообщения…"></textarea>'
+        'font-size:15px;font-family:inherit" '
+        f'placeholder="{t(lang, "msg.placeholder")}"></textarea>'
         '<div style="margin-top:10px">'
-        '<button class="btn btn-primary" type="submit">📩 Отправить</button>'
+        f'<button class="btn btn-primary" type="submit">{t(lang, "msg.send")}</button>'
         '</div></form></div>'
     )
 
 
 def _status_control(
-    app_id: int, current_status: str, changed: bool = False, error: str = ""
+    lang: str, app_id: int, current_status: str, changed: bool = False, error: str = ""
 ) -> str:
+    lang = i18n.normalize_lang(lang)
     notice = ""
     if changed:
-        notice = '<div class="section" style="background:#ecfdf5;margin:0 0 12px"><p>✅ Статус изменён</p></div>'
+        notice = (
+            '<div class="section" style="background:#ecfdf5;margin:0 0 12px">'
+            f'<p>{t(lang, "statusctl.changed")}</p></div>'
+        )
     elif error:
         notice = f'<div class="err">{escape(error)}</div>'
 
     options = [
-        (STATUS_APPROVED, "✅ Одобрено", "btn-approve"),
-        (STATUS_REJECTED, "❌ Отклонено", "btn-reject"),
-        (STATUS_PENDING, "⏳ На рассмотрении", "btn-ghost"),
+        (STATUS_APPROVED, t(lang, "statusctl.approve_btn"), "btn-approve"),
+        (STATUS_REJECTED, t(lang, "statusctl.reject_btn"), "btn-reject"),
+        (STATUS_PENDING, t(lang, "statusctl.pending_btn"), "btn-ghost"),
     ]
     buttons = ""
     for status, label, cls in options:
@@ -300,75 +366,85 @@ def _status_control(
             f'<form method="post" action="/application/{app_id}/status" style="display:inline">'
             f'<input type="hidden" name="status" value="{status}">'
             f'<button class="btn {cls}" type="submit" '
-            'onclick="return confirm(\'Изменить статус и уведомить участника в Telegram?\')">'
+            f'onclick="return confirm(\'{_js_confirm(t(lang, "statusctl.confirm"))}\')">'
             f'{label}</button></form>'
         )
     return (
-        '<div class="section"><h2>🔀 Управление статусом</h2>'
+        f'<div class="section"><h2>{t(lang, "statusctl.title")}</h2>'
         + notice
-        + '<p class="muted">Текущий статус: '
-        + _status_badge(current_status)
-        + '<br>Изменение статуса отправит участнику уведомление в Telegram '
-        "(при переводе в «Одобрено» — также билет и номер).</p>"
+        + f'<p class="muted">{t(lang, "statusctl.current")}'
+        + _status_badge(lang, current_status)
+        + '<br>'
+        + t(lang, "statusctl.notice")
+        + '</p>'
         + f'<div style="display:flex;gap:10px;flex-wrap:wrap">{buttons}</div>'
         + '</div>'
     )
 
 
 def application_detail_page(
+    lang: str,
     app: Application,
     msg_sent: bool = False,
     msg_error: str = "",
     status_changed: bool = False,
     status_error: str = "",
 ) -> str:
+    lang = i18n.normalize_lang(lang)
     photos = ""
     for i, _ in enumerate(app.photo_paths):
         side = SIDES[i] if i < len(SIDES) else str(i + 1)
-        caption = SIDE_LABELS_RU.get(side, side)
+        side_label = t(lang, f"side.{side}") if side in SIDES else side
+        caption = t(lang, "detail.photo_side", side=side_label)
         photos += (
             f'<figure><img src="/photo/{app.id}/{i}" alt="{escape(caption)}">'
-            f'<figcaption>{escape(caption)} сторона</figcaption></figure>'
+            f'<figcaption>{escape(caption)}</figcaption></figure>'
         )
-    photos_html = f'<div class="photos">{photos}</div>' if photos else '<p class="muted">Нет фотографий</p>'
+    photos_html = (
+        f'<div class="photos">{photos}</div>' if photos
+        else f'<p class="muted">{t(lang, "detail.photos_empty")}</p>'
+    )
 
     mods = ""
     mod_paths = getattr(app, "mod_paths", []) or []
     for i, _ in enumerate(mod_paths):
+        caption = t(lang, "detail.mod_number", n=i + 1)
         mods += (
-            f'<figure><img src="/modphoto/{app.id}/{i}" alt="Изменение {i + 1}">'
-            f'<figcaption>Изменение {i + 1}</figcaption></figure>'
+            f'<figure><img src="/modphoto/{app.id}/{i}" alt="{escape(caption)}">'
+            f'<figcaption>{escape(caption)}</figcaption></figure>'
         )
     mods_html = (
         f'<div class="photos">{mods}</div>'
         if mods
-        else '<p class="muted">Участник не отметил изменений</p>'
+        else f'<p class="muted">{t(lang, "detail.mods_empty")}</p>'
     )
 
     badge_path = getattr(app, "badge_photo_path", "") or ""
     badge_html = (
-        f'<div class="photos"><figure><img src="/badgephoto/{app.id}" alt="Фото на бейдж">'
-        '<figcaption>Фото на бейдж</figcaption></figure></div>'
+        f'<div class="photos"><figure><img src="/badgephoto/{app.id}" '
+        f'alt="{t(lang, "detail.badge_photo")}">'
+        f'<figcaption>{t(lang, "detail.badge_photo")}</figcaption></figure></div>'
         if badge_path
-        else '<p class="muted">Участник ещё не прислал фото для бейджа</p>'
+        else f'<p class="muted">{t(lang, "detail.badge_empty")}</p>'
     )
 
     number = f'№{app.reg_number}' if app.reg_number is not None else "—"
+    processed_by = escape(app.processed_by or "")
     kv = (
         '<div class="kv">'
-        f'<div class="k">Статус</div><div>{_status_badge(app.status)}</div>'
-        f'<div class="k">Рег. номер</div><div>{number}</div>'
-        f'<div class="k">Страна</div><div>{escape(app.country)}</div>'
-        f'<div class="k">Гос. номер</div><div><b>{escape(app.plate)}</b></div>'
-        f'<div class="k">Направление</div><div>{escape(app.direction)}</div>'
-        f'<div class="k">Изменения в авто</div>'
+        f'<div class="k">{t(lang, "detail.col_status")}</div><div>{_status_badge(lang, app.status)}</div>'
+        f'<div class="k">{t(lang, "detail.col_reg_number")}</div><div>{number}</div>'
+        f'<div class="k">{t(lang, "detail.col_country")}</div><div>{escape(app.country)}</div>'
+        f'<div class="k">{t(lang, "detail.col_plate")}</div><div><b>{escape(app.plate)}</b></div>'
+        f'<div class="k">{t(lang, "detail.col_direction")}</div><div>{escape(app.direction)}</div>'
+        f'<div class="k">{t(lang, "detail.col_car_mods")}</div>'
         f'<div>{len(getattr(app, "mod_paths", []) or []) or "—"}</div>'
-        f'<div class="k">Телефон</div><div>{escape(app.phone)}</div>'
-        f'<div class="k">Пользователь</div><div>{escape(app.username)}</div>'
-        f'<div class="k">Язык</div><div>{escape(app.language)}</div>'
-        f'<div class="k">Подана</div><div>{escape(app.created_at)}</div>'
-        + (f'<div class="k">Обработана</div><div>{escape(app.processed_at or "")} '
-           f'{escape(app.processed_by or "")}</div>' if app.processed_at else "")
+        f'<div class="k">{t(lang, "detail.col_phone")}</div><div>{escape(app.phone)}</div>'
+        f'<div class="k">{t(lang, "detail.col_user")}</div><div>{escape(app.username)}</div>'
+        f'<div class="k">{t(lang, "detail.col_language")}</div><div>{escape(app.language)}</div>'
+        f'<div class="k">{t(lang, "detail.col_submitted")}</div><div>{escape(app.created_at)}</div>'
+        + (f'<div class="k">{t(lang, "detail.col_processed")}</div>'
+           f'<div>{escape(app.processed_at or "")} {processed_by}</div>' if app.processed_at else "")
         + '</div>'
     )
 
@@ -377,22 +453,22 @@ def application_detail_page(
         actions = (
             '<div class="actions">'
             f'<form method="post" action="/application/{app.id}/approve">'
-            '<button class="btn btn-approve" type="submit">✅ Принять</button></form>'
+            f'<button class="btn btn-approve" type="submit">{t(lang, "detail.accept")}</button></form>'
             f'<form method="post" action="/application/{app.id}/reject">'
-            '<button class="btn btn-reject" type="submit">❌ Отклонить</button></form>'
+            f'<button class="btn btn-reject" type="submit">{t(lang, "detail.reject")}</button></form>'
             '</div>'
         )
 
     body = (
-        '<p><a href="/applications">← Назад к заявкам</a></p>'
-        f'<div class="section"><h2>Заявка #{app.id}</h2>{kv}{actions}</div>'
-        f'<div class="section"><h2>Фотографии</h2>{photos_html}</div>'
-        f'<div class="section"><h2>Изменения в автомобиле</h2>{mods_html}</div>'
-        f'<div class="section"><h2>Фото на бейдж</h2>{badge_html}</div>'
-        + _status_control(app.id, app.status, changed=status_changed, error=status_error)
-        + _individual_message_form(app.id, sent=msg_sent, error=msg_error)
+        f'<p><a href="/applications">{t(lang, "detail.back_to_apps")}</a></p>'
+        f'<div class="section"><h2>{t(lang, "detail.heading", id=app.id)}</h2>{kv}{actions}</div>'
+        f'<div class="section"><h2>{t(lang, "detail.photos")}</h2>{photos_html}</div>'
+        f'<div class="section"><h2>{t(lang, "detail.mods")}</h2>{mods_html}</div>'
+        f'<div class="section"><h2>{t(lang, "detail.badge_photo")}</h2>{badge_html}</div>'
+        + _status_control(lang, app.id, app.status, changed=status_changed, error=status_error)
+        + _individual_message_form(lang, app.id, sent=msg_sent, error=msg_error)
     )
-    return _page(f"Заявка #{app.id}", body, active="apps")
+    return _page(t(lang, "detail.page_title", id=app.id), body, lang, active="apps")
 
 
 def _broadcast_textarea(
@@ -411,6 +487,7 @@ def _broadcast_textarea(
 
 
 def broadcast_page(
+    lang: str,
     counts: dict,
     audience: str = "approved",
     result: Optional[dict] = None,
@@ -421,57 +498,59 @@ def broadcast_page(
     directions: Optional[list] = None,
     preview_count: Optional[int] = None,
 ) -> str:
+    lang = i18n.normalize_lang(lang)
     # Nothing selected yet (first load) → don't pre-narrow the audience.
     langs = list(langs) if langs is not None else ["uz", "ru"]
     directions = list(directions) if directions is not None else list(DIRECTIONS_CANON)
 
     result_html = ""
     if result:
-        photo_note = " · с фото" if result.get("with_photo") else ""
+        photo_note = t(lang, "bcast.with_photo") if result.get("with_photo") else ""
         result_html = (
             '<div class="section" style="background:#ecfdf5;margin-top:0;margin-bottom:16px">'
-            "<h2>Рассылка завершена</h2>"
-            f'<p>Аудитория: <b>{escape(str(result.get("audience_label", "")))}</b>{photo_note}<br>'
-            f'Отправлено: <b>{result.get("ok", 0)}</b> · '
-            f'ошибки / блок бота: <b>{result.get("fail", 0)}</b> · '
-            f'всего адресатов: <b>{result.get("total", 0)}</b><br>'
-            f'🇺🇿 на узбекском: <b>{result.get("ok_uz", 0)}</b> · '
-            f'🇷🇺 на русском: <b>{result.get("ok_ru", 0)}</b></p>'
+            f"<h2>{t(lang, 'bcast.done')}</h2>"
+            f'<p>{t(lang, "bcast.audience_label")}'
+            f'<b>{escape(str(result.get("audience_label", "")))}</b>{escape(photo_note)}<br>'
+            f'{t(lang, "bcast.sent")}<b>{result.get("ok", 0)}</b> · '
+            f'{t(lang, "bcast.failures")}<b>{result.get("fail", 0)}</b> · '
+            f'{t(lang, "bcast.total")}<b>{result.get("total", 0)}</b><br>'
+            f'{t(lang, "bcast.sent_uz")}<b>{result.get("ok_uz", 0)}</b> · '
+            f'{t(lang, "bcast.sent_ru")}<b>{result.get("ok_ru", 0)}</b></p>'
             "</div>"
         )
     elif preview_count is not None:
         result_html = (
             '<div class="section" style="background:#eff6ff;margin-top:0;margin-bottom:16px">'
-            f'<p class="muted">По выбранным фильтрам получателей: <b>{preview_count}</b></p>'
+            f'<p class="muted">{t(lang, "bcast.preview_count", n=preview_count)}</p>'
             "</div>"
         )
     err_html = f'<div class="err">{escape(error)}</div>' if error else ""
 
     options = [
-        ("approved", "Одобрено — успешная регистрация", counts.get("approved", 0)),
-        ("pending", "На рассмотрении — заявка ещё не решена", counts.get("pending", 0)),
-        ("rejected", "Отклонено — регистрация не принята", counts.get("rejected", 0)),
-        ("incomplete", "Не завершили регистрацию (открыли бота, заявки нет)", counts.get("incomplete", 0)),
-        ("all_apps", "Все, кто подал заявку", counts.get("all_apps", 0)),
-        ("starters", "Все, кого бот уже знает", counts.get("starters", 0)),
+        ("approved", t(lang, "bcast.audience.approved"), counts.get("approved", 0)),
+        ("pending", t(lang, "bcast.audience.pending"), counts.get("pending", 0)),
+        ("rejected", t(lang, "bcast.audience.rejected"), counts.get("rejected", 0)),
+        ("incomplete", t(lang, "bcast.audience.incomplete"), counts.get("incomplete", 0)),
+        ("all_apps", t(lang, "bcast.audience.all_apps"), counts.get("all_apps", 0)),
+        ("starters", t(lang, "bcast.audience.starters"), counts.get("starters", 0)),
     ]
     radios = ""
     for key, label, n in options:
         checked = " checked" if audience == key else ""
         radios += (
-            f'<label style="display:flex;gap:10px;align-items:flex-start;margin:8px 0;'
-            f'padding:10px 12px;border:1px solid #eee;border-radius:10px;cursor:pointer">'
+            '<label style="display:flex;gap:10px;align-items:flex-start;margin:8px 0;'
+            'padding:10px 12px;border:1px solid #eee;border-radius:10px;cursor:pointer">'
             f'<input type="radio" name="audience" value="{key}"{checked} style="margin-top:4px"> '
             f'<span><b>{escape(label)}</b>'
-            f'<span class="muted"> — {n} чел.</span></span></label>'
+            f'<span class="muted"> — {t(lang, "bcast.people", n=n)}</span></span></label>'
         )
 
-    lang_options = [("uz", "🇺🇿 Только узбекский"), ("ru", "🇷🇺 Только русский")]
+    lang_options = [("uz", t(lang, "bcast.only_uz")), ("ru", t(lang, "bcast.only_ru"))]
     lang_checks = ""
     for key, label in lang_options:
         checked = " checked" if key in langs else ""
         lang_checks += (
-            f'<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 16px 4px 0">'
+            '<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 16px 4px 0">'
             f'<input type="checkbox" name="langs" value="{key}"{checked}> {escape(label)}</label>'
         )
 
@@ -479,7 +558,7 @@ def broadcast_page(
     for canonical in DIRECTIONS_CANON:
         checked = " checked" if canonical in directions else ""
         dir_checks += (
-            f'<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 16px 4px 0">'
+            '<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 16px 4px 0">'
             f'<input type="checkbox" name="directions" value="{escape(canonical)}"{checked}> '
             f'{escape(canonical)}</label>'
         )
@@ -488,67 +567,66 @@ def broadcast_page(
         result_html
         + err_html
         + '<div class="section">'
-        "<h2>Рассылка в Telegram</h2>"
-        '<p class="muted">Выберите аудиторию и напишите текст. Сообщение уйдёт тем же ботом, '
-        "которым они писали. Один пользователь — одно сообщение.</p>"
-        '<form method="post" action="/broadcast" enctype="multipart/form-data">'
-        f'<div style="margin:12px 0">{radios}</div>'
-        '<div style="margin:16px 0"><label style="display:block;font-weight:600;margin-bottom:6px">'
-        "Уточнить по языку</label>" + lang_checks + "</div>"
-        '<div style="margin:16px 0"><label style="display:block;font-weight:600;margin-bottom:6px">'
-        "Уточнить по направлению</label>" + dir_checks + "</div>"
+        + f"<h2>{t(lang, 'bcast.title')}</h2>"
+        + f'<p class="muted">{t(lang, "bcast.intro")}</p>'
+        + '<form method="post" action="/broadcast" enctype="multipart/form-data">'
+        + f'<h3 style="margin:12px 0 0">{t(lang, "bcast.audience_heading")}</h3>'
+        + f'<div style="margin:12px 0">{radios}</div>'
+        + '<div style="margin:16px 0"><label style="display:block;font-weight:600;margin-bottom:6px">'
+        + t(lang, "bcast.by_language") + "</label>" + lang_checks + "</div>"
+        + '<div style="margin:16px 0"><label style="display:block;font-weight:600;margin-bottom:6px">'
+        + t(lang, "bcast.by_direction") + "</label>" + dir_checks + "</div>"
         + _broadcast_textarea(
             "text_uz",
             "🇺🇿 O‘zbekcha",
-            "Тем, кто выбрал узбекский язык",
+            t(lang, "bcast.text_uz_hint"),
             "Xabar matni…",
             last_text_uz,
         )
         + _broadcast_textarea(
             "text_ru",
             "🇷🇺 Русский",
-            "Всем остальным получателям",
-            "Текст сообщения…",
+            t(lang, "bcast.text_ru_hint"),
+            t(lang, "bcast.text_ru_placeholder"),
             last_text_ru,
         )
         + '<p class="muted" style="margin:0 0 12px;font-size:13px">'
-        "Если заполнено только одно поле — этот текст уйдёт всем получателям."
-        "</p>"
+        + t(lang, "bcast.one_field_hint")
+        + "</p>"
         + _broadcast_photo_input(
-            "photo_uz", "bcast-photo-uz", "🇺🇿 Фото к посту — O‘zbekcha",
-            "необязательно — если не загружено, возьмётся фото из русской версии",
+            "photo_uz", "bcast-photo-uz", t(lang, "bcast.photo_uz"),
+            t(lang, "bcast.photo_uz_hint"),
         )
         + _broadcast_photo_input(
-            "photo_ru", "bcast-photo-ru", "🇷🇺 Фото к посту — Русский",
-            "необязательно — если не загружено, возьмётся фото из узбекской версии",
+            "photo_ru", "bcast-photo-ru", t(lang, "bcast.photo_ru"),
+            t(lang, "bcast.photo_ru_hint"),
         )
         + '<p class="muted" style="margin:0 0 16px;font-size:13px">'
-        "Максимум 1024 символа в тексте того языка, для которого прикреплено фото "
-        "(ограничение Telegram на подпись)."
-        "</p>"
-        + _broadcast_preview_block(last_text_uz, last_text_ru)
+        + t(lang, "bcast.caption_limit")
+        + "</p>"
+        + _broadcast_preview_block(lang, last_text_uz, last_text_ru)
         + '<label class="muted" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">'
-        '<input type="checkbox" name="confirm" value="1" required> '
-        "Да, отправить выбранной аудитории"
-        "</label>"
-        '<div style="display:flex;gap:10px">'
-        '<button class="btn btn-ghost" type="submit" name="action" value="preview">'
-        "🔍 Показать количество</button>"
-        '<button class="btn btn-primary" type="submit" name="action" value="send">'
-        "📢 Отправить</button>"
-        "</div>"
-        "</form>"
-        '<p class="muted" style="margin-top:16px;font-size:13px">'
-        "«Не завершили регистрацию» — те, кто нажал /start после обновления бота, "
-        "но заявку так и не отправил. Старых брошенных анкет в базе нет.<br>"
-        "Если снять все языки или все направления — фильтр по этому признаку не применяется."
-        "</p>"
-        "</div>"
+        + '<input type="checkbox" name="confirm" value="1" required> '
+        + t(lang, "bcast.confirm")
+        + "</label>"
+        + '<div style="display:flex;gap:10px">'
+        + '<button class="btn btn-ghost" type="submit" name="action" value="preview">'
+        + t(lang, "bcast.count_btn") + "</button>"
+        + '<button class="btn btn-primary" type="submit" name="action" value="send">'
+        + t(lang, "bcast.send_btn") + "</button>"
+        + "</div>"
+        + "</form>"
+        + '<p class="muted" style="margin-top:16px;font-size:13px">'
+        + t(lang, "bcast.note_incomplete") + "<br>"
+        + t(lang, "bcast.note_filters")
+        + "</p>"
+        + "</div>"
     )
-    return _page("Рассылка", body, active="broadcast")
+    return _page(t(lang, "bcast.page_title"), body, lang, active="broadcast")
 
 
 def _broadcast_photo_input(name: str, input_id: str, label: str, hint: str) -> str:
+    """File input for one broadcast language; ``label``/``hint`` pre-localized."""
     return (
         '<div style="margin:0 0 12px">'
         f'<label style="display:block;font-weight:600;margin-bottom:6px">📎 {escape(label)} '
@@ -558,7 +636,7 @@ def _broadcast_photo_input(name: str, input_id: str, label: str, hint: str) -> s
     )
 
 
-def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
+def _broadcast_preview_block(lang: str, last_text_uz: str, last_text_ru: str) -> str:
     """A live, client-side preview of what each language's recipient will see.
 
     Pure JS/no round trip: each language's photo is previewed straight from
@@ -568,10 +646,11 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
     Nothing here re-uploads anything or hits the request-size limit that
     sending the form does.
     """
+    lang = i18n.normalize_lang(lang)
+    empty_hint_js = escape(t(lang, "bcast.preview_empty"), quote=True)
 
     def card(lang_label: str, preview_photo_id: str, preview_text_id: str, initial: str) -> str:
-        empty_hint = '<span class="muted">Пусто</span>'
-        content = escape(initial) if initial else empty_hint
+        content = escape(initial) if initial else f'<span class="muted">{empty_hint_js}</span>'
         return (
             '<div style="flex:1;min-width:220px;border:1px solid #eee;border-radius:10px;'
             'padding:12px;background:#fafafa">'
@@ -585,7 +664,7 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
 
     return (
         '<div class="section" style="margin:0 0 16px;background:#fff">'
-        '<h3 style="margin:0 0 12px;font-size:14px;color:#6b7280">👁 Предпросмотр поста</h3>'
+        f'<h3 style="margin:0 0 12px;font-size:14px;color:#6b7280">{t(lang, "bcast.preview_title")}</h3>'
         '<div style="display:flex;gap:16px;flex-wrap:wrap">'
         + card("🇺🇿 O‘zbekcha", "preview-uz-photo", "preview-uz-text", last_text_uz)
         + card("🇷🇺 Русский", "preview-ru-photo", "preview-ru-text", last_text_ru)
@@ -616,7 +695,7 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
         "if(!ta||!box)return;"
         "ta.addEventListener('input',function(){"
         "box.textContent=ta.value||'';"
-        "if(!ta.value){box.innerHTML='<span class=\\\"muted\\\">Пусто</span>';}"
+        f"if(!ta.value){{box.innerHTML='<span class=\\\"muted\\\">{empty_hint_js}</span>';}}"
         "});"
         "}"
         "bindText('text_uz','preview-uz-text');"
@@ -631,6 +710,7 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
 # ---------------------------------------------------------------------------
 
 def ticket_assets_page(
+    lang: str,
     inventory: dict,
     sponsors: list[dict],
     brand: dict,
@@ -638,47 +718,49 @@ def ticket_assets_page(
     message: str = "",
     error: str = "",
 ) -> str:
-    # Messages
+    lang = i18n.normalize_lang(lang)
+    # Flash codes arrive via query params; unknown codes fall back to a
+    # localized generic message instead of raw internal text.
     msg_map = {
-        "brand_uploaded": "✅ Логотип бренда обновлён",
-        "brand_deleted": "🗑 Логотип бренда удалён (теперь используется версия из репозитория, если есть)",
-        "sponsor_uploaded": "✅ Логотип спонсора сохранён",
-        "sponsor_deleted": "🗑 Логотип спонсора удалён",
-        "direction_uploaded": "✅ Баннер направления сохранён",
-        "direction_deleted": "🗑 Баннер направления удалён",
+        "brand_uploaded": "assets.msg.brand_uploaded",
+        "brand_deleted": "assets.msg.brand_deleted",
+        "sponsor_uploaded": "assets.msg.sponsor_uploaded",
+        "sponsor_deleted": "assets.msg.sponsor_deleted",
+        "direction_uploaded": "assets.msg.direction_uploaded",
+        "direction_deleted": "assets.msg.direction_deleted",
     }
     err_map = {
-        "no_file": "Файл не выбран",
-        "name_required": "Введите имя файла (только латиница, цифры, _ и -)",
-        "invalid_name": "Имя может содержать только латиницу, цифры, _ и - (до 40 символов)",
-        "unknown_brand": "Неизвестный бренд",
-        "unknown_direction": "Неизвестное направление",
+        "no_file": "assets.err.no_file",
+        "name_required": "assets.err.name_required",
+        "invalid_name": "assets.err.invalid_name",
+        "unknown_brand": "assets.err.unknown_brand",
+        "unknown_direction": "assets.err.unknown_direction",
     }
 
     notice = ""
     if message and message in msg_map:
-        notice = f'<div class="ok">{msg_map[message]}</div>'
+        notice = f'<div class="ok">{t(lang, msg_map[message])}</div>'
     elif message:
-        notice = f'<div class="ok">{escape(message)}</div>'
+        notice = (
+            f'<div class="ok">{t(lang, "assets.err_generic")}: '
+            f'{escape(message)}</div>'
+        )
     if error:
-        err_text = err_map.get(error, error)
+        err_text = t(lang, err_map[error]) if error in err_map else t(lang, "assets.err_generic")
         notice += f'<div class="err">❌ {escape(err_text)}</div>'
 
     # Ticket preview
     ts = int(time.time())
     preview_html = (
         '<div class="section">'
-        '<h2>🎫 Предпросмотр билета</h2>'
-        '<p class="muted">Так будет выглядеть билет с текущими логотипами. Фон — заглушка (градиент), '
-        'в реальности за ним фото авто участника.</p>'
+        f'<h2>{t(lang, "assets.preview.title")}</h2>'
+        f'<p class="muted">{t(lang, "assets.preview.hint")}</p>'
         '<div class="ticket-preview-wrap">'
         f'<img class="ticket-preview-img" src="/ticket-assets/preview.png?ts={ts}" alt="Ticket preview">'
         '<div style="flex:1;min-width:280px">'
-        '<p class="muted" style="font-size:13px">После загрузки/удаления логотипа обновите страницу — '
-        'предпросмотр перегенерируется автоматически. '
-        'Если загружен хотя бы один спонсорский логотип из админки, используются только загруженные (из репозитория скрываются).</p>'
-        '<a class="btn btn-ghost btn-small" href="/ticket-assets/preview.png" target="_blank">Открыть в полном размере</a> '
-        f'<a class="btn btn-ghost btn-small" href="/ticket-assets?ts={ts}">🔄 Обновить</a>'
+        f'<p class="muted" style="font-size:13px">{t(lang, "assets.preview.reload_hint")}</p>'
+        f'<a class="btn btn-ghost btn-small" href="/ticket-assets/preview.png" target="_blank">{t(lang, "assets.preview.full_size")}</a> '
+        f'<a class="btn btn-ghost btn-small" href="/ticket-assets?ts={ts}">{t(lang, "assets.preview.refresh")}</a>'
         '</div>'
         '</div>'
         '</div>'
@@ -691,9 +773,18 @@ def ticket_assets_page(
         exists = info.get("exists")
         is_runtime = info.get("is_runtime")
         src = f"/assets/file/brand/{key}?ts={ts}" if exists else ""
-        img_tag = f'<img src="{src}" alt="{escape(key)}">' if exists else '<span class="muted">Нет логотипа</span>'
-        status = "загружен" if is_runtime else ("из репозитория" if exists else "❌ нет")
-        badge = f'<span class="badge badge-{"approved" if exists else "rejected"}">{escape(status)}</span>'
+        img_tag = (
+            f'<img src="{src}" alt="{escape(key)}">' if exists
+            else f'<span class="muted">{t(lang, "assets.brand.no_logo")}</span>'
+        )
+        status = (
+            t(lang, "common.uploaded") if is_runtime
+            else (t(lang, "common.from_repo") if exists else t(lang, "common.missing"))
+        )
+        badge = (
+            f'<span class="badge badge-{"approved" if exists else "rejected"}">'
+            f'{escape(status)}</span>'
+        )
         title_map = {"logo": "PROMOTORS SHOW (logo.png)", "adrenaline": "Adrenaline Rush (adrenaline.png)"}
         title = title_map.get(key, key)
 
@@ -701,47 +792,60 @@ def ticket_assets_page(
             '<div class="asset-card">'
             f'<div class="preview">{img_tag}</div>'
             f'<div class="meta"><div class="name">{escape(title)}</div>'
-            f'<div class="muted" style="font-size:12px;margin-top:4px">Ключ: <code>{escape(key)}</code> {badge}</div></div>'
+            f'<div class="muted" style="font-size:12px;margin-top:4px">{t(lang, "assets.brand.key")}'
+            f'<code>{escape(key)}</code> {badge}</div></div>'
             '<div class="actions">'
-            f'<form method="post" action="/ticket-assets/brand/upload" enctype="multipart/form-data" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%">'
+            '<form method="post" action="/ticket-assets/brand/upload" '
+            'enctype="multipart/form-data" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%">'
             f'<input type="hidden" name="brand_name" value="{escape(key)}">'
             '<input type="file" name="file" accept="image/*" required style="flex:1;min-width:120px">'
-            '<button class="btn btn-primary btn-small" type="submit">Загрузить</button>'
+            f'<button class="btn btn-primary btn-small" type="submit">{t(lang, "common.upload")}</button>'
             '</form>'
         )
         if is_runtime:
             brand_cards += (
-                f'<form method="post" action="/ticket-assets/brand/delete" style="margin-top:6px">'
+                '<form method="post" action="/ticket-assets/brand/delete" style="margin-top:6px">'
                 f'<input type="hidden" name="brand_name" value="{escape(key)}">'
-                '<button class="btn btn-reject btn-small" type="submit" onclick="return confirm(\'Удалить логотип?\')">🗑 Удалить</button>'
+                f'<button class="btn btn-reject btn-small" type="submit" '
+                f'onclick="return confirm(\'{_js_confirm(t(lang, "assets.brand.confirm_delete"))}\')">'
+                f'{t(lang, "common.delete")}</button>'
                 '</form>'
             )
         brand_cards += '</div></div>'
 
     brand_section = (
-        '<div class="section"><h2>🏷 Главные логотипы билета</h2>'
-        '<p class="muted">Эти два логотипа показываются вверху постера. Загрузите прозрачный PNG ~1200px шириной.</p>'
+        '<div class="section">'
+        f'<h2>{t(lang, "assets.brand.title")}</h2>'
+        f'<p class="muted">{t(lang, "assets.brand.hint")}</p>'
         f'<div class="asset-grid">{brand_cards}</div></div>'
     )
 
     # Partner checklist
     partners = inventory.get("partners", [])
-    _SOURCE_RU = {"runtime": "загружен", "bundled": "из репозитория", None: "❌ НЕ ЗАГРУЖЕН"}
+    _SOURCE_KEYS = {
+        "runtime": "common.uploaded",
+        "bundled": "common.from_repo",
+        None: "common.missing",
+    }
     partner_rows = ""
     for p in partners:
-        src = _SOURCE_RU.get(p.get("source"), "—")
-        icon = "✅" if p.get("source") else "❌"
+        source_key = p.get("source")
+        src = t(lang, _SOURCE_KEYS.get(source_key, "common.not_set"))
+        icon = "✅" if source_key else "❌"
         partner_rows += (
             f'<tr><td>{icon} <code>{escape(p["name"])}</code></td>'
             f'<td>{escape(p["title"])}</td>'
             f'<td>{escape(src)}</td></tr>'
         )
     partner_table = (
-        '<div class="section"><h2>🤝 Ожидаемые партнёрские логотипы</h2>'
-        '<p class="muted">Рекомендуемый набор — эти 4 логотипа показывают в полосе наверху билета. '
-        'Порядок задаётся цифрой в начале имени: 1_, 2_, 3_, 4_…</p>'
-        '<table><thead><tr><th>Имя</th><th>Описание</th><th>Статус</th></tr></thead>'
-        f'<tbody>{partner_rows}</tbody></table></div>'
+        '<div class="section">'
+        f'<h2>{t(lang, "assets.partners.title")}</h2>'
+        f'<p class="muted">{t(lang, "assets.partners.hint")}</p>'
+        '<table><thead><tr>'
+        f'<th>{t(lang, "assets.partners.col_name")}</th>'
+        f'<th>{t(lang, "assets.partners.col_description")}</th>'
+        f'<th>{t(lang, "assets.partners.col_status")}</th>'
+        f'</tr></thead><tbody>{partner_rows}</tbody></table></div>'
     )
 
     # Sponsor logos grid
@@ -749,45 +853,51 @@ def ticket_assets_page(
     for s in sponsors:
         fname = s["filename"]
         name = s["name"]
-        size_kb = f"{s['size']//1024} KB" if s["size"] > 1024 else f"{s['size']} B"
+        size_kb = (
+            f"{s['size']//1024} {t(lang, 'common.kb')}" if s["size"] > 1024
+            else f"{s['size']} {t(lang, 'common.bytes')}"
+        )
+        source_note = (
+            t(lang, "common.uploaded") if s["is_runtime"] else t(lang, "common.from_repo")
+        )
         src = f"/assets/file/sponsors/{escape(fname)}?ts={ts}"
         sponsor_cards += (
             '<div class="asset-card">'
             f'<div class="preview"><img src="{src}" alt="{escape(name)}"></div>'
             f'<div class="meta"><div class="name">{escape(fname)}</div>'
-            f'<div class="muted" style="font-size:12px">Имя: <code>{escape(name)}</code><br>{size_kb}'
-            f' {"· загружен" if s["is_runtime"] else "· из репозитория"}</div></div>'
+            f'<div class="muted" style="font-size:12px">{t(lang, "assets.sponsors.name")}'
+            f'<code>{escape(name)}</code><br>{size_kb} · {escape(source_note)}</div></div>'
             '<div class="actions">'
-            f'<form method="post" action="/ticket-assets/sponsor/delete" style="display:inline">'
+            '<form method="post" action="/ticket-assets/sponsor/delete" style="display:inline">'
             f'<input type="hidden" name="name" value="{escape(name)}">'
             '<button class="btn btn-reject btn-small" type="submit" '
-            'onclick="return confirm(\'Удалить логотип спонсора?\')">🗑 Удалить</button>'
+            f'onclick="return confirm(\'{_js_confirm(t(lang, "assets.sponsors.confirm_delete"))}\')">'
+            f'{t(lang, "common.delete")}</button>'
             '</form></div></div>'
         )
     if not sponsor_cards:
-        sponsor_cards = '<p class="muted">Пока нет логотипов спонсоров. Загрузите хотя бы один — он сразу появится на билете.</p>'
+        sponsor_cards = f'<p class="muted">{t(lang, "assets.sponsors.empty")}</p>'
 
     upload_sponsor_form = (
         '<div class="upload-box">'
-        '<h3>➕ Добавить логотип спонсора / хомий логосини қўшиш</h3>'
-        '<p class="muted" style="font-size:13px">Имя задаёт порядок на билете. Используйте префикс: '
-        '<code>1_</code>, <code>2_</code> и т.д. Только латиница, цифры, _ и -.<br>'
-        'Например: <code>1_mcs_sherdor</code>, <code>2_retro_tashkent</code>, <code>5_my_sponsor</code></p>'
+        f'<h3>{t(lang, "assets.sponsors.add")}</h3>'
+        f'<p class="muted" style="font-size:13px">{t(lang, "assets.sponsors.add_hint")}<br>'
+        f'{t(lang, "assets.sponsors.add_example")}</p>'
         '<form method="post" action="/ticket-assets/sponsor/upload" enctype="multipart/form-data" '
         'style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'
-        '<div><label style="display:block;font-weight:600;margin-bottom:4px">Имя логотипа</label>'
+        f'<div><label style="display:block;font-weight:600;margin-bottom:4px">{t(lang, "assets.sponsors.label_name")}</label>'
         '<input type="text" name="name" placeholder="1_mcs_sherdor" required pattern="[A-Za-z0-9_-]{1,40}" '
         'style="min-width:200px"></div>'
-        '<div><label style="display:block;font-weight:600;margin-bottom:4px">Файл (PNG/JPG/WEBP)</label>'
+        f'<div><label style="display:block;font-weight:600;margin-bottom:4px">{t(lang, "assets.sponsors.label_file")}</label>'
         '<input type="file" name="file" accept="image/*" required></div>'
-        '<button class="btn btn-primary" type="submit">Загрузить</button>'
+        f'<button class="btn btn-primary" type="submit">{t(lang, "common.upload")}</button>'
         '</form></div>'
     )
 
     sponsors_section = (
-        '<div class="section"><h2>🏢 Логотипы спонсоров / ҳомийлар (полоса наверху билета)</h2>'
-        '<p class="muted">Эти логотипы показываются в чёрной полосе наверху билета, как на промо-баннерах мероприятия. '
-        'До 10 логотипов — если их много, полоса автоматически разбивается на 2 ряда.</p>'
+        '<div class="section">'
+        f'<h2>{t(lang, "assets.sponsors.title")}</h2>'
+        f'<p class="muted">{t(lang, "assets.sponsors.hint")}</p>'
         f'<div class="asset-grid">{sponsor_cards}</div>'
         + upload_sponsor_form +
         '</div>'
@@ -801,33 +911,43 @@ def ticket_assets_page(
         exists = d["exists"]
         is_runtime = d["is_runtime"]
         src = f"/assets/file/directions/{escape(slug)}?ts={ts}" if exists else ""
-        img_tag = f'<img src="{src}" alt="{escape(slug)}">' if exists else '<span class="muted">Нет баннера</span>'
-        status = "загружен" if is_runtime else ("из репозитория" if exists else "❌ нет")
+        img_tag = (
+            f'<img src="{src}" alt="{escape(slug)}">' if exists
+            else f'<span class="muted">{t(lang, "assets.directions.no_banner")}</span>'
+        )
+        status = (
+            t(lang, "common.uploaded") if is_runtime
+            else (t(lang, "common.from_repo") if exists else t(lang, "common.missing"))
+        )
         dir_cards += (
             '<div class="asset-card">'
             f'<div class="preview">{img_tag}</div>'
             f'<div class="meta"><div class="name">{escape(canon)}</div>'
-            f'<div class="muted" style="font-size:12px">slug: <code>{escape(slug)}</code> · {escape(status)}</div></div>'
+            f'<div class="muted" style="font-size:12px">slug: <code>{escape(slug)}</code> · '
+            f'{escape(status)}</div></div>'
             '<div class="actions">'
-            f'<form method="post" action="/ticket-assets/direction/upload" enctype="multipart/form-data" '
-            'style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%">'
+            '<form method="post" action="/ticket-assets/direction/upload" '
+            'enctype="multipart/form-data" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%">'
             f'<input type="hidden" name="slug" value="{escape(slug)}">'
             '<input type="file" name="file" accept="image/*" required style="flex:1;min-width:100px">'
-            '<button class="btn btn-primary btn-small" type="submit">Загрузить</button>'
+            f'<button class="btn btn-primary btn-small" type="submit">{t(lang, "common.upload")}</button>'
             '</form>'
         )
         if is_runtime:
             dir_cards += (
-                f'<form method="post" action="/ticket-assets/direction/delete" style="margin-top:6px">'
+                '<form method="post" action="/ticket-assets/direction/delete" style="margin-top:6px">'
                 f'<input type="hidden" name="slug" value="{escape(slug)}">'
-                '<button class="btn btn-reject btn-small" type="submit" onclick="return confirm(\'Удалить баннер?\')">🗑 Удалить</button>'
+                f'<button class="btn btn-reject btn-small" type="submit" '
+                f'onclick="return confirm(\'{_js_confirm(t(lang, "assets.directions.confirm_delete"))}\')">'
+                f'{t(lang, "common.delete")}</button>'
                 '</form>'
             )
         dir_cards += '</div></div>'
 
     dir_section = (
-        '<div class="section"><h2>🎨 Баннеры направлений</h2>'
-        '<p class="muted">Показываются участнику при выборе направления. Не обязательны, но делают бот красивее.</p>'
+        '<div class="section">'
+        f'<h2>{t(lang, "assets.directions.title")}</h2>'
+        f'<p class="muted">{t(lang, "assets.directions.hint")}</p>'
         f'<div class="asset-grid">{dir_cards}</div></div>'
     )
 
@@ -838,154 +958,190 @@ def ticket_assets_page(
         + partner_table
         + sponsors_section
         + dir_section
-        + '<div class="section"><h2>ℹ️ Как это работает</h2>'
+        + f'<div class="section"><h2>{t(lang, "assets.how.title")}</h2>'
         '<ul style="font-size:14px;line-height:1.6">'
-        '<li><b>Загруженные файлы живут на volume</b> — переживают рестарты и деплои, без коммита в git.</li>'
-        '<li>Если загружен хотя бы один спонсорский логотип через админку, <b>используются только загруженные</b> — из репозитория скрываются.</li>'
-        '<li>Порядок логотипов — по имени файла (алфавит). Используйте префиксы <code>1_</code>, <code>2_</code> для сортировки.</li>'
-        '<li>Рекомендуется <b>прозрачный PNG</b> — логотип ляжет на чёрный фон полосы без белого квадрата.</li>'
-        '<li>Можно по-прежнему загружать через Telegram: отправьте файл с подписью <code>/logo 1_mcs_sherdor</code> в модерационный чат.</li>'
-        '</ul></div>'
+        + "".join(
+            f"<li>{t(lang, f'assets.how.{i}')}</li>" for i in range(1, 6)
+        )
+        + '</ul></div>'
     )
-    return _page("Билеты и логотипы", body, active="ticket")
+    return _page(t(lang, "assets.page_title"), body, lang, active="ticket")
 
 
 # ---------------------------------------------------------------------------
 # Multi-tenant control-plane pages
 # ---------------------------------------------------------------------------
 
-def tenant_selector_login_page(tenants, error: bool = False) -> str:
+def tenant_selector_login_page(lang: str, tenants, error: bool = False) -> str:
     """Render the public tenant chooser followed by that tenant's password."""
-    err = '<div class="err">Неверный tenant или пароль</div>' if error else ""
+    lang = i18n.normalize_lang(lang)
+    err = f'<div class="err">{t(lang, "selector.wrong_credentials")}</div>' if error else ""
     options = ''.join(
-        f'<option value="{escape(t.slug)}">{escape(t.name)} ({escape(t.slug)})</option>'
-        for t in tenants
+        f'<option value="{escape(t_.slug)}">{escape(t_.name)} ({escape(t_.slug)})</option>'
+        for t_ in tenants
     )
     disabled = " disabled" if not options else ""
     no_tenants = (
-        '<p class="muted">Активных tenants пока нет. Войдите как super admin и создайте первый.</p>'
-        if not options else ""
+        f'<p class="muted">{t(lang, "selector.no_tenants")}</p>' if not options else ""
     )
     body = (
         '<div class="login-wrap"><div class="section">'
-        '<h2>Вход в tenant админ-панель</h2>' + err + no_tenants +
+        f'<h2>{t(lang, "selector.title")}</h2>' + err + no_tenants +
         '<form method="post" action="/login">'
-        '<div style="margin-bottom:12px"><label class="muted">Проект</label>'
+        f'<div style="margin-bottom:12px"><label class="muted">{t(lang, "selector.project")}</label>'
         f'<select name="slug" required style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:8px">{options}</select></div>'
         '<div style="margin-bottom:12px"><input type="password" name="password" '
-        'placeholder="Пароль tenant" style="width:100%" autofocus></div>'
-        f'<button class="btn btn-primary" type="submit" style="width:100%"{disabled}>Войти</button>'
+        f'placeholder="{t(lang, "selector.password_placeholder")}" style="width:100%" autofocus></div>'
+        f'<button class="btn btn-primary" type="submit" style="width:100%"{disabled}>{t(lang, "common.login")}</button>'
         '</form><p class="muted" style="font-size:13px;margin-top:16px">'
         '<a href="/super-admin/login">Super admin</a></p></div></div>'
     )
-    return _page("Вход в tenant", body, nav=False)
+    return _page(t(lang, "selector.page_title"), body, lang, nav=False)
 
 
-def tenant_login_page(tenant, error: bool = False) -> str:
+def tenant_login_page(lang: str, tenant, error: bool = False) -> str:
     """Render a password login constrained to one tenant slug."""
-    err = '<div class="err">Неверный пароль</div>' if error else ""
+    lang = i18n.normalize_lang(lang)
+    err = f'<div class="err">{t(lang, "tlogin.wrong_password")}</div>' if error else ""
     slug = escape(tenant.slug)
     body = (
         '<div class="login-wrap"><div class="section">'
-        f'<h2>{escape(tenant.name)} — админ-панель</h2><p class="muted">Tenant: <code>{slug}</code></p>'
+        f'<h2>{escape(tenant.name)} — {t(lang, "tlogin.admin_panel")}</h2>'
+        f'<p class="muted">{t(lang, "tlogin.tenant")}<code>{slug}</code></p>'
         + err + f'<form method="post" action="/t/{slug}/login">'
         '<div style="margin-bottom:12px"><input type="password" name="password" '
-        'placeholder="Пароль" style="width:100%" autofocus></div>'
-        '<button class="btn btn-primary" type="submit" style="width:100%">Войти</button>'
-        '</form><p class="muted" style="font-size:13px;margin-top:16px"><a href="/login">← Другой tenant</a></p>'
+        f'placeholder="{t(lang, "tlogin.password_placeholder")}" style="width:100%" autofocus></div>'
+        f'<button class="btn btn-primary" type="submit" style="width:100%">{t(lang, "common.login")}</button>'
+        '</form><p class="muted" style="font-size:13px;margin-top:16px">'
+        f'<a href="/login">{t(lang, "tlogin.other_tenant")}</a></p>'
         '</div></div>'
     )
-    return _page("Вход", body, nav=False)
+    return _page(t(lang, "tlogin.page_title"), body, lang, nav=False)
 
 
-def tenant_inactive_page() -> str:
+def tenant_inactive_page(lang: str) -> str:
     """Explain why an archived tenant cannot issue a tenant-admin session."""
+    lang = i18n.normalize_lang(lang)
     body = (
-        '<div class="login-wrap"><div class="section"><h2>Tenant неактивен</h2>'
-        '<p class="muted">Доступ приостановлен super admin. Обратитесь к владельцу платформы.</p>'
+        '<div class="login-wrap"><div class="section">'
+        f'<h2>{t(lang, "tenant_inactive.title")}</h2>'
+        f'<p class="muted">{t(lang, "tenant_inactive.body")}</p>'
         '</div></div>'
     )
-    return _page("Tenant неактивен", body, nav=False)
+    return _page(t(lang, "tenant_inactive.title"), body, lang, nav=False)
 
 
-def super_panel_disabled_page() -> str:
+def super_panel_disabled_page(lang: str) -> str:
     """Page shown when no process-level super-admin secret is configured."""
+    lang = i18n.normalize_lang(lang)
     body = (
-        '<div class="login-wrap"><div class="section"><h2>Super admin отключён</h2>'
-        '<p class="muted">Задайте секрет <code>SUPER_ADMIN_PASSWORD</code> для доступа к управлению tenants.</p>'
+        '<div class="login-wrap"><div class="section">'
+        f'<h2>{t(lang, "disabled.super.title")}</h2>'
+        f'<p class="muted">{t(lang, "disabled.super.body")}</p>'
         '</div></div>'
     )
-    return _page("Super admin", body, nav=False)
+    return _page(t(lang, "disabled.super.title"), body, lang, nav=False)
 
 
-def super_login_page(error: bool = False) -> str:
+def super_login_page(lang: str, error: bool = False) -> str:
     """Render the process-level super-admin login form."""
-    err = '<div class="err">Неверный пароль</div>' if error else ""
+    lang = i18n.normalize_lang(lang)
+    err = f'<div class="err">{t(lang, "superlogin.wrong_password")}</div>' if error else ""
     body = (
-        '<div class="login-wrap"><div class="section"><h2>Super admin</h2>' + err +
+        '<div class="login-wrap"><div class="section">'
+        f'<h2>{t(lang, "superlogin.title")}</h2>' + err +
         '<form method="post" action="/super-admin/login">'
         '<div style="margin-bottom:12px"><input type="password" name="password" '
-        'placeholder="SUPER_ADMIN_PASSWORD" style="width:100%" autofocus></div>'
-        '<button class="btn btn-primary" type="submit" style="width:100%">Войти</button>'
-        '</form><p class="muted" style="font-size:13px;margin-top:16px"><a href="/login">Tenant login</a></p>'
+        f'placeholder="{t(lang, "superlogin.password_placeholder")}" style="width:100%" autofocus></div>'
+        f'<button class="btn btn-primary" type="submit" style="width:100%">{t(lang, "common.login")}</button>'
+        '</form><p class="muted" style="font-size:13px;margin-top:16px">'
+        f'<a href="/login">{t(lang, "superlogin.tenant_login")}</a></p>'
         '</div></div>'
     )
-    return _page("Super admin", body, nav=False)
+    return _page(t(lang, "superlogin.page_title"), body, lang, nav=False)
 
 
-def _super_page(title: str, body: str) -> str:
+def _super_page(title: str, body: str, lang: str) -> str:
+    lang = i18n.normalize_lang(lang)
     header = (
-        '<header><span class="brand">🛡 Multi-tenant Control Plane</span>'
-        '<nav><a href="/super-admin/">Tenants</a> '
-        '<a href="/super-admin/tenants/new">➕ Новый tenant</a></nav>'
-        '<span class="spacer"></span><a href="/super-admin/logout" style="color:#ddd6fe">Выйти</a></header>'
+        '<header>'
+        f'<span class="brand">{t(lang, "super.brand")}</span>'
+        f'<nav><a href="/super-admin/">{t(lang, "super.nav.tenants")}</a> '
+        f'<a href="/super-admin/tenants/new">{t(lang, "super.nav.new")}</a></nav>'
+        '<span class="spacer"></span>'
+        f'{i18n.lang_switcher(lang)}'
+        f'<a href="/super-admin/logout" style="color:#ddd6fe">{t(lang, "common.logout")}</a></header>'
     )
     return (
-        "<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
+        f"<!doctype html><html lang='{_html_lang_attribute(lang)}'>"
+        "<head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{escape(title)}</title><style>{_CSS}</style></head>"
         f"<body>{header}<main>{body}</main></body></html>"
     )
 
 
-def super_dashboard_page(tenants, application_counts: dict[int, int]) -> str:
+def super_dashboard_page(lang: str, tenants, application_counts: dict[int, int]) -> str:
     """Render all tenants with aggregate application counts and safe token status."""
+    lang = i18n.normalize_lang(lang)
     rows = ""
     for tenant in tenants:
-        active = "✅ active" if tenant.is_active else "⏸ inactive"
-        token = "*** configured" if tenant.token_configured else "— missing"
-        password = "configured" if tenant.password_configured else "— missing"
+        active = (
+            t(lang, "superdash.active") if tenant.is_active
+            else t(lang, "superdash.inactive")
+        )
+        token = (
+            t(lang, "superdash.token_configured") if tenant.token_configured
+            else t(lang, "superdash.token_missing")
+        )
+        password = (
+            t(lang, "superdash.password_configured") if tenant.password_configured
+            else t(lang, "superdash.password_missing")
+        )
         slug = escape(tenant.slug)
+        pause_label = (
+            t(lang, "superdash.pause") if tenant.is_active
+            else t(lang, "superdash.enable")
+        )
+        confirm_archive = _js_confirm(t(lang, "superdash.confirm_archive"))
         rows += (
             '<tr>'
             f'<td><b>{escape(tenant.name)}</b><br><code>{slug}</code></td>'
-            f'<td>{active}</td><td>{token}</td><td>{password}</td>'
+            f'<td>{escape(active)}</td><td>{escape(token)}</td><td>{escape(password)}</td>'
             f'<td>{application_counts.get(tenant.id, 0)}</td>'
             '<td style="white-space:nowrap">'
-            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/edit">Изменить</a> '
-            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/diag">Диагностика</a> '
-            f'<a class="btn btn-ghost btn-small" href="/t/{slug}/">Открыть</a>'
-            f'<form method="post" action="/super-admin/tenants/{slug}/toggle" style="display:inline">'
-            f'<button class="btn btn-small" type="submit">{"Пауза" if tenant.is_active else "Включить"}</button></form> '
-            f'<form method="post" action="/super-admin/tenants/{slug}/archive" style="display:inline">'
+            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/edit">{t(lang, "superdash.edit")}</a> '
+            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/diag">{t(lang, "superdash.diagnostics")}</a> '
+            f'<a class="btn btn-ghost btn-small" href="/t/{slug}/">{t(lang, "common.open")}</a>'
+            '<form method="post" action="/super-admin/tenants/' + slug + '/toggle" style="display:inline">'
+            f'<button class="btn btn-small" type="submit">{escape(pause_label)}</button></form> '
+            '<form method="post" action="/super-admin/tenants/' + slug + '/archive" style="display:inline">'
             '<button class="btn btn-reject btn-small" type="submit" '
-            'onclick="return confirm(\'Архивировать tenant? Данные сохранятся, polling остановится.\')">Архив</button></form>'
+            f'onclick="return confirm(\'{confirm_archive}\')">{t(lang, "superdash.archive")}</button></form>'
             '</td></tr>'
         )
     if not rows:
-        rows = '<tr><td colspan="6" class="muted">Tenants не найдены</td></tr>'
+        rows = f'<tr><td colspan="6" class="muted">{t(lang, "superdash.empty")}</td></tr>'
     body = (
-        '<div class="cards">' + _stat_card(len(tenants), "Всего tenants") +
-        _stat_card(sum(application_counts.values()), "Всего заявок") + '</div>'
-        '<div class="section"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center">'
-        '<h2>Tenants</h2><a class="btn btn-primary" href="/super-admin/tenants/new">➕ Создать tenant</a></div>'
-        '<p class="muted">Токены никогда не выводятся в браузер: только статус <code>***</code>. '
-        'Изменение tenant автоматически перезапускает только его polling worker.</p>'
-        '<div style="overflow-x:auto"><table><thead><tr><th>Tenant</th><th>Статус</th><th>Bot token</th>'
-        '<th>Admin пароль</th><th>Заявки</th><th></th></tr></thead><tbody>' + rows +
+        '<div class="cards">'
+        + _stat_card(len(tenants), t(lang, "superdash.total_tenants"))
+        + _stat_card(sum(application_counts.values()), t(lang, "superdash.total_apps"))
+        + '</div>'
+        '<div class="section"><div style="display:flex;justify-content:space-between;gap:12px;'
+        'align-items:center;flex-wrap:wrap">'
+        f'<h2 style="margin:0">{t(lang, "superdash.heading")}</h2>'
+        f'<a class="btn btn-primary" href="/super-admin/tenants/new">{t(lang, "superdash.create")}</a></div>'
+        f'<p class="muted">{t(lang, "superdash.tokens_note")}</p>'
+        '<div style="overflow-x:auto"><table><thead><tr>'
+        f'<th>{t(lang, "superdash.col_tenant")}</th>'
+        f'<th>{t(lang, "superdash.col_status")}</th>'
+        f'<th>{t(lang, "superdash.col_token")}</th>'
+        f'<th>{t(lang, "superdash.col_password")}</th>'
+        f'<th>{t(lang, "superdash.col_apps")}</th><th></th>'
+        '</tr></thead><tbody>' + rows +
         '</tbody></table></div></div>'
     )
-    return _super_page("Tenants", body)
+    return _super_page(t(lang, "superdash.page_title"), body, lang)
 
 
 def _form_value(values: dict | None, tenant, field: str, default: str = "") -> str:
@@ -998,13 +1154,21 @@ def _form_value(values: dict | None, tenant, field: str, default: str = "") -> s
     return escape(str(value if value is not None else ""))
 
 
-def super_tenant_form_page(tenant=None, values: dict | None = None, error: str = "") -> str:
+def super_tenant_form_page(
+    lang: str,
+    tenant=None,
+    values: dict | None = None,
+    error: str = "",
+) -> str:
     """Render create/edit form without ever including an actual bot token."""
+    lang = i18n.normalize_lang(lang)
     editing = tenant is not None
     slug = _form_value(values, tenant, "slug")
-    action = f'/super-admin/tenants/{escape(tenant.slug)}/edit' if editing else '/super-admin/tenants/new'
+    action = (
+        f'/super-admin/tenants/{escape(tenant.slug)}/edit' if editing
+        else '/super-admin/tenants/new'
+    )
     error_html = f'<div class="err">{escape(error)}</div>' if error else ""
-    checked = False
     if values is not None:
         checked = str(values.get("is_active", "")) in {"1", "true", "on", "True"}
     elif tenant is not None:
@@ -1016,77 +1180,130 @@ def super_tenant_form_page(tenant=None, values: dict | None = None, error: str =
         f'<input type="text" name="slug" value="{slug}" required pattern="[a-z0-9-]{{2,64}}" '
         'placeholder="adrenaline" style="width:100%">'
         if not editing else
-        f'<input type="text" value="{slug}" disabled style="width:100%"><input type="hidden" name="slug" value="{slug}">'
+        f'<input type="text" value="{slug}" disabled style="width:100%">'
+        f'<input type="hidden" name="slug" value="{slug}">'
     )
-    token_hint = "Новый token оставьте пустым, чтобы сохранить текущий ***" if editing else "Token @BotFather; хранится encrypted"
-    password_hint = "Новый пароль оставьте пустым, чтобы сохранить текущий" if editing else "Пароль tenant admin"
+    token_hint = (
+        t(lang, "tenant.form.token_hint_edit") if editing
+        else t(lang, "tenant.form.token_hint_new")
+    )
+    password_hint = (
+        t(lang, "tenant.form.password_hint_edit") if editing
+        else t(lang, "tenant.form.password_hint_new")
+    )
     restart_form = (
-        f'<form method="post" action="/super-admin/tenants/{escape(tenant.slug)}/restart" style="display:inline">'
-        '<button class="btn btn-ghost" type="submit">Перезапустить tenant</button></form>'
+        f'<form method="post" action="/super-admin/tenants/{escape(tenant.slug)}/restart" '
+        f'style="display:inline"><button class="btn btn-ghost" type="submit">'
+        f'{t(lang, "tenant.form.restart")}</button></form>'
         if editing else ""
     )
+    form_title = (
+        t(lang, "tenant.edit.title") if editing else t(lang, "tenant.create.title")
+    )
+    token_status = (
+        f'<small class="muted">{t(lang, "tenant.form.token_configured")}</small>'
+        if editing and tenant.token_configured
+        else f'<small class="muted">{escape(token_hint)}</small>'
+    )
     body = (
-        f'<p><a href="/super-admin/">← К tenants</a></p><div class="section"><h2>{"Изменить" if editing else "Создать"} tenant</h2>'
+        f'<p><a href="/super-admin/">{t(lang, "tenant.form.back")}</a></p>'
+        f'<div class="section"><h2>{form_title}</h2>'
         + error_html + f'<form method="post" action="{action}">'
         '<div class="kv" style="grid-template-columns:190px minmax(0,1fr)">'
-        f'<div class="k">Slug</div><div>{slug_field}<small class="muted">Slug нельзя менять после создания: он является ключом media-изоляции.</small></div>'
-        f'<div class="k">Название</div><div><input type="text" name="name" required value="{_form_value(values, tenant, "name")}" style="width:100%"></div>'
-        f'<div class="k">Bot token</div><div><input type="password" name="bot_token" placeholder="{escape(token_hint)}" style="width:100%"><small class="muted">{"*** configured" if editing and tenant.token_configured else token_hint}</small></div>'
-        f'<div class="k">Admin chat ID</div><div><input type="text" name="admin_chat_id" value="{_form_value(values, tenant, "admin_chat_id", "0")}" style="width:100%"></div>'
-        f'<div class="k">Required channel</div><div><input type="text" name="required_channel" value="{_form_value(values, tenant, "required_channel")}" placeholder="@channel" style="width:100%"></div>'
-        f'<div class="k">Channel URL</div><div><input type="text" name="channel_url" value="{_form_value(values, tenant, "channel_url")}" style="width:100%"></div>'
-        f'<div class="k">Instagram handle</div><div><input type="text" name="instagram_handle" value="{_form_value(values, tenant, "instagram_handle")}" style="width:100%"></div>'
-        f'<div class="k">Instagram URL</div><div><input type="text" name="instagram_url" value="{_form_value(values, tenant, "instagram_url")}" style="width:100%"></div>'
-        f'<div class="k">Spreadsheet ID</div><div><input type="text" name="spreadsheet_id" value="{_form_value(values, tenant, "spreadsheet_id")}" style="width:100%"></div>'
-        f'<div class="k">Drive folder ID</div><div><input type="text" name="drive_folder_id" value="{_form_value(values, tenant, "drive_folder_id")}" style="width:100%"></div>'
-        f'<div class="k">Tenant admin password</div><div><input type="password" name="admin_password" placeholder="{escape(password_hint)}" style="width:100%"><small class="muted">Хранится только PBKDF2 hash.</small></div>'
-        f'<div class="k">Активен</div><div><label><input type="checkbox" name="is_active" value="1"{active}> Запускать polling этого tenant</label></div>'
-        '</div><div class="actions"><button class="btn btn-primary" type="submit">Сохранить</button></div></form>'
+        f'<div class="k">{t(lang, "tenant.form.slug")}</div><div>{slug_field}'
+        f'<small class="muted">{t(lang, "tenant.form.slug_hint")}</small></div>'
+        f'<div class="k">{t(lang, "tenant.form.name")}</div><div>'
+        f'<input type="text" name="name" required value="{_form_value(values, tenant, "name")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.bot_token")}</div><div>'
+        '<input type="password" name="bot_token" placeholder="***" style="width:100%">'
+        + token_status + '</div>'
+        f'<div class="k">{t(lang, "tenant.form.admin_chat_id")}</div><div>'
+        f'<input type="text" name="admin_chat_id" value="{_form_value(values, tenant, "admin_chat_id", "0")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.required_channel")}</div><div>'
+        f'<input type="text" name="required_channel" value="{_form_value(values, tenant, "required_channel")}" placeholder="@channel" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.channel_url")}</div><div>'
+        f'<input type="text" name="channel_url" value="{_form_value(values, tenant, "channel_url")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.instagram_handle")}</div><div>'
+        f'<input type="text" name="instagram_handle" value="{_form_value(values, tenant, "instagram_handle")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.instagram_url")}</div><div>'
+        f'<input type="text" name="instagram_url" value="{_form_value(values, tenant, "instagram_url")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.spreadsheet_id")}</div><div>'
+        f'<input type="text" name="spreadsheet_id" value="{_form_value(values, tenant, "spreadsheet_id")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.drive_folder_id")}</div><div>'
+        f'<input type="text" name="drive_folder_id" value="{_form_value(values, tenant, "drive_folder_id")}" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.admin_password")}</div><div>'
+        '<input type="password" name="admin_password" placeholder="***" style="width:100%">'
+        f'<small class="muted">{t(lang, "tenant.form.password_stored")}</small></div>'
+        f'<div class="k">{t(lang, "tenant.form.is_active")}</div><div><label>'
+        f'<input type="checkbox" name="is_active" value="1"{active}> '
+        f'{t(lang, "tenant.form.is_active_hint")}</label></div>'
+        '</div><div class="actions">'
+        f'<button class="btn btn-primary" type="submit">{t(lang, "common.save")}</button></div></form>'
         + (f'<div class="actions">{restart_form}</div>' if restart_form else "")
         + '</div>'
     )
-    return _super_page("Tenant form", body)
+    return _super_page(t(lang, "tenant.form.page_title"), body, lang)
 
 
-def tenant_settings_page(tenant, message: str = "", error: str = "") -> str:
+def tenant_settings_page(lang: str, tenant, message: str = "", error: str = "") -> str:
     """Render settings tenant admins may change without seeing their bot token."""
-    notice = '<div class="ok">Настройки сохранены</div>' if message == "saved" else ""
+    lang = i18n.normalize_lang(lang)
+    notice = (
+        f'<div class="ok">{t(lang, "settings.saved")}</div>' if message == "saved" else ""
+    )
     notice += f'<div class="err">{escape(error)}</div>' if error else ""
+
     def field(name: str, label: str, value: str, placeholder: str = "") -> str:
         return (
             f'<div class="k">{escape(label)}</div><div><input type="text" name="{name}" '
-            f'value="{escape(str(value or ""))}" placeholder="{escape(placeholder)}" style="width:100%"></div>'
+            f'value="{escape(str(value or ""))}" placeholder="{escape(placeholder)}" '
+            'style="width:100%"></div>'
         )
+
     body = (
-        '<div class="section"><h2>⚙️ Настройки tenant</h2>' + notice +
-        '<p class="muted">Bot token управляется только super admin и здесь не отображается.</p>'
-        '<form method="post" action="/settings"><div class="kv" style="grid-template-columns:190px minmax(0,1fr)">'
-        + field("name", "Название", tenant.name)
-        + field("admin_chat_id", "Admin chat ID", tenant.admin_chat_id)
-        + field("required_channel", "Required channel", tenant.required_channel, "@channel")
-        + field("channel_url", "Channel URL", tenant.channel_url)
-        + field("instagram_handle", "Instagram handle", tenant.instagram_handle)
-        + field("instagram_url", "Instagram URL", tenant.instagram_url)
-        + field("spreadsheet_id", "Spreadsheet ID", tenant.spreadsheet_id)
-        + field("drive_folder_id", "Drive folder ID", tenant.drive_folder_id)
-        + '<div class="k">Новый пароль</div><div><input type="password" name="admin_password" '
-        'placeholder="Оставьте пустым, чтобы не менять" style="width:100%"></div>'
-        + '</div><div class="actions"><button class="btn btn-primary" type="submit">Сохранить</button></div></form></div>'
+        '<div class="section">'
+        f'<h2>{t(lang, "settings.title")}</h2>' + notice +
+        f'<p class="muted">{t(lang, "settings.token_note")}</p>'
+        '<form method="post" action="/settings">'
+        '<div class="kv" style="grid-template-columns:190px minmax(0,1fr)">'
+        + field("name", t(lang, "settings.name"), tenant.name)
+        + field("admin_chat_id", t(lang, "settings.admin_chat_id"), tenant.admin_chat_id)
+        + field("required_channel", t(lang, "settings.required_channel"),
+                tenant.required_channel, "@channel")
+        + field("channel_url", t(lang, "settings.channel_url"), tenant.channel_url)
+        + field("instagram_handle", t(lang, "settings.instagram_handle"), tenant.instagram_handle)
+        + field("instagram_url", t(lang, "settings.instagram_url"), tenant.instagram_url)
+        + field("spreadsheet_id", t(lang, "settings.spreadsheet_id"), tenant.spreadsheet_id)
+        + field("drive_folder_id", t(lang, "settings.drive_folder_id"), tenant.drive_folder_id)
+        + f'<div class="k">{t(lang, "settings.new_password")}</div>'
+        '<div><input type="password" name="admin_password" '
+        f'placeholder="{t(lang, "settings.new_password_hint")}" style="width:100%"></div>'
+        + '</div><div class="actions">'
+        f'<button class="btn btn-primary" type="submit">{t(lang, "common.save")}</button>'
+        '</div></form></div>'
     )
-    return _page("Настройки", body, active="settings")
+    return _page(t(lang, "settings.page_title"), body, lang, active="settings")
 
 
-def tenant_diag_page(tenant, checks: list[tuple[str, bool, str]]) -> str:
-    """Render a per-tenant Telegram configuration diagnostic result."""
+def tenant_diag_page(lang: str, tenant, checks: list[tuple[str, bool, str]]) -> str:
+    """Render a per-tenant Telegram configuration diagnostic result.
+
+    ``checks`` rows arrive fully localized from the server layer; the token
+    itself never appears in ``detail``.
+    """
+    lang = i18n.normalize_lang(lang)
     rows = ''.join(
         f'<tr><td>{"✅" if ok else "❌"} {escape(label)}</td><td>{escape(detail)}</td></tr>'
         for label, ok, detail in checks
-    ) or '<tr><td colspan="2" class="muted">Нет результатов</td></tr>'
+    ) or f'<tr><td colspan="2" class="muted">{t(lang, "diag.no_results")}</td></tr>'
     body = (
-        f'<p><a href="/super-admin/tenants/{escape(tenant.slug)}/edit">← {escape(tenant.name)}</a></p>'
-        f'<div class="section"><h2>Диагностика: {escape(tenant.name)}</h2>'
-        '<p class="muted">Проверка выполняется с token tenant в памяти; token не выводится.</p>'
-        '<table><thead><tr><th>Проверка</th><th>Результат</th></tr></thead><tbody>' + rows +
-        '</tbody></table></div>'
+        f'<p><a href="/super-admin/tenants/{escape(tenant.slug)}/edit">'
+        f'← {escape(tenant.name)}</a></p>'
+        f'<div class="section"><h2>{t(lang, "diag.title", name=tenant.name)}</h2>'
+        f'<p class="muted">{t(lang, "diag.token_note")}</p>'
+        '<table><thead><tr>'
+        f'<th>{t(lang, "diag.col_check")}</th>'
+        f'<th>{t(lang, "diag.col_result")}</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></div>'
     )
-    return _super_page("Tenant diagnostics", body)
+    return _super_page(t(lang, "diag.page_title"), body, lang)
