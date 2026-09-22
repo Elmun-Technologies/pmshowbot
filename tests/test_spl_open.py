@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
 
-from cryptography.fernet import Fernet
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from bot.config import Config
-from bot.db import SPL_EVENT_COPY, Database
-from bot.texts import approved_for_tenant, rejected_for_tenant
+from cryptography.fernet import Fernet  # noqa: E402
+
+from bot.config import Config  # noqa: E402
+from bot.db import SPL_EVENT_COPY, Database  # noqa: E402
+from bot.texts import approved_for_tenant, rejected_for_tenant  # noqa: E402
 
 
 def _config(path: str, key: str, *, closed: bool) -> Config:

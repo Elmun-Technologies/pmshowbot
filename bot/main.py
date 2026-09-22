@@ -63,6 +63,8 @@ async def main() -> None:
         await manager.shutdown()
         if web_runner is not None:
             await web_runner.cleanup()
+        # Release the pooled SQLite connections held by the worker threads.
+        await asyncio.to_thread(db.close)
 
 
 async def _start_admin_panel(config: Config, db: Database, manager: BotManager):

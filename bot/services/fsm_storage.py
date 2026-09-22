@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -36,6 +37,9 @@ CREATE TABLE IF NOT EXISTS {table} (
     updated_at REAL NOT NULL
 );
 """
+
+# Wait for a concurrent writer rather than failing with "database is locked".
+_SQLITE_TIMEOUT_SECONDS = 30.0
 
 # A form that has not been touched for a month belongs to nobody.
 MAX_AGE_SECONDS = 30 * 24 * 3600
@@ -75,6 +79,9 @@ class SqliteFSMStorage(BaseStorage):
         self._path = path
         self._table = table
         self._fallback = MemoryStorage()
+        self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
         self._ready = False
         self._broken = not bool(path)
         if path:
@@ -92,9 +99,36 @@ class SqliteFSMStorage(BaseStorage):
     # internals
     # ------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, timeout=10)
+        """Return this thread's pooled connection, opening it on first use.
+
+        aiogram touches the FSM state several times per update (get_state,
+        get_data, set_data ...).  Opening a fresh connection for each of those
+        — and re-running the pragmas — was the single largest source of the
+        bot's latency on a network volume, so connections are cached per worker
+        thread and reused.  ``with conn`` commits without closing.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+        conn = sqlite3.connect(self._path, timeout=_SQLITE_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        self._local.conn = conn
+        with self._connections_lock:
+            self._connections.append(conn)
         return conn
+
+    def _close_connections(self) -> None:
+        with self._connections_lock:
+            connections, self._connections = self._connections, []
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error:  # pragma: no cover - already unusable
+                pass
+        self._local = threading.local()
 
     def _sync_init(self) -> None:
         with self._connect() as conn:
@@ -186,4 +220,5 @@ class SqliteFSMStorage(BaseStorage):
             return await self._fallback.get_data(key)
 
     async def close(self) -> None:
+        await asyncio.to_thread(self._close_connections)
         await self._fallback.close()
