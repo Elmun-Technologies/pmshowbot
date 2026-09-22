@@ -1165,6 +1165,18 @@ def super_dashboard_page(lang: str, tenants, application_counts: dict[int, int])
     return _super_page(t(lang, "superdash.page_title"), body, lang)
 
 
+def _flag_checked(values: dict | None, tenant, field: str, *, default: bool = False) -> str:
+    """Return the HTML checked attribute. A missing POST key means off."""
+    if values is not None:
+        raw = values.get(field, "")
+        on = raw is True or str(raw).lower() in {"1", "true", "on", "yes"}
+    elif tenant is not None:
+        on = bool(getattr(tenant, field, default))
+    else:
+        on = default
+    return " checked" if on else ""
+
+
 def _form_value(values: dict | None, tenant, field: str, default: str = "") -> str:
     if values is not None and field in values:
         value = values[field]
@@ -1197,6 +1209,7 @@ def super_tenant_form_page(
     else:
         checked = True
     active = " checked" if checked else ""
+    closed = _flag_checked(values, tenant, "registration_closed", default=False)
     slug_field = (
         f'<input type="text" name="slug" value="{slug}" required pattern="[a-z0-9-]{{2,64}}" '
         'placeholder="adrenaline" style="width:100%">'
@@ -1264,8 +1277,15 @@ def super_tenant_form_page(
         f'<div class="k">{t(lang, "tenant.form.event_guest_date_text_ru")}</div><div>'
         f'<input type="text" name="event_guest_date_text_ru" value="{_form_value(values, tenant, "event_guest_date_text_ru")}" placeholder="12 и 13 сентября с 10:00" style="width:100%"></div>'
         f'<div class="k">{t(lang, "tenant.form.event_guest_date_text_uz")}</div><div>'
-        f'<input type="text" name="event_guest_date_text_uz" value="{_form_value(values, tenant, "event_guest_date_text_uz")}" placeholder="12 va 13-sentyabr, 10:00 dan" style="width:100%"></div>'
+        f'<input type="text" name="event_guest_date_text_uz" value="{_form_value(values, tenant, "event_guest_date_text_uz")}" placeholder="3-oktyabr, soat 12:00 dan" style="width:100%"></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_note_text_ru")}</div><div>'
+        f'<textarea name="event_note_text_ru" rows="3" style="width:100%">{_form_value(values, tenant, "event_note_text_ru")}</textarea></div>'
+        f'<div class="k">{t(lang, "tenant.form.event_note_text_uz")}</div><div>'
+        f'<textarea name="event_note_text_uz" rows="3" style="width:100%">{_form_value(values, tenant, "event_note_text_uz")}</textarea></div>'
         f'<div class="k"></div><div><small class="muted">{t(lang, "tenant.form.event_hint")}</small></div>'
+        f'<div class="k">{t(lang, "tenant.form.registration_closed")}</div><div><label>'
+        f'<input type="checkbox" name="registration_closed" value="1"{closed}> '
+        f'{t(lang, "tenant.form.registration_closed_hint")}</label></div>'
         f'<div class="k">{t(lang, "tenant.form.admin_password")}</div><div>'
         '<input type="password" name="admin_password" placeholder="***" style="width:100%">'
         f'<small class="muted">{t(lang, "tenant.form.password_stored")}</small></div>'
@@ -1317,7 +1337,21 @@ def tenant_settings_page(lang: str, tenant, message: str = "", error: str = "") 
         + field("event_venue_text_uz", t(lang, "settings.event_venue_text_uz"), getattr(tenant, "event_venue_text_uz", ""))
         + field("event_guest_date_text_ru", t(lang, "settings.event_guest_date_text_ru"), getattr(tenant, "event_guest_date_text_ru", ""))
         + field("event_guest_date_text_uz", t(lang, "settings.event_guest_date_text_uz"), getattr(tenant, "event_guest_date_text_uz", ""))
+        + (
+            f'<div class="k">{t(lang, "settings.event_note_text_ru")}</div><div>'
+            f'<textarea name="event_note_text_ru" rows="3" style="width:100%">'
+            f'{escape(str(getattr(tenant, "event_note_text_ru", "") or ""))}</textarea></div>'
+            f'<div class="k">{t(lang, "settings.event_note_text_uz")}</div><div>'
+            f'<textarea name="event_note_text_uz" rows="3" style="width:100%">'
+            f'{escape(str(getattr(tenant, "event_note_text_uz", "") or ""))}</textarea></div>'
+        )
         + f'<div class="k"></div><div><small class="muted">{t(lang, "settings.event_hint")}</small></div>'
+        + (
+            f'<div class="k">{t(lang, "settings.registration_closed")}</div><div><label>'
+            f'<input type="checkbox" name="registration_closed" value="1"'
+            f'{" checked" if getattr(tenant, "registration_closed", False) else ""}> '
+            f'{t(lang, "settings.registration_closed_hint")}</label></div>'
+        )
         + f'<div class="k">{t(lang, "settings.new_password")}</div>'
         '<div><input type="password" name="admin_password" '
         f'placeholder="{t(lang, "settings.new_password_hint")}" style="width:100%"></div>'

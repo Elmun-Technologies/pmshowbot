@@ -112,6 +112,8 @@ class TenantConfig:
     event_venue_text_uz: str = ""
     event_guest_date_text_ru: str = ""
     event_guest_date_text_uz: str = ""
+    event_note_text_ru: str = ""
+    event_note_text_uz: str = ""
 
     @property
     def sheets_enabled(self) -> bool:
@@ -218,7 +220,9 @@ class Config:
             media_dir=os.path.join(self.media_dir, "_tenants", scope),
             asset_scope=scope,
             require_subscription=self.require_subscription,
-            registration_closed=self.registration_closed,
+            # Per tenant. A leftover REGISTRATION_CLOSED=true secret must not
+            # make every bot, including SPL Show, answer «регистрация завершена».
+            registration_closed=bool(getattr(tenant, "registration_closed", False)),
             admin_user_ids=self.admin_user_ids,
             channel_url=tenant.channel_url,
             instagram_handle=tenant.instagram_handle,
@@ -229,6 +233,8 @@ class Config:
             event_venue_text_uz=getattr(tenant, "event_venue_text_uz", "") or "",
             event_guest_date_text_ru=getattr(tenant, "event_guest_date_text_ru", "") or "",
             event_guest_date_text_uz=getattr(tenant, "event_guest_date_text_uz", "") or "",
+            event_note_text_ru=getattr(tenant, "event_note_text_ru", "") or "",
+            event_note_text_uz=getattr(tenant, "event_note_text_uz", "") or "",
         )
 
 
@@ -270,6 +276,8 @@ def load_config() -> Config:
         db_path=_get("DB_PATH", default="data/pmshow.db"),
         media_dir=_get("MEDIA_DIR", default="media"),
         require_subscription=_get_bool("REQUIRE_SUBSCRIPTION", default=True),
+        # Kept so old deployments still parse. It is NOT applied to tenant bots;
+        # close a single event from the admin panel instead.
         registration_closed=_get_bool("REGISTRATION_CLOSED", default=False),
         panel_port=panel_port,
         admin_user_ids=_parse_ids(_get("ADMIN_USER_IDS")),

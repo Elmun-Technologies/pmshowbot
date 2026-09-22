@@ -483,7 +483,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "tenant.form.event_venue_text_uz": "Площадка (UZ)",
         "tenant.form.event_guest_date_text_ru": "Дата для гостей (RU)",
         "tenant.form.event_guest_date_text_uz": "Дата для гостей (UZ)",
+        "tenant.form.event_note_text_ru": "Инструкция участникам (RU)",
+        "tenant.form.event_note_text_uz": "Инструкция участникам (UZ)",
         "tenant.form.event_hint": "Используется в билетах и текстах бота. Пусто — предложение опускается.",
+        "tenant.form.registration_closed": "Регистрация закрыта",
+        "tenant.form.registration_closed_hint": "Если включено, бот отвечает «регистрация завершена» и новые заявки не принимает. Для открытого набора оставьте выключенным.",
         # --- Tenant directions (super-admin) ---
         "tenant.directions.title": "Направления — {name}",
         "tenant.directions.page_title": "Направления",
@@ -551,7 +555,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings.event_venue_text_uz": "Площадка (UZ)",
         "settings.event_guest_date_text_ru": "Дата для гостей (RU)",
         "settings.event_guest_date_text_uz": "Дата для гостей (UZ)",
+        "settings.event_note_text_ru": "Инструкция участникам (RU)",
+        "settings.event_note_text_uz": "Инструкция участникам (UZ)",
         "settings.event_hint": "Используется в билетах и текстах бота.",
+        "settings.registration_closed": "Регистрация закрыта",
+        "settings.registration_closed_hint": "Если включено, бот отвечает «регистрация завершена» и новые заявки не принимает.",
 
         # --- Diagnostics ---
         "diag.page_title": "Tenant diagnostics",
@@ -1025,7 +1033,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "tenant.form.event_venue_text_uz": "Maydon (UZ)",
         "tenant.form.event_guest_date_text_ru": "Mehmonlar uchun sana (RU)",
         "tenant.form.event_guest_date_text_uz": "Mehmonlar uchun sana (UZ)",
+        "tenant.form.event_note_text_ru": "Ishtirokchilar uchun ko‘rsatma (RU)",
+        "tenant.form.event_note_text_uz": "Ishtirokchilar uchun ko‘rsatma (UZ)",
         "tenant.form.event_hint": "Biletlar va bot matnlarida ishlatiladi. Bo‘sh — gap tushirib qoldiriladi.",
+        "tenant.form.registration_closed": "Ro‘yxatdan o‘tish yopiq",
+        "tenant.form.registration_closed_hint": "Yoqilsa, bot «ro‘yxatdan o‘tish yakunlandi» deb javob beradi va yangi ariza qabul qilmaydi. Ochiq qoldirish uchun belgini olib tashlang.",
         "tenant.directions.title": "Yo‘nalishlar — {name}",
         "tenant.directions.page_title": "Yo‘nalishlar",
         "tenant.directions.heading": "Tenant yo‘nalishlari {name}",
@@ -1092,7 +1104,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings.event_venue_text_uz": "Maydon (UZ)",
         "settings.event_guest_date_text_ru": "Mehmonlar uchun sana (RU)",
         "settings.event_guest_date_text_uz": "Mehmonlar uchun sana (UZ)",
+        "settings.event_note_text_ru": "Ishtirokchilar uchun ko‘rsatma (RU)",
+        "settings.event_note_text_uz": "Ishtirokchilar uchun ko‘rsatma (UZ)",
         "settings.event_hint": "Biletlar va bot matnlarida ishlatiladi.",
+        "settings.registration_closed": "Ro‘yxatdan o‘tish yopiq",
+        "settings.registration_closed_hint": "Yoqilsa, bot «ro‘yxatdan o‘tish yakunlandi» deb javob beradi va yangi ariza qabul qilmaydi.",
 
         # --- Diagnostics ---
         "diag.page_title": "Tenant diagnostikasi",

@@ -60,6 +60,12 @@ class Tenant:
     event_venue_text_uz: str = ""
     event_guest_date_text_ru: str = ""
     event_guest_date_text_uz: str = ""
+    # Extra participant instructions (arrival rules, show start). Empty = omitted.
+    event_note_text_ru: str = ""
+    event_note_text_uz: str = ""
+    # Per-tenant switch. A process-wide REGISTRATION_CLOSED secret must not
+    # close every bot — that is what made SPL Show answer «завершена».
+    registration_closed: bool = False
 
     @property
     def bot_token(self) -> str:
@@ -160,7 +166,60 @@ _TENANTS_EVENT_MIGRATIONS = [
     ("event_venue_text_uz", "ALTER TABLE tenants ADD COLUMN event_venue_text_uz TEXT NOT NULL DEFAULT ''"),
     ("event_guest_date_text_ru", "ALTER TABLE tenants ADD COLUMN event_guest_date_text_ru TEXT NOT NULL DEFAULT ''"),
     ("event_guest_date_text_uz", "ALTER TABLE tenants ADD COLUMN event_guest_date_text_uz TEXT NOT NULL DEFAULT ''"),
+    ("event_note_text_ru", "ALTER TABLE tenants ADD COLUMN event_note_text_ru TEXT NOT NULL DEFAULT ''"),
+    ("event_note_text_uz", "ALTER TABLE tenants ADD COLUMN event_note_text_uz TEXT NOT NULL DEFAULT ''"),
+    ("registration_closed", "ALTER TABLE tenants ADD COLUMN registration_closed INTEGER NOT NULL DEFAULT 0"),
 ]
+
+# SPL Show, Tashkent INDEX, 3 October. Arrival is the day before.
+# Applied when the splshow tenant exists and a field is still empty or still
+# holds an outdated schedule. A custom value is left alone.
+SPL_EVENT_COPY = {
+    "event_date_text_ru": "02 октября 2026 с 17:00 до 22:00",
+    "event_date_text_uz": "02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
+    "event_venue_text_ru": "Tashkent INDEX",
+    "event_venue_text_uz": "Tashkent INDEX",
+    "event_guest_date_text_ru": "03 октября 2026 с 12:00",
+    "event_guest_date_text_uz": "03-oktyabr 2026, soat 12:00 dan",
+    "event_note_text_ru": (
+        "Площадка — Tashkent INDEX. "
+        "03 октября 2026 с 09:00 участники должны находиться рядом со своими автомобилями."
+    ),
+    "event_note_text_uz": (
+        "Maydon — Tashkent INDEX. "
+        "Tadbir ishtirokchilari 03-oktyabr 2026 kuni soat 09:00 dan boshlab "
+        "avtomobillari yonida bo‘lishlari shart."
+    ),
+}
+_SPL_STALE_EVENT_VALUES = frozenset({
+    "",
+    "11 сентября 2026 с 10:00 до 19:00",
+    "11-sentyabr 2026, 10:00 dan 19:00 gacha",
+    "SOF EXPO",
+    "12 и 13 сентября с 10:00",
+    "12 va 13-sentyabr, 10:00 dan",
+    # First SPL draft, before the client confirmed 17:00–22:00 / guest date.
+    "2 октября до 22:00",
+    "2-oktyabr soat 22:00 gacha",
+    "3 октября с 12:00",
+    "3-oktyabr, soat 12:00 dan",
+    (
+        "Начало шоу — 3 октября в 12:00, Tashkent INDEX. "
+        "3 октября с 09:00 участники должны находиться рядом со своими автомобилями."
+    ),
+    (
+        "Shou boshlanishi — 3-oktyabr soat 12:00, Tashkent INDEX. "
+        "Tadbir ishtirokchilari 3-oktyabr kuni soat 09:00 dan boshlab "
+        "avtomobillari yonida bo‘lishlari shart."
+    ),
+})
+_SPL_SLUGS = frozenset({"splshow", "spl", "spl-show"})
+_SPL_NAMES = frozenset({"spl show", "spl"})
+
+
+def is_spl_tenant(slug: str, name: str = "") -> bool:
+    """True for the SPL Show tenant, whatever slug the panel used."""
+    return (slug or "").strip().lower() in _SPL_SLUGS or (name or "").strip().lower() in _SPL_NAMES
 
 _APPLICATIONS_CREATE = """
 CREATE TABLE applications (
@@ -316,6 +375,9 @@ def _row_to_tenant(row: sqlite3.Row) -> Tenant:
         event_venue_text_uz=str(row["event_venue_text_uz"] or "") if "event_venue_text_uz" in keys else "",
         event_guest_date_text_ru=str(row["event_guest_date_text_ru"] or "") if "event_guest_date_text_ru" in keys else "",
         event_guest_date_text_uz=str(row["event_guest_date_text_uz"] or "") if "event_guest_date_text_uz" in keys else "",
+        event_note_text_ru=str(row["event_note_text_ru"] or "") if "event_note_text_ru" in keys else "",
+        event_note_text_uz=str(row["event_note_text_uz"] or "") if "event_note_text_uz" in keys else "",
+        registration_closed=bool(row["registration_closed"]) if "registration_closed" in keys else False,
     )
 
 
@@ -604,6 +666,38 @@ class Database:
                 set_clause = ", ".join(f"{k} = ?" for k in updates)
                 params = list(updates.values()) + [_now(), row["id"]]
                 conn.execute(f"UPDATE tenants SET {set_clause}, updated_at = ? WHERE id = ?", params)
+        self._seed_spl_event(conn)
+
+    def _seed_spl_event(self, conn: sqlite3.Connection) -> None:
+        """Fill SPL Show schedule when the tenant exists and fields are still stale.
+
+        Does not reopen a tenant an admin has explicitly closed, and does not
+        overwrite a custom date/venue/note.
+        """
+        if not self._table_exists(conn, "tenants"):
+            return
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tenants)").fetchall()}
+        for row in conn.execute("SELECT * FROM tenants").fetchall():
+            if not is_spl_tenant(str(row["slug"] or ""), str(row["name"] or "")):
+                continue
+            updates: dict[str, str] = {}
+            for key, new_val in SPL_EVENT_COPY.items():
+                if key not in cols:
+                    continue
+                try:
+                    current = str(row[key] or "").strip()
+                except (KeyError, IndexError):
+                    current = ""
+                if current in _SPL_STALE_EVENT_VALUES:
+                    updates[key] = new_val
+            if not updates:
+                continue
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            params = list(updates.values()) + [_now(), int(row["id"])]
+            conn.execute(
+                f"UPDATE tenants SET {set_clause}, updated_at = ? WHERE id = ?",
+                params,
+            )
 
     def _migrate_applications(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
         if not self._table_exists(conn, "applications"):
@@ -932,6 +1026,9 @@ class Database:
         event_venue_text_uz: str = "",
         event_guest_date_text_ru: str = "",
         event_guest_date_text_uz: str = "",
+        event_note_text_ru: str = "",
+        event_note_text_uz: str = "",
+        registration_closed: bool = False,
     ) -> Tenant:
         slug = self._clean_slug(slug)
         name = (name or "").strip()
@@ -941,6 +1038,24 @@ class Database:
             admin_chat_id = int(admin_chat_id or 0)
         except (TypeError, ValueError) as exc:
             raise ValueError("admin_chat_id must be an integer") from exc
+        if is_spl_tenant(slug, name):
+            defaults = SPL_EVENT_COPY
+            if not (event_date_text_ru or "").strip():
+                event_date_text_ru = defaults["event_date_text_ru"]
+            if not (event_date_text_uz or "").strip():
+                event_date_text_uz = defaults["event_date_text_uz"]
+            if not (event_venue_text_ru or "").strip():
+                event_venue_text_ru = defaults["event_venue_text_ru"]
+            if not (event_venue_text_uz or "").strip():
+                event_venue_text_uz = defaults["event_venue_text_uz"]
+            if not (event_guest_date_text_ru or "").strip():
+                event_guest_date_text_ru = defaults["event_guest_date_text_ru"]
+            if not (event_guest_date_text_uz or "").strip():
+                event_guest_date_text_uz = defaults["event_guest_date_text_uz"]
+            if not (event_note_text_ru or "").strip():
+                event_note_text_ru = defaults["event_note_text_ru"]
+            if not (event_note_text_uz or "").strip():
+                event_note_text_uz = defaults["event_note_text_uz"]
         now = _now()
         password = (admin_password or "").strip()
         if password and not is_password_hash(password):
@@ -954,8 +1069,9 @@ class Database:
                     drive_folder_id, admin_password, created_at, updated_at,
                     event_date_text_ru, event_date_text_uz,
                     event_venue_text_ru, event_venue_text_uz,
-                    event_guest_date_text_ru, event_guest_date_text_uz
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    event_guest_date_text_ru, event_guest_date_text_uz,
+                    event_note_text_ru, event_note_text_uz, registration_closed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slug, name, self._to_bool(is_active), self._encrypt_token(bot_token),
@@ -969,6 +1085,9 @@ class Database:
                     (event_venue_text_uz or "").strip(),
                     (event_guest_date_text_ru or "").strip(),
                     (event_guest_date_text_uz or "").strip(),
+                    (event_note_text_ru or "").strip(),
+                    (event_note_text_uz or "").strip(),
+                    self._to_bool(registration_closed),
                 ),
             )
             row = conn.execute("SELECT * FROM tenants WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -976,11 +1095,12 @@ class Database:
 
     def _update_tenant(self, identifier: int | str, **changes: Any) -> Optional[Tenant]:
         allowed = {
-            "name", "is_active", "admin_chat_id", "required_channel", "channel_url",
+            "name", "is_active", "registration_closed", "admin_chat_id", "required_channel", "channel_url",
             "instagram_handle", "instagram_url", "spreadsheet_id", "drive_folder_id",
             "event_date_text_ru", "event_date_text_uz",
             "event_venue_text_ru", "event_venue_text_uz",
             "event_guest_date_text_ru", "event_guest_date_text_uz",
+            "event_note_text_ru", "event_note_text_uz",
         }
         with self._connect() as conn:
             tenant_id = self._resolve_tenant_id(conn, identifier)
@@ -994,7 +1114,7 @@ class Database:
                     value = str(value or "").strip()
                     if not value:
                         raise ValueError("Tenant name is required")
-                elif key == "is_active":
+                elif key in {"is_active", "registration_closed"}:
                     value = self._to_bool(value)
                 elif key == "admin_chat_id":
                     try:

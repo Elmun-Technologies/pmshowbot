@@ -1083,6 +1083,10 @@ def _tenant_form_values(data, *, editing: bool = False) -> dict[str, Any]:
         "event_venue_text_uz": str(data.get("event_venue_text_uz", "")).strip(),
         "event_guest_date_text_ru": str(data.get("event_guest_date_text_ru", "")).strip(),
         "event_guest_date_text_uz": str(data.get("event_guest_date_text_uz", "")).strip(),
+        "event_note_text_ru": str(data.get("event_note_text_ru", "")).strip(),
+        "event_note_text_uz": str(data.get("event_note_text_uz", "")).strip(),
+        # Unchecked checkbox is omitted from the POST, which means registration is open.
+        "registration_closed": str(data.get("registration_closed", "")) in {"1", "true", "on"},
     }
     token = str(data.get("bot_token", "")).strip()
     password = str(data.get("admin_password", "")).strip()
