@@ -5,14 +5,14 @@ should wrap the async helpers, which already run the work in a thread.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-from .google_auth import get_credentials
+from ..executors import run_heavy
+from .google_auth import authorized_http, get_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,15 @@ def _upload_one(service, folder_id: str, path: str, name: str) -> str:
 
 def _upload_photos(credentials_file: str, folder_id: str, files: list[tuple[str, str]]) -> list[str]:
     """files: list of (local_path, drive_name). Returns list of image URLs."""
-    service = build("drive", "v3", credentials=get_credentials(credentials_file), cache_discovery=False)
+    # ``http`` is what gives the uploads a timeout: left to itself,
+    # ``discovery.build`` creates an ``httplib2.Http`` that waits forever.
+    service = build(
+        "drive",
+        "v3",
+        credentials=get_credentials(credentials_file),
+        http=authorized_http(credentials_file),
+        cache_discovery=False,
+    )
     urls: list[str] = []
     for path, name in files:
         if not os.path.exists(path):
@@ -57,4 +65,4 @@ async def upload_photos(
     files: list[tuple[str, str]],
 ) -> list[str]:
     """Async wrapper. Returns a list of embeddable image URLs (aligned to input)."""
-    return await asyncio.to_thread(_upload_photos, credentials_file, folder_id, files)
+    return await run_heavy(_upload_photos, credentials_file, folder_id, files)

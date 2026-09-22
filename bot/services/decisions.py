@@ -34,6 +34,7 @@ from ..db import (
     STATUS_PENDING,
     STATUS_REJECTED,
 )
+from ..executors import run_heavy
 from . import drive, sheets, subscription
 from .ticket import generate_ticket, ticket_as_jpeg
 
@@ -94,7 +95,7 @@ async def _render_ticket(
 ) -> bytes:
     """Render the ticket in a worker thread, with a timeout."""
     return await asyncio.wait_for(
-        asyncio.to_thread(
+        run_heavy(
             generate_ticket,
             _tenant_scope(config),
             number=app.reg_number,

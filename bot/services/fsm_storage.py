@@ -19,12 +19,15 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, Optional
 
 from aiogram.fsm.state import State
 from aiogram.fsm.storage.base import BaseStorage, StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
+
+from ..sqlite_pool import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,10 @@ class SqliteFSMStorage(BaseStorage):
         self._path = path
         self._table = table
         self._fallback = MemoryStorage()
+        self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
+        self._init_lock = asyncio.Lock()
         self._ready = False
         self._broken = not bool(path)
         if path:
@@ -92,9 +99,32 @@ class SqliteFSMStorage(BaseStorage):
     # internals
     # ------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, timeout=10)
-        conn.row_factory = sqlite3.Row
+        """Return this thread's pooled connection, opening it on first use.
+
+        aiogram touches the FSM state several times per update (get_state,
+        get_data, set_data ...).  Opening a fresh connection for each of those
+        — and re-running the pragmas — was the single largest source of the
+        bot's latency on a network volume, so connections are cached per worker
+        thread and reused.  ``with conn`` commits without closing.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+        conn = connect_sqlite(self._path)
+        self._local.conn = conn
+        with self._connections_lock:
+            self._connections.append(conn)
         return conn
+
+    def _close_connections(self) -> None:
+        with self._connections_lock:
+            connections, self._connections = self._connections, []
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error:  # pragma: no cover - already unusable
+                pass
+        self._local = threading.local()
 
     def _sync_init(self) -> None:
         with self._connect() as conn:
@@ -110,6 +140,26 @@ class SqliteFSMStorage(BaseStorage):
         if self._broken:
             raise _BrokenStorage
         if not self._ready:
+            await self._ensure_ready()
+        return await asyncio.to_thread(func, *args)
+
+    async def _ensure_ready(self) -> None:
+        """Create the schema exactly once, however many updates arrive at once.
+
+        ``_ready`` starts out false, so without this guard every concurrent
+        update races into ``_sync_init``: several worker threads issuing DDL and
+        switching the journal mode on a brand-new file simultaneously, which is
+        precisely when SQLite answers "database is locked" instead of waiting.
+        Losing that race used to mark the storage broken and silently keep every
+        form in memory — losing the progress this module exists to preserve,
+        right at the busiest moment (event start, or just after a deploy).
+
+        The first thread to arrive does the work; the rest wait and find the
+        schema already in place.
+        """
+        async with self._init_lock:
+            if self._ready:
+                return
             try:
                 await asyncio.to_thread(self._sync_init)
             except Exception:
@@ -119,7 +169,6 @@ class SqliteFSMStorage(BaseStorage):
                 )
                 self._broken = True
                 raise _BrokenStorage from None
-        return await asyncio.to_thread(func, *args)
 
     def _sync_set(self, key: str, state: Any, data: Optional[dict]) -> None:
         with self._connect() as conn:
@@ -186,4 +235,5 @@ class SqliteFSMStorage(BaseStorage):
             return await self._fallback.get_data(key)
 
     async def close(self) -> None:
+        await asyncio.to_thread(self._close_connections)
         await self._fallback.close()

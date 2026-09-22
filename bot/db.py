@@ -16,11 +16,13 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 from .security import EncryptionError, TokenCipher, hash_password, is_password_hash
+from .sqlite_pool import connect_sqlite
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
@@ -577,16 +579,56 @@ class Database:
         self.path = path
         self._bootstrap = bootstrap
         self._cipher = TokenCipher(encryption_key) if encryption_key else None
+        # One SQLite connection per worker thread, reused for the process
+        # lifetime.  ``asyncio.to_thread`` runs every query on a small, stable
+        # pool of threads, so this keeps the connection count bounded while
+        # removing per-query connection setup.
+        self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
 
+    def _new_connection(self) -> sqlite3.Connection:
+        """Open and tune one SQLite connection.
+
+        Opening a connection is not free: it is a file open plus, for the
+        pragmas, real disk I/O.  ``journal_mode=WAL`` is persisted in the
+        database file itself, yet it was re-issued on every single query — and
+        on a network volume (Fly.io) that write-and-fsync dominated the bot's
+        response time.  The pragmas therefore run once per connection, and the
+        connection is then reused.  See :mod:`bot.sqlite_pool`.
+        """
+        return connect_sqlite(self.path)
+
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        """Return this thread's cached connection, opening it on first use.
+
+        The returned object is deliberately *not* closed by callers: every call
+        site uses ``with self._connect() as conn``, and for ``sqlite3`` that
+        context manager commits (or rolls back) the transaction and leaves the
+        connection open — exactly the semantics needed for pooling.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+        conn = self._new_connection()
+        self._local.conn = conn
+        with self._connections_lock:
+            self._connections.append(conn)
         return conn
+
+    def close(self) -> None:
+        """Close every pooled connection (tests and shutdown)."""
+        with self._connections_lock:
+            connections, self._connections = self._connections, []
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error:  # pragma: no cover - already unusable
+                pass
+        self._local = threading.local()
 
     @staticmethod
     def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
