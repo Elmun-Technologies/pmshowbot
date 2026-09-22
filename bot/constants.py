@@ -46,13 +46,13 @@ def direction_label(canonical: str, lang: str) -> str:
     return canonical
 
 
-def direction_image_path(canonical: str):
-    """Return the banner path for a canonical direction, or None if absent.
+def direction_image_path(canonical: str, tenant_id: object | None = None):
+    """Return a direction banner path for one tenant, or ``None`` if absent.
 
-    Runtime uploads (admins sending the banner to the bot) take priority over
-    anything bundled in the repo.
+    Runtime uploads are tenant-isolated.  The optional argument preserves the
+    legacy single-event helper signature for scripts and older deployments.
     """
-    return assets.direction_banner(DIRECTION_SLUGS.get(canonical, ""))
+    return assets.direction_banner(DIRECTION_SLUGS.get(canonical, ""), tenant_id)
 
 
 # Transliterated labels for Drive filenames (ASCII-safe).

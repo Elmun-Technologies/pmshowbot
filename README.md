@@ -1,6 +1,6 @@
-# Promotors Show Samarkand — registration bot
+# Promotors Show — multi-tenant registration platform
 
-Telegram bot for registering cars for the **Promotors Show Samarkand** event.
+A professional multi-tenant Telegram registration platform. **Promotors Show** remains the default migrated tenant; Adrenaline, Drift 2026, and future events each get their own Telegram bot, moderation chat, channel, data, assets, and admin password.
 
 **Flow:** `/start` (with a channel-subscription gate) → country → license plate →
 direction → 4 car photos (left / right / front / back) → photos of what was
@@ -48,22 +48,46 @@ personal Google login at runtime.
    **Editor**. Copy the folder id from its URL:
    `drive.google.com/drive/folders/`**`<DRIVE_FOLDER_ID>`**.
 
-## 3. Configure
+## 3. Configure the platform
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in `.env`:
+Only process-wide secrets belong in `.env` now:
 
 | Variable | What it is |
 | --- | --- |
-| `BOT_TOKEN` | Token from @BotFather |
-| `REQUIRED_CHANNEL` | `@promotorsshow` (subscription gate) |
-| `ADMIN_CHAT_ID` | Moderation chat id (numeric, usually negative) |
-| `GOOGLE_CREDENTIALS_FILE` | Path to the service-account JSON (`credentials.json`) |
-| `SPREADSHEET_ID` | Google Sheet id (leave empty to disable Sheets export) |
-| `DRIVE_FOLDER_ID` | Drive folder id for photos (leave empty to disable upload) |
+| `SUPER_ADMIN_PASSWORD` | Password for `/super-admin/login` (creates/manages all tenants) |
+| `ENCRYPTION_KEY` | Persistent Fernet key that encrypts tenant bot tokens in SQLite |
+| `GOOGLE_CREDENTIALS_FILE` / `GOOGLE_CREDENTIALS_JSON` | Shared service-account credentials; each tenant has its own Sheet/Drive IDs |
+| `DB_PATH`, `MEDIA_DIR`, `PORT` | Persistent platform data and HTTP panel settings |
+
+Generate the encryption key **once** and store it as a deployment secret:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### One-time Promotors migration
+
+On the first startup the app creates the `promotors` tenant and copies optional
+legacy `BOT_TOKEN`, `ADMIN_CHAT_ID`, `REQUIRED_CHANNEL`, `SPREADSHEET_ID`,
+`DRIVE_FOLDER_ID`, Instagram and `ADMIN_PASSWORD` values into it. Existing
+applications and bot users are linked to that tenant; old runtime logos move
+from `media/_sponsors`, `_brand`, `_directions` to
+`media/_tenants/promotors/...`. Keep the legacy variables only for this first
+migration; all subsequent tenant settings are managed in the browser.
+
+### Create additional tenants
+
+1. Open `https://<app>/super-admin/login` with `SUPER_ADMIN_PASSWORD`.
+2. Create a tenant (for example `adrenaline`) and enter its bot token,
+   moderation chat, required channel, integrations, and tenant-admin password.
+3. Use **Diagnostics** to validate the token, channel admin permission and
+   moderation chat. The worker hot-restarts only that tenant.
+4. Tenant staff use `/login` or `/t/adrenaline/login`. They can see only their
+   own applications, broadcasts, exports, settings, and ticket artwork.
 
 ## 4. Install & run
 
@@ -97,33 +121,23 @@ python tests/test_db.py   # sequential registration numbers, status transitions
 
 ## Admin web panel
 
-The bot process also serves a small web admin panel (same app, same SQLite DB).
-Set `ADMIN_PASSWORD` to enable it; leave it empty to disable. On Fly it's
-reachable at `https://<app>.fly.dev` (e.g. `https://pmshowbot.fly.dev`).
+The process serves one HTTPS control plane on `PORT` (default `8080`). It has
+two deliberately separate roles:
 
-Features:
-- **Login** with the single shared `ADMIN_PASSWORD` (signed-cookie session).
-- **Dashboard** — totals (pending / approved / rejected), last issued number,
-  and breakdowns by direction and country.
-- **Applications** — list with photo thumbnails, filter by status, search by
-  plate / phone / user; a detail page shows all four sides plus the
-  modification close-ups.
-- **Approve / Reject** from the panel — runs the exact same logic as the Telegram
-  buttons (assigns the number, messages the applicant, exports to Google if enabled).
-- **Ticket management** (`/ticket-assets`) — manage ticket design directly from the panel:
-  - Preview how the ticket looks with current logos (live PNG).
-  - **Brand logos** — upload / delete `logo.png` (PROMOTORS SHOW) and `adrenaline.png`.
-  - **Sponsor logos / homiylar** — add, preview, and remove sponsor logos that appear in the top strip of the ticket. Order is controlled by the filename prefix (`1_`, `2_`, …).
-  - **Direction banners** — upload / delete banners shown when a user picks a direction.
-- **Broadcast** (`/broadcast`) — pick an audience (approved / pending / rejected /
-  incomplete `/start` without an application / everyone the bot knows) and send
-  a Telegram message. Confirm checkbox required; the panel shows sent / failed
-  counts after the run.
-- **Export CSV** (`/export.csv`, opens cleanly in Excel).
+- **Super admin** — `/super-admin/login`, protected by
+  `SUPER_ADMIN_PASSWORD`. Can create/edit/activate/archive tenants, enter bot
+  tokens (stored Fernet-encrypted), run diagnostics and view cross-tenant
+  application counts.
+- **Tenant admin** — `/login` chooses a tenant, or use `/t/<slug>/login`.
+  The per-tenant password is PBKDF2-hashed in SQLite. Its signed cookie is
+  separate from the super-admin cookie, and every dashboard, application,
+  broadcast, export, asset and settings query is server-scoped to that tenant.
 
-Locally it listens on `PORT` (default `8080`): open `http://localhost:8080`.
-The panel is exposed publicly on Fly, so use a strong password (it is the only
-gate). Traffic is HTTPS on Fly (`force_https`).
+Each tenant manages its own ticket assets at `/t/<slug>/ticket-assets`. Runtime
+files live under `media/_tenants/<slug>/_sponsors`, `_brand`, and `_directions`;
+new participant photos are stored below the same tenant root. A tenant's
+sponsor logos, banners and ticket preview can never be read through another
+tenant's panel URL.
 
 ## Ticket design & sponsor logos
 
@@ -137,7 +151,7 @@ the strip is built around are:
 | 3 | `/logo 3_drift_show` | Uzbekistan Drift Show |
 | 4 | `/logo 4_sof_expo` | SOF EXPO Samarkand |
 
-You can now manage ticket design **directly from the admin panel** at `/ticket-assets`:
+Each tenant can manage its ticket design **directly from its scoped admin panel** at `/t/<slug>/ticket-assets`:
 
 - Live ticket preview (`/ticket-assets/preview.png`) with current logos.
 - Upload / delete **brand logos** (`logo.png`, `adrenaline.png`) that sit on top of the poster.
@@ -191,14 +205,14 @@ fly volumes create pmshow_data --region ams --size 3 -a pmshowbot
 
 # 4. Set secrets (do NOT put these in fly.toml)
 fly secrets set -a pmshowbot \
-  BOT_TOKEN="123456:ABC..." \
-  REQUIRED_CHANNEL="@promotorsshow" \
-  ADMIN_CHAT_ID="-1001234567890" \
-  ADMIN_PASSWORD="<strong password for the web panel>"
+  SUPER_ADMIN_PASSWORD="<strong platform password>" \
+  ENCRYPTION_KEY="<persistent Fernet key>"
+# Optional one-time migration values can be supplied on the first deploy:
+# BOT_TOKEN="..." ADMIN_CHAT_ID="..." REQUIRED_CHANNEL="..." ADMIN_PASSWORD="..."
 # For a demo without the subscription gate: also set REQUIRE_SUBSCRIPTION="false"
 # For the ticket's Instagram CTA: also set INSTAGRAM_HANDLE="promotorsshow"
-# For Google export later: fly secrets set GOOGLE_CREDENTIALS_JSON="$(cat credentials.json)" \
-#   SPREADSHEET_ID="..." DRIVE_FOLDER_ID="..." -a pmshowbot
+# For Google export: fly secrets set GOOGLE_CREDENTIALS_JSON="$(cat credentials.json)" -a pmshowbot
+# Then configure each tenant's Spreadsheet ID and Drive folder in /super-admin.
 
 # 5. Deploy, then ensure exactly ONE machine runs (two would conflict on polling)
 fly deploy -a pmshowbot
@@ -208,11 +222,12 @@ fly logs -a pmshowbot     # watch it start
 ```
 
 Notes:
-- No `[http_service]` / port — the machine stays always-on and is not health-checked.
-- `DB_PATH` / `MEDIA_DIR` point at the mounted volume so data and registration
-  numbers survive restarts and redeploys.
-- Run **only one** machine: a second instance would also call Telegram
-  `getUpdates` and cause a conflict.
+- The included `[http_service]` exposes the tenant/super-admin panel and keeps
+  one machine alive for polling.
+- `DB_PATH` / `MEDIA_DIR` point at the mounted volume so tenant data, artwork,
+  photos and registration numbers survive restarts and redeploys.
+- Run **only one** machine: a second instance would duplicate every active
+  tenant's `getUpdates` stream.
 
 ### Docker
 

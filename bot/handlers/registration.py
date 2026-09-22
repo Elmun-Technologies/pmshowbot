@@ -182,7 +182,7 @@ async def set_plate(message: Message, state: FSMContext) -> None:
 
 # --- Direction (right after the plate, before photos) ---
 @router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
-async def choose_direction(query: CallbackQuery, state: FSMContext) -> None:
+async def choose_direction(query: CallbackQuery, state: FSMContext, config: Config) -> None:
     lang = await _lang(state)
     _, idx = query.data.split(":", 1)
     # Store the canonical (Russian) direction name.
@@ -192,7 +192,7 @@ async def choose_direction(query: CallbackQuery, state: FSMContext) -> None:
 
     # Show the direction's promo banner so the participant sees the category
     # they just joined (skipped silently if the asset isn't bundled).
-    banner = direction_image_path(canonical)
+    banner = direction_image_path(canonical, getattr(config, "asset_scope", None))
     if banner:
         try:
             await query.message.answer_photo(
@@ -424,3 +424,39 @@ async def _send_moderation_card(
         )
     except Exception:  # noqa: BLE001 - never lose the applicant over a delivery error
         logger.exception("Failed to send moderation card for application %s", app_id)
+
+
+def create_router() -> Router:
+    """Build a new registration router for one tenant dispatcher.
+
+    The module-level ``router`` remains for backwards compatibility, but a
+    Router object cannot be mounted in more than one aiogram Dispatcher.
+    """
+    fresh = Router(name="registration")
+    fresh.message.register(cmd_start, CommandStart())
+    fresh.callback_query.register(
+        choose_language,
+        Registration.language,
+        F.data.startswith(f"{keyboards.CB_LANG}:"),
+    )
+    fresh.callback_query.register(check_subscription, F.data == keyboards.CB_CHECK_SUB)
+    fresh.callback_query.register(
+        choose_country,
+        Registration.country,
+        F.data.startswith(f"{keyboards.CB_COUNTRY}:"),
+    )
+    fresh.message.register(country_other, Registration.country_other, F.text)
+    fresh.message.register(set_plate, Registration.plate, F.text)
+    fresh.callback_query.register(
+        choose_direction,
+        Registration.direction,
+        F.data.startswith(f"{keyboards.CB_DIRECTION}:"),
+    )
+    fresh.message.register(collect_photo, Registration.photos, F.photo)
+    fresh.message.register(photos_not_a_photo, Registration.photos)
+    fresh.message.register(collect_mod_photo, Registration.mods, F.photo)
+    fresh.callback_query.register(mods_done, Registration.mods, F.data == keyboards.CB_MODS_DONE)
+    fresh.message.register(mods_not_a_photo, Registration.mods)
+    fresh.message.register(set_phone_contact, Registration.phone, F.contact)
+    fresh.message.register(set_phone_text, Registration.phone, F.text)
+    return fresh

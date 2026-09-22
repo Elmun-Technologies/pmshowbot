@@ -65,3 +65,10 @@ async def receive_badge_photo(message: Message, bot: Bot, config: Config, db: Da
             )
         except Exception:  # noqa: BLE001 - a notify failure must not affect the sender
             logger.exception("Could not notify admin chat about badge photo for app %s", app_id)
+
+
+def create_router() -> Router:
+    """Build a fresh badge-photo router for a tenant dispatcher."""
+    fresh = Router(name="badge_photo")
+    fresh.message.register(receive_badge_photo, StateFilter(None), F.photo, F.chat.type == "private")
+    return fresh

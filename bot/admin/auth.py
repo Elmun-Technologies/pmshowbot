@@ -1,18 +1,29 @@
-"""Minimal single-password session auth for the admin panel.
+"""Cookie and password helpers for super-admin and tenant-admin sessions.
 
-A signed cookie (HMAC-SHA256 over an expiry timestamp, keyed by the admin
-password) proves the visitor logged in. No external dependencies, no server-side
-session store. Served only over HTTPS on Fly (force_https), so the cookie and
-the login POST are encrypted in transit.
+Sessions remain stateless HMAC cookies, but super-admin and tenant-admin roles
+use different cookie names.  Tenant passwords are PBKDF2 hashes in SQLite; the
+hash itself safely serves as the per-tenant cookie-signing secret, so changing a
+password invalidates all prior sessions for that tenant.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 
+from ..security import is_password_hash, verify_password
+
+# Historic root-panel cookie; retained only for compatibility routes.
 COOKIE_NAME = "pm_admin"
-_MAX_AGE = 7 * 24 * 3600  # 7 days
+SUPER_COOKIE_NAME = "pm_super_admin"
+_MAX_AGE = 7 * 24 * 3600
+
+
+def tenant_cookie_name(slug: str) -> str:
+    """Return a safe cookie name isolated from every other tenant."""
+    safe = re.sub(r"[^a-z0-9_-]", "_", (slug or "").lower())[:80]
+    return f"pm_tenant_{safe or 'unknown'}"
 
 
 def _sign(secret: str, exp: int) -> str:
@@ -25,7 +36,7 @@ def make_cookie(secret: str) -> str:
 
 
 def valid_cookie(secret: str, value: str | None) -> bool:
-    if not value:
+    if not secret or not value:
         return False
     try:
         exp_str, sig = value.split(".", 1)
@@ -38,7 +49,10 @@ def valid_cookie(secret: str, value: str | None) -> bool:
 
 
 def password_matches(secret: str, submitted: str) -> bool:
-    return hmac.compare_digest(secret.encode(), (submitted or "").encode())
+    """Verify either an env password or a stored tenant password hash."""
+    if is_password_hash(secret):
+        return verify_password(secret, submitted or "")
+    return hmac.compare_digest((secret or "").encode(), (submitted or "").encode())
 
 
 MAX_AGE = _MAX_AGE

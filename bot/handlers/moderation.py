@@ -34,6 +34,11 @@ def _is_admin(message: Message, config: Config) -> bool:
     )
 
 
+def _asset_scope(config: Config):
+    """Return the isolated artwork scope for this dispatcher when available."""
+    return getattr(config, "asset_scope", None)
+
+
 # --- Brand assets uploaded straight from Telegram -------------------------
 #
 # Sponsor logos and direction banners would otherwise have to be committed to
@@ -118,7 +123,7 @@ async def cmd_assets(message: Message, config: Config) -> None:
     if not _is_admin(message, config):
         return
 
-    inv = assets.inventory()
+    inv = assets.inventory(_asset_scope(config))
 
     def _fmt(runtime: list[str], bundled: list[str]) -> str:
         if runtime:
@@ -192,7 +197,7 @@ async def cmd_delasset(message: Message, config: Config) -> None:
         )
         return
     kind = {"logo": "sponsors", "banner": "directions", "brand": "brand"}[parts[1]]
-    if assets.delete_asset(kind, parts[2]):
+    if assets.delete_asset(kind, parts[2], _asset_scope(config)):
         await message.answer(f"🗑 Удалено: <code>{parts[2]}</code>")
     else:
         await message.answer(f"Не найдено: <code>{parts[2]}</code>")
@@ -256,19 +261,19 @@ async def receive_brand_asset(message: Message, bot: Bot, config: Config) -> Non
             await message.answer("Пришлите именно картинку (фото или файл-изображение).")
             return
         if command == "/brand":
-            assets.save_brand(name, data)
+            assets.save_brand(name, data, _asset_scope(config))
             await message.answer(
                 f"✅ Главный логотип <code>{name}</code> обновлён — "
                 f"появится на билетах сразу.\nПроверить: /diag"
             )
         elif command == "/logo":
-            assets.save_sponsor(name, data)
+            assets.save_sponsor(name, data, _asset_scope(config))
             await message.answer(
                 f"✅ Логотип <code>{name}</code> сохранён — появится на билетах сразу.\n"
                 f"Проверить: /assets, затем /diag"
             )
         else:
-            assets.save_direction(name, data)
+            assets.save_direction(name, data, _asset_scope(config))
             await message.answer(
                 f"✅ Баннер направления <code>{name}</code> сохранён — "
                 f"будет показан при выборе этого направления."
@@ -322,17 +327,26 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
             hero_note = "фото участника" if hero else "нет фото → заглушка"
             png = await asyncio.to_thread(
                 generate_ticket,
+                _asset_scope(config),
                 number=app.reg_number or 1,
                 plate=app.plate or "TEST",
                 direction=texts.localize_direction(app.direction, app.language),
                 name=decisions._get_display_name(app),
+                tenant_name=getattr(config, "tenant_name", ""),
                 lang=app.language,
                 hero_image_path=hero,
             )
         else:
             hero_note = "нет заявок → заглушка"
             png = await asyncio.to_thread(
-                generate_ticket, number=1, plate="TEST-777", direction="Тюнинг", name="Иван Иванов", lang="ru"
+                generate_ticket,
+                _asset_scope(config),
+                number=1,
+                plate="TEST-777",
+                direction="Тюнинг",
+                name="Иван Иванов",
+                tenant_name=getattr(config, "tenant_name", ""),
+                lang="ru",
             )
         await message.answer_photo(
             BufferedInputFile(png, filename="diag_ticket.png"),
@@ -351,7 +365,7 @@ async def cmd_stats(message: Message, config: Config, db: Database) -> None:
 
     st = await db.stats()
     lines = [
-        "📊 <b>Promotors Show — Statistika & Analitika</b>\n",
+        f"📊 <b>{getattr(config, 'tenant_name', 'Promotors Show')} — Statistika & Analitika</b>\n",
         f"📋 <b>Jami arizalar:</b> <code>{st['total']}</code> ta",
         f"⏳ <b>Kutilmoqda (Pending):</b> <code>{st['pending']}</code> ta",
         f"✅ <b>Tasdiqlangan (Approved):</b> <code>{st['approved']}</code> ta",
@@ -392,7 +406,10 @@ async def cmd_export(message: Message, config: Config, db: Database) -> None:
 
     xlsx_bytes = await asyncio.to_thread(generate_excel, apps)
     await message.answer_document(
-        BufferedInputFile(xlsx_bytes, filename="promotors_applications.xlsx"),
+        BufferedInputFile(
+            xlsx_bytes,
+            filename=f"{getattr(config, 'tenant_slug', 'promotors')}_applications.xlsx",
+        ),
         caption=f"📊 Jami {len(apps)} ta ariza bo'yicha Excel fayli tayyor.",
     )
     try:
@@ -441,3 +458,23 @@ async def _append_status(query: CallbackQuery, status_line: str) -> None:
     except Exception:  # noqa: BLE001 - fall back to editing just the markup
         logger.exception("Could not edit moderation card %s", query.message.message_id)
         await query.message.edit_reply_markup(reply_markup=None)
+
+
+def create_router() -> Router:
+    """Build a fresh moderation router for one tenant dispatcher."""
+    fresh = Router(name="moderation")
+    fresh.message.register(cmd_whoami, Command("whoami"))
+    fresh.message.register(cmd_assets, Command("assets"))
+    fresh.message.register(cmd_help_assets, Command("help_assets"))
+    fresh.message.register(cmd_delasset, Command("delasset"))
+    fresh.message.register(receive_brand_asset, F.photo | F.document, _is_brand_asset_caption)
+    fresh.message.register(diag, Command("diag"))
+    fresh.message.register(cmd_stats, Command("stats"))
+    fresh.message.register(cmd_export, Command("export"))
+    fresh.callback_query.register(
+        approve, F.data.startswith(f"{keyboards.CB_APPROVE}:")
+    )
+    fresh.callback_query.register(
+        reject, F.data.startswith(f"{keyboards.CB_REJECT}:")
+    )
+    return fresh

@@ -1,8 +1,13 @@
-"""SQLite persistence for applications and the registration-number counter.
+"""SQLite persistence for tenant-scoped Promotors Show data.
 
-Uses the stdlib ``sqlite3`` module. Blocking calls are wrapped with
-``asyncio.to_thread`` in the async helpers so they don't block the event loop.
-The database is small and single-instance, so this is more than fast enough.
+The project originally had one bot and one global SQLite namespace.  This
+module now owns the migration to a tenant-aware schema and exposes both the
+low-level :class:`Database` API and :meth:`Database.for_tenant` scoped views.
+The scoped view is what bot dispatchers and tenant-admin pages use, making it
+impossible for a normal query to accidentally omit its ``tenant_id`` filter.
+
+SQLite calls stay in the stdlib and run via ``asyncio.to_thread`` so the bot's
+single event loop is never blocked by disk I/O.
 """
 from __future__ import annotations
 
@@ -12,15 +17,69 @@ import os
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Mapping, Optional
+
+from .security import EncryptionError, TokenCipher, hash_password, is_password_hash
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
+DEFAULT_TENANT_SLUG = "promotors"
+DEFAULT_TENANT_NAME = "Promotors Show"
+
+
+@dataclass(frozen=True)
+class Tenant:
+    """Public tenant metadata.
+
+    ``bot_token_encrypted`` is intentionally the ciphertext from SQLite.  Bot
+    workers obtain the decrypted token through ``Database.get_tenant_token``;
+    templates only receive ``token_configured`` / a masked representation.
+    """
+
+    id: int
+    slug: str
+    name: str
+    is_active: bool
+    bot_token_encrypted: str
+    admin_chat_id: int
+    required_channel: str
+    channel_url: str
+    instagram_handle: str
+    instagram_url: str
+    spreadsheet_id: str
+    drive_folder_id: str
+    admin_password: str
+    created_at: str
+    updated_at: str
+
+    @property
+    def bot_token(self) -> str:
+        """Encrypted database value, retained under the schema's field name.
+
+        Use :meth:`Database.get_tenant_token` for the short-lived decrypted
+        value required by a polling worker; never render this property.
+        """
+        return self.bot_token_encrypted
+
+    @property
+    def token_configured(self) -> bool:
+        return bool(self.bot_token_encrypted)
+
+    @property
+    def token_mask(self) -> str:
+        """Never expose the Telegram token in a normal data object."""
+        return "***" if self.bot_token_encrypted else ""
+
+    @property
+    def password_configured(self) -> bool:
+        return bool(self.admin_password)
 
 
 @dataclass
 class Application:
+    """One registration application, always belonging to one tenant."""
+
     id: int
     user_id: int
     username: str
@@ -40,81 +99,111 @@ class Application:
     # Close-ups of what the participant changed on the car (hood, trunk, audio…).
     mod_file_ids: list[str] = field(default_factory=list)
     mod_paths: list[str] = field(default_factory=list)
-    # Photo submitted for the personal event badge (sent to the bot outside
-    # the registration flow, in reply to a broadcast asking for one).
+    # Photo submitted for the personal event badge.
     badge_photo_file_id: str = ""
     badge_photo_path: str = ""
+    tenant_id: int = 0
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS applications (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id        INTEGER NOT NULL,
-    username       TEXT NOT NULL DEFAULT '',
-    country        TEXT NOT NULL DEFAULT '',
-    plate          TEXT NOT NULL DEFAULT '',
-    direction      TEXT NOT NULL DEFAULT '',
-    phone          TEXT NOT NULL DEFAULT '',
-    photo_file_ids TEXT NOT NULL DEFAULT '[]',
-    photo_paths    TEXT NOT NULL DEFAULT '[]',
-    status         TEXT NOT NULL DEFAULT 'pending',
-    reg_number     INTEGER,
-    created_at     TEXT NOT NULL,
-    processed_at   TEXT,
-    processed_by   TEXT,
-    language       TEXT NOT NULL DEFAULT 'ru',
-    full_name      TEXT NOT NULL DEFAULT '',
-    mod_file_ids   TEXT NOT NULL DEFAULT '[]',
-    mod_paths      TEXT NOT NULL DEFAULT '[]',
-    badge_photo_file_id TEXT NOT NULL DEFAULT '',
-    badge_photo_path    TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
-
-CREATE TABLE IF NOT EXISTS bot_users (
-    user_id    INTEGER PRIMARY KEY,
-    username   TEXT NOT NULL DEFAULT '',
-    language   TEXT NOT NULL DEFAULT 'ru',
-    first_seen TEXT NOT NULL,
-    last_seen  TEXT NOT NULL
+_TENANTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tenants (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug             TEXT NOT NULL UNIQUE,
+    name             TEXT NOT NULL,
+    is_active        INTEGER NOT NULL DEFAULT 1,
+    bot_token        TEXT NOT NULL DEFAULT '',
+    admin_chat_id    INTEGER NOT NULL DEFAULT 0,
+    required_channel TEXT NOT NULL DEFAULT '',
+    channel_url      TEXT NOT NULL DEFAULT '',
+    instagram_handle TEXT NOT NULL DEFAULT '',
+    instagram_url    TEXT NOT NULL DEFAULT '',
+    spreadsheet_id   TEXT NOT NULL DEFAULT '',
+    drive_folder_id  TEXT NOT NULL DEFAULT '',
+    admin_password   TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
 );
 """
 
-# Lightweight migrations: (column, "ALTER ... ADD COLUMN ...") applied if missing.
-_MIGRATIONS = [
+_APPLICATIONS_CREATE = """
+CREATE TABLE applications (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id           INTEGER NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    user_id             INTEGER NOT NULL,
+    username            TEXT NOT NULL DEFAULT '',
+    country             TEXT NOT NULL DEFAULT '',
+    plate               TEXT NOT NULL DEFAULT '',
+    direction           TEXT NOT NULL DEFAULT '',
+    phone               TEXT NOT NULL DEFAULT '',
+    photo_file_ids      TEXT NOT NULL DEFAULT '[]',
+    photo_paths         TEXT NOT NULL DEFAULT '[]',
+    status              TEXT NOT NULL DEFAULT 'pending',
+    reg_number          INTEGER,
+    created_at          TEXT NOT NULL,
+    processed_at        TEXT,
+    processed_by        TEXT,
+    language            TEXT NOT NULL DEFAULT 'ru',
+    full_name           TEXT NOT NULL DEFAULT '',
+    mod_file_ids        TEXT NOT NULL DEFAULT '[]',
+    mod_paths           TEXT NOT NULL DEFAULT '[]',
+    badge_photo_file_id TEXT NOT NULL DEFAULT '',
+    badge_photo_path    TEXT NOT NULL DEFAULT ''
+);
+"""
+
+_BOT_USERS_CREATE = """
+CREATE TABLE bot_users (
+    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    user_id    INTEGER NOT NULL,
+    username   TEXT NOT NULL DEFAULT '',
+    language   TEXT NOT NULL DEFAULT 'ru',
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, user_id)
+);
+"""
+
+# Lightweight migrations for old ``applications`` tables before they are
+# rebuilt with a real tenant FK below.
+_APPLICATION_MIGRATIONS = [
     ("language", "ALTER TABLE applications ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'"),
     ("full_name", "ALTER TABLE applications ADD COLUMN full_name TEXT NOT NULL DEFAULT ''"),
     ("mod_file_ids", "ALTER TABLE applications ADD COLUMN mod_file_ids TEXT NOT NULL DEFAULT '[]'"),
     ("mod_paths", "ALTER TABLE applications ADD COLUMN mod_paths TEXT NOT NULL DEFAULT '[]'"),
     ("badge_photo_file_id", "ALTER TABLE applications ADD COLUMN badge_photo_file_id TEXT NOT NULL DEFAULT ''"),
     ("badge_photo_path", "ALTER TABLE applications ADD COLUMN badge_photo_path TEXT NOT NULL DEFAULT ''"),
+    ("tenant_id", "ALTER TABLE applications ADD COLUMN tenant_id INTEGER"),
 ]
 
-# Renamed directions: applications stored under the old name are moved to the
-# new one so the admin panel and the stats keep counting them as one category.
-# Each entry is idempotent — re-running it on an already-renamed database is a
-# no-op.
-_DIRECTION_RENAMES = [
-    ("Дрифт", "Adrenaline Drift"),
-]
+_DIRECTION_RENAMES = [("Дрифт", "Adrenaline Drift")]
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _json_list(value: Any) -> list[str]:
+    """Read old/corrupt JSON defensively rather than breaking the whole panel."""
+    try:
+        decoded = json.loads(value or "[]")
+        return decoded if isinstance(decoded, list) else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
 def _row_to_application(row: sqlite3.Row) -> Application:
     keys = row.keys()
     return Application(
         id=row["id"],
+        tenant_id=int(row["tenant_id"]) if "tenant_id" in keys and row["tenant_id"] is not None else 0,
         user_id=row["user_id"],
         username=row["username"],
         country=row["country"],
         plate=row["plate"],
         direction=row["direction"],
         phone=row["phone"],
-        photo_file_ids=json.loads(row["photo_file_ids"]),
-        photo_paths=json.loads(row["photo_paths"]),
+        photo_file_ids=_json_list(row["photo_file_ids"]),
+        photo_paths=_json_list(row["photo_paths"]),
         status=row["status"],
         reg_number=row["reg_number"],
         created_at=row["created_at"],
@@ -122,16 +211,120 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         processed_by=row["processed_by"],
         language=row["language"] if "language" in keys else "ru",
         full_name=row["full_name"] if "full_name" in keys else "",
-        mod_file_ids=json.loads(row["mod_file_ids"]) if "mod_file_ids" in keys else [],
-        mod_paths=json.loads(row["mod_paths"]) if "mod_paths" in keys else [],
+        mod_file_ids=_json_list(row["mod_file_ids"]) if "mod_file_ids" in keys else [],
+        mod_paths=_json_list(row["mod_paths"]) if "mod_paths" in keys else [],
         badge_photo_file_id=row["badge_photo_file_id"] if "badge_photo_file_id" in keys else "",
         badge_photo_path=row["badge_photo_path"] if "badge_photo_path" in keys else "",
     )
 
 
+def _row_to_tenant(row: sqlite3.Row) -> Tenant:
+    return Tenant(
+        id=int(row["id"]),
+        slug=str(row["slug"]),
+        name=str(row["name"]),
+        is_active=bool(row["is_active"]),
+        bot_token_encrypted=str(row["bot_token"] or ""),
+        admin_chat_id=int(row["admin_chat_id"] or 0),
+        required_channel=str(row["required_channel"] or ""),
+        channel_url=str(row["channel_url"] or ""),
+        instagram_handle=str(row["instagram_handle"] or ""),
+        instagram_url=str(row["instagram_url"] or ""),
+        spreadsheet_id=str(row["spreadsheet_id"] or ""),
+        drive_folder_id=str(row["drive_folder_id"] or ""),
+        admin_password=str(row["admin_password"] or ""),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+class TenantDatabase:
+    """A tenant-bound facade over :class:`Database`.
+
+    Handlers receive this instead of the global database.  Every application,
+    user and broadcast operation therefore carries the tenant id automatically.
+    """
+
+    def __init__(self, database: "Database", tenant_id: int):
+        self._database = database
+        self.tenant_id = int(tenant_id)
+
+    async def list_applications(
+        self, status: Optional[str] = None, search: Optional[str] = None, limit: int = 500
+    ) -> list[Application]:
+        return await self._database.list_applications(status, search, limit, tenant_id=self.tenant_id)
+
+    async def stats(self) -> dict:
+        return await self._database.stats(tenant_id=self.tenant_id)
+
+    async def create_application(self, **kwargs) -> int:
+        return await self._database.create_application(tenant_id=self.tenant_id, **kwargs)
+
+    async def get_application(self, app_id: int) -> Optional[Application]:
+        return await self._database.get_application(app_id, tenant_id=self.tenant_id)
+
+    async def get_latest_for_user(self, user_id: int) -> Optional[Application]:
+        return await self._database.get_latest_for_user(user_id, tenant_id=self.tenant_id)
+
+    async def has_active_application(self, user_id: int) -> Optional[Application]:
+        return await self._database.has_active_application(user_id, tenant_id=self.tenant_id)
+
+    async def set_badge_photo(self, user_id: int, file_id: str, path: str) -> Optional[int]:
+        return await self._database.set_badge_photo(
+            user_id, file_id, path, tenant_id=self.tenant_id
+        )
+
+    async def get_user_language(self, user_id: int) -> str:
+        return await self._database.get_user_language(user_id, tenant_id=self.tenant_id)
+
+    async def approve(self, app_id: int, moderator: str) -> Optional[int]:
+        return await self._database.approve(app_id, moderator, tenant_id=self.tenant_id)
+
+    async def reject(self, app_id: int, moderator: str) -> bool:
+        return await self._database.reject(app_id, moderator, tenant_id=self.tenant_id)
+
+    async def set_status(self, app_id: int, status: str, moderator: str) -> bool:
+        return await self._database.set_status(
+            app_id, status, moderator, tenant_id=self.tenant_id
+        )
+
+    async def touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
+        await self._database.touch_user(
+            user_id, username, language, tenant_id=self.tenant_id
+        )
+
+    async def recipients(
+        self,
+        audience: str,
+        languages: Optional[list[str]] = None,
+        directions: Optional[list[str]] = None,
+    ) -> list[tuple[int, str]]:
+        return await self._database.recipients(
+            audience, languages, directions, tenant_id=self.tenant_id
+        )
+
+    async def audience_counts(self) -> dict[str, int]:
+        return await self._database.audience_counts(tenant_id=self.tenant_id)
+
+
 class Database:
-    def __init__(self, path: str):
+    """SQLite database plus idempotent legacy-to-tenant migration.
+
+    ``bootstrap`` is normally the process-level :class:`bot.config.Config`.
+    Its legacy environment values are used exactly once to seed the mandatory
+    ``promotors`` tenant.  Future tenants are entirely database-driven.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        encryption_key: str | bytes | None = None,
+        bootstrap: Any | Mapping[str, Any] | None = None,
+    ):
         self.path = path
+        self._bootstrap = bootstrap
+        self._cipher = TokenCipher(encryption_key) if encryption_key else None
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -139,39 +332,432 @@ class Database:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        # Enforce serialized writes and better concurrency behaviour.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    # --- sync core operations (run inside to_thread) ---
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+            ).fetchone()
+        )
+
+    @staticmethod
+    def _bootstrap_value(bootstrap: Any | Mapping[str, Any] | None, *names: str, default=""):
+        if bootstrap is None:
+            return default
+        for name in names:
+            if isinstance(bootstrap, Mapping):
+                value = bootstrap.get(name)
+            else:
+                value = getattr(bootstrap, name, None)
+            if value is not None and value != "":
+                return value
+        return default
+
+    def _encrypt_token(self, token: str) -> str:
+        token = (token or "").strip()
+        if not token:
+            return ""
+        if self._cipher is None:
+            raise EncryptionError(
+                "Cannot store a tenant bot token without ENCRYPTION_KEY. "
+                "Set a Fernet key before running the migration."
+            )
+        return self._cipher.encrypt(token)
+
+    def _decrypt_token(self, ciphertext: str) -> str:
+        if not ciphertext:
+            return ""
+        if self._cipher is None:
+            raise EncryptionError(
+                "ENCRYPTION_KEY is required to start a tenant with an encrypted bot token"
+            )
+        return self._cipher.decrypt(ciphertext)
+
+    def _default_tenant_values(self) -> dict[str, Any]:
+        b = self._bootstrap
+        raw_admin_id = self._bootstrap_value(b, "legacy_admin_chat_id", "admin_chat_id", default=0)
+        try:
+            admin_chat_id = int(raw_admin_id or 0)
+        except (TypeError, ValueError):
+            admin_chat_id = 0
+        password = str(
+            self._bootstrap_value(b, "legacy_admin_password", "admin_password", default="") or ""
+        )
+        return {
+            "slug": DEFAULT_TENANT_SLUG,
+            "name": str(self._bootstrap_value(b, "legacy_tenant_name", default=DEFAULT_TENANT_NAME)),
+            "is_active": 1,
+            "bot_token": str(self._bootstrap_value(b, "legacy_bot_token", "bot_token", default="") or ""),
+            "admin_chat_id": admin_chat_id,
+            "required_channel": str(
+                self._bootstrap_value(b, "legacy_required_channel", "required_channel", default="") or ""
+            ),
+            "channel_url": str(self._bootstrap_value(b, "legacy_channel_url", "channel_url", default="") or ""),
+            "instagram_handle": str(
+                self._bootstrap_value(b, "legacy_instagram_handle", "instagram_handle", default="") or ""
+            ),
+            "instagram_url": str(
+                self._bootstrap_value(b, "legacy_instagram_url", "instagram_url", default="") or ""
+            ),
+            "spreadsheet_id": str(
+                self._bootstrap_value(b, "legacy_spreadsheet_id", "spreadsheet_id", default="") or ""
+            ),
+            "drive_folder_id": str(
+                self._bootstrap_value(b, "legacy_drive_folder_id", "drive_folder_id", default="") or ""
+            ),
+            "admin_password": password,
+        }
+
+    def _ensure_default_tenant(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT id FROM tenants WHERE slug = ?", (DEFAULT_TENANT_SLUG,)
+        ).fetchone()
+        if row:
+            return int(row["id"])
+        values = self._default_tenant_values()
+        now = _now()
+        encrypted = self._encrypt_token(values["bot_token"])
+        password = values["admin_password"]
+        if password and not is_password_hash(password):
+            password = hash_password(password)
+        cur = conn.execute(
+            """
+            INSERT INTO tenants (
+                slug, name, is_active, bot_token, admin_chat_id, required_channel,
+                channel_url, instagram_handle, instagram_url, spreadsheet_id,
+                drive_folder_id, admin_password, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                values["slug"], values["name"], values["is_active"], encrypted,
+                values["admin_chat_id"], values["required_channel"], values["channel_url"],
+                values["instagram_handle"], values["instagram_url"], values["spreadsheet_id"],
+                values["drive_folder_id"], password, now, now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _create_applications_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(_APPLICATIONS_CREATE)
+
+    def _create_bot_users_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(_BOT_USERS_CREATE)
+
+    def _migrate_applications(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
+        if not self._table_exists(conn, "applications"):
+            self._create_applications_table(conn)
+            return
+
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(applications)")}
+        for column, ddl in _APPLICATION_MIGRATIONS:
+            if column not in columns:
+                conn.execute(ddl)
+                columns.add(column)
+        conn.execute(
+            "UPDATE applications SET tenant_id = ? WHERE tenant_id IS NULL", (default_tenant_id,)
+        )
+        for old, new in _DIRECTION_RENAMES:
+            conn.execute(
+                "UPDATE applications SET direction = ? WHERE direction = ?", (new, old)
+            )
+
+        foreign_keys = conn.execute("PRAGMA foreign_key_list(applications)").fetchall()
+        has_tenant_fk = any(
+            row["from"] == "tenant_id" and row["table"] == "tenants" for row in foreign_keys
+        )
+        if has_tenant_fk:
+            return
+
+        # ``ALTER TABLE ADD COLUMN`` cannot add a durable FK to old SQLite
+        # tables. Rebuild once, preserving ids and every historical field.
+        conn.execute("ALTER TABLE applications RENAME TO applications_legacy_tenant_migration")
+        self._create_applications_table(conn)
+        conn.execute(
+            """
+            INSERT INTO applications (
+                id, tenant_id, user_id, username, country, plate, direction, phone,
+                photo_file_ids, photo_paths, status, reg_number, created_at,
+                processed_at, processed_by, language, full_name, mod_file_ids,
+                mod_paths, badge_photo_file_id, badge_photo_path
+            )
+            SELECT id, COALESCE(tenant_id, ?), user_id,
+                   COALESCE(username, ''), COALESCE(country, ''), COALESCE(plate, ''),
+                   COALESCE(direction, ''), COALESCE(phone, ''),
+                   COALESCE(photo_file_ids, '[]'), COALESCE(photo_paths, '[]'),
+                   COALESCE(status, 'pending'), reg_number, created_at, processed_at,
+                   processed_by, COALESCE(language, 'ru'), COALESCE(full_name, ''),
+                   COALESCE(mod_file_ids, '[]'), COALESCE(mod_paths, '[]'),
+                   COALESCE(badge_photo_file_id, ''), COALESCE(badge_photo_path, '')
+            FROM applications_legacy_tenant_migration
+            """,
+            (default_tenant_id,),
+        )
+        conn.execute("DROP TABLE applications_legacy_tenant_migration")
+
+    def _migrate_bot_users(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
+        if not self._table_exists(conn, "bot_users"):
+            self._create_bot_users_table(conn)
+            return
+        info = conn.execute("PRAGMA table_info(bot_users)").fetchall()
+        cols = {row["name"] for row in info}
+        pk_cols = [row["name"] for row in sorted(info, key=lambda row: row["pk"]) if row["pk"]]
+        has_composite_pk = pk_cols == ["tenant_id", "user_id"]
+        if "tenant_id" in cols and has_composite_pk:
+            conn.execute(
+                "UPDATE bot_users SET tenant_id = ? WHERE tenant_id IS NULL", (default_tenant_id,)
+            )
+            return
+
+        conn.execute("ALTER TABLE bot_users RENAME TO bot_users_legacy_tenant_migration")
+        self._create_bot_users_table(conn)
+        old_cols = {r["name"] for r in conn.execute("PRAGMA table_info(bot_users_legacy_tenant_migration)")}
+        tenant_expr = "COALESCE(tenant_id, ?)" if "tenant_id" in old_cols else "?"
+        username_expr = "COALESCE(username, '')" if "username" in old_cols else "''"
+        language_expr = "COALESCE(language, 'ru')" if "language" in old_cols else "'ru'"
+        first_expr = "COALESCE(first_seen, ?)" if "first_seen" in old_cols else "?"
+        last_expr = "COALESCE(last_seen, ?)" if "last_seen" in old_cols else "?"
+        now = _now()
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO bot_users
+                (tenant_id, user_id, username, language, first_seen, last_seen)
+            SELECT {tenant_expr}, user_id, {username_expr}, {language_expr},
+                   {first_expr}, {last_expr}
+            FROM bot_users_legacy_tenant_migration
+            """,
+            # There can be one placeholder in tenant_expr and one each in the
+            # optional timestamps. Passing extras to sqlite is not allowed, so
+            # build the exact parameter list alongside the expressions.
+            tuple(
+                [default_tenant_id]
+                + ([now] if "first_seen" in old_cols else [now])
+                + ([now] if "last_seen" in old_cols else [now])
+            ),
+        )
+        conn.execute("DROP TABLE bot_users_legacy_tenant_migration")
+
+    def _create_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_applications_tenant_user "
+            "ON applications(tenant_id, user_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_applications_tenant_status "
+            "ON applications(tenant_id, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bot_users_tenant ON bot_users(tenant_id)"
+        )
+
+    def _seed_known_users(self, conn: sqlite3.Connection) -> None:
+        # Existing applications predate ``bot_users`` in some deployments.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO bot_users
+                (tenant_id, user_id, username, language, first_seen, last_seen)
+            SELECT tenant_id,
+                   user_id,
+                   MAX(username),
+                   MAX(language),
+                   MIN(created_at),
+                   MAX(created_at)
+            FROM applications
+            GROUP BY tenant_id, user_id
+            """
+        )
 
     def _init(self) -> None:
         with self._connect() as conn:
-            conn.executescript(_SCHEMA)
-            # Apply migrations for databases created by an older schema.
-            existing = {r["name"] for r in conn.execute("PRAGMA table_info(applications)")}
-            for column, ddl in _MIGRATIONS:
-                if column not in existing:
-                    conn.execute(ddl)
-            for old, new in _DIRECTION_RENAMES:
-                conn.execute(
-                    "UPDATE applications SET direction = ? WHERE direction = ?",
-                    (new, old),
-                )
-            # Anyone who already filed an application is a known bot user.
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO bot_users (user_id, username, language, first_seen, last_seen)
-                SELECT user_id,
-                       MAX(username),
-                       MAX(language),
-                       MIN(created_at),
-                       MAX(created_at)
-                FROM applications
-                GROUP BY user_id
-                """
+            conn.executescript(_TENANTS_SCHEMA)
+            default_tenant_id = self._ensure_default_tenant(conn)
+            self._migrate_applications(conn, default_tenant_id)
+            self._migrate_bot_users(conn, default_tenant_id)
+            self._create_indexes(conn)
+            self._seed_known_users(conn)
+
+    # ------------------------------------------------------------------
+    # Tenant administration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _clean_slug(slug: str) -> str:
+        import re
+
+        value = (slug or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9]+(?:[a-z0-9-]{0,62}[a-z0-9])?", value):
+            raise ValueError(
+                "Tenant slug must contain lowercase letters, digits and hyphens only"
             )
+        return value
+
+    @staticmethod
+    def _to_bool(value: Any) -> int:
+        return 1 if bool(value) else 0
+
+    def _resolve_tenant_id(self, conn: sqlite3.Connection, tenant_id: int | str | None) -> int:
+        if tenant_id is None:
+            row = conn.execute(
+                "SELECT id FROM tenants WHERE slug = ?", (DEFAULT_TENANT_SLUG,)
+            ).fetchone()
+        elif isinstance(tenant_id, int):
+            row = conn.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+        else:
+            row = conn.execute("SELECT id FROM tenants WHERE slug = ?", (str(tenant_id),)).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown tenant: {tenant_id!r}")
+        return int(row["id"])
+
+    def _get_tenant(self, identifier: int | str) -> Optional[Tenant]:
+        with self._connect() as conn:
+            if isinstance(identifier, int):
+                row = conn.execute("SELECT * FROM tenants WHERE id = ?", (identifier,)).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM tenants WHERE slug = ?", (identifier,)).fetchone()
+            return _row_to_tenant(row) if row else None
+
+    def _list_tenants(self, active_only: bool = False) -> list[Tenant]:
+        with self._connect() as conn:
+            sql = "SELECT * FROM tenants"
+            if active_only:
+                sql += " WHERE is_active = 1"
+            sql += " ORDER BY name COLLATE NOCASE, id"
+            return [_row_to_tenant(row) for row in conn.execute(sql).fetchall()]
+
+    def _create_tenant(
+        self,
+        *,
+        slug: str,
+        name: str,
+        bot_token: str = "",
+        admin_chat_id: int = 0,
+        required_channel: str = "",
+        channel_url: str = "",
+        instagram_handle: str = "",
+        instagram_url: str = "",
+        spreadsheet_id: str = "",
+        drive_folder_id: str = "",
+        admin_password: str = "",
+        is_active: bool = True,
+    ) -> Tenant:
+        slug = self._clean_slug(slug)
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Tenant name is required")
+        try:
+            admin_chat_id = int(admin_chat_id or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("admin_chat_id must be an integer") from exc
+        now = _now()
+        password = (admin_password or "").strip()
+        if password and not is_password_hash(password):
+            password = hash_password(password)
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO tenants (
+                    slug, name, is_active, bot_token, admin_chat_id, required_channel,
+                    channel_url, instagram_handle, instagram_url, spreadsheet_id,
+                    drive_folder_id, admin_password, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    slug, name, self._to_bool(is_active), self._encrypt_token(bot_token),
+                    admin_chat_id, (required_channel or "").strip(), (channel_url or "").strip(),
+                    (instagram_handle or "").strip(), (instagram_url or "").strip(),
+                    (spreadsheet_id or "").strip(), (drive_folder_id or "").strip(),
+                    password, now, now,
+                ),
+            )
+            row = conn.execute("SELECT * FROM tenants WHERE id = ?", (cur.lastrowid,)).fetchone()
+            return _row_to_tenant(row)
+
+    def _update_tenant(self, identifier: int | str, **changes: Any) -> Optional[Tenant]:
+        allowed = {
+            "name", "is_active", "admin_chat_id", "required_channel", "channel_url",
+            "instagram_handle", "instagram_url", "spreadsheet_id", "drive_folder_id",
+        }
+        with self._connect() as conn:
+            tenant_id = self._resolve_tenant_id(conn, identifier)
+            fields: list[str] = []
+            params: list[Any] = []
+            for key in allowed:
+                if key not in changes:
+                    continue
+                value = changes[key]
+                if key == "name":
+                    value = str(value or "").strip()
+                    if not value:
+                        raise ValueError("Tenant name is required")
+                elif key == "is_active":
+                    value = self._to_bool(value)
+                elif key == "admin_chat_id":
+                    try:
+                        value = int(value or 0)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("admin_chat_id must be an integer") from exc
+                else:
+                    value = str(value or "").strip()
+                fields.append(f"{key} = ?")
+                params.append(value)
+            # Bot token and password deliberately have separate semantics:
+            # ``None`` means retain, an explicit empty string clears the token,
+            # and a nonempty password is always hashed before writing.
+            if "bot_token" in changes and changes["bot_token"] is not None:
+                fields.append("bot_token = ?")
+                params.append(self._encrypt_token(str(changes["bot_token"])))
+            if "admin_password" in changes and changes["admin_password"] is not None:
+                password = str(changes["admin_password"] or "").strip()
+                fields.append("admin_password = ?")
+                params.append(hash_password(password) if password and not is_password_hash(password) else password)
+            if not fields:
+                row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+                return _row_to_tenant(row) if row else None
+            fields.append("updated_at = ?")
+            params.extend([_now(), tenant_id])
+            conn.execute(f"UPDATE tenants SET {', '.join(fields)} WHERE id = ?", params)
+            row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+            return _row_to_tenant(row) if row else None
+
+    def _archive_tenant(self, identifier: int | str) -> bool:
+        """Archive instead of deleting rows, preserving tenant data/audit trail."""
+        with self._connect() as conn:
+            tenant_id = self._resolve_tenant_id(conn, identifier)
+            if tenant_id == self._resolve_tenant_id(conn, DEFAULT_TENANT_SLUG):
+                # Promotors data is the migration anchor and must never vanish.
+                return False
+            cur = conn.execute(
+                "UPDATE tenants SET is_active = 0, updated_at = ? WHERE id = ?",
+                (_now(), tenant_id),
+            )
+            return bool(cur.rowcount)
+
+    def _tenant_application_counts(self) -> dict[int, int]:
+        with self._connect() as conn:
+            return {
+                int(row["id"]): int(row["n"])
+                for row in conn.execute(
+                    """
+                    SELECT t.id, COUNT(a.id) AS n
+                    FROM tenants t
+                    LEFT JOIN applications a ON a.tenant_id = t.id
+                    GROUP BY t.id
+                    """
+                ).fetchall()
+            }
+
+    def _get_tenant_token(self, identifier: int | str) -> str:
+        with self._connect() as conn:
+            tenant_id = self._resolve_tenant_id(conn, identifier)
+            row = conn.execute("SELECT bot_token FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+            return self._decrypt_token(str(row["bot_token"] or "")) if row else ""
+
+    # ------------------------------------------------------------------
+    # Tenant-scoped application operations (sync core)
+    # ------------------------------------------------------------------
 
     def _create_application(
         self,
@@ -188,131 +774,154 @@ class Database:
         full_name: str = "",
         mod_file_ids: list[str] | None = None,
         mod_paths: list[str] | None = None,
+        tenant_id: int | str | None = None,
     ) -> int:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            now = _now()
             cur = conn.execute(
                 """
                 INSERT INTO applications
-                    (user_id, username, country, plate, direction, phone,
+                    (tenant_id, user_id, username, country, plate, direction, phone,
                      photo_file_ids, photo_paths, status, created_at, language, full_name,
                      mod_file_ids, mod_paths)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    user_id,
-                    username,
-                    country,
-                    plate,
-                    direction,
-                    phone,
-                    json.dumps(photo_file_ids, ensure_ascii=False),
-                    json.dumps(photo_paths, ensure_ascii=False),
-                    STATUS_PENDING,
-                    _now(),
-                    language,
-                    full_name,
+                    tid, user_id, username or "", country or "", plate or "", direction or "",
+                    phone or "", json.dumps(photo_file_ids or [], ensure_ascii=False),
+                    json.dumps(photo_paths or [], ensure_ascii=False), STATUS_PENDING, now,
+                    language or "ru", full_name or "",
                     json.dumps(mod_file_ids or [], ensure_ascii=False),
                     json.dumps(mod_paths or [], ensure_ascii=False),
                 ),
             )
-            app_id = int(cur.lastrowid)
             conn.execute(
                 """
-                INSERT OR IGNORE INTO bot_users (user_id, username, language, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO bot_users (tenant_id, user_id, username, language, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, user_id) DO UPDATE SET
+                    username = CASE WHEN excluded.username != '' THEN excluded.username ELSE bot_users.username END,
+                    language = CASE WHEN excluded.language != '' THEN excluded.language ELSE bot_users.language END,
+                    last_seen = excluded.last_seen
                 """,
-                (user_id, username or "", language or "ru", _now(), _now()),
+                (tid, user_id, username or "", language or "ru", now, now),
             )
-            return app_id
+            return int(cur.lastrowid)
 
-    def _get_application(self, app_id: int) -> Optional[Application]:
+    def _get_application(
+        self, app_id: int, tenant_id: int | str | None = None
+    ) -> Optional[Application]:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             row = conn.execute(
-                "SELECT * FROM applications WHERE id = ?", (app_id,)
+                "SELECT * FROM applications WHERE id = ? AND tenant_id = ?", (app_id, tid)
             ).fetchone()
             return _row_to_application(row) if row else None
 
-    def _get_latest_for_user(self, user_id: int) -> Optional[Application]:
+    def _get_latest_for_user(
+        self, user_id: int, tenant_id: int | str | None = None
+    ) -> Optional[Application]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM applications WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-                (user_id,),
-            ).fetchone()
-            return _row_to_application(row) if row else None
-
-    def _has_active_application(self, user_id: int) -> Optional[Application]:
-        """Return a pending or approved application for the user, if any."""
-        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             row = conn.execute(
                 """
                 SELECT * FROM applications
-                WHERE user_id = ? AND status IN (?, ?)
+                WHERE user_id = ? AND tenant_id = ?
                 ORDER BY id DESC LIMIT 1
                 """,
-                (user_id, STATUS_PENDING, STATUS_APPROVED),
+                (user_id, tid),
             ).fetchone()
             return _row_to_application(row) if row else None
 
-    def _set_badge_photo(self, user_id: int, file_id: str, path: str) -> Optional[int]:
-        """Attach a badge photo to the user's latest application.
-
-        Returns the application id, or None if the user has no application yet.
-        """
+    def _has_active_application(
+        self, user_id: int, tenant_id: int | str | None = None
+    ) -> Optional[Application]:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             row = conn.execute(
-                "SELECT id FROM applications WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-                (user_id,),
+                """
+                SELECT * FROM applications
+                WHERE user_id = ? AND tenant_id = ? AND status IN (?, ?)
+                ORDER BY id DESC LIMIT 1
+                """,
+                (user_id, tid, STATUS_PENDING, STATUS_APPROVED),
+            ).fetchone()
+            return _row_to_application(row) if row else None
+
+    def _set_badge_photo(
+        self, user_id: int, file_id: str, path: str, tenant_id: int | str | None = None
+    ) -> Optional[int]:
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            row = conn.execute(
+                """
+                SELECT id FROM applications
+                WHERE user_id = ? AND tenant_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (user_id, tid),
             ).fetchone()
             if row is None:
                 return None
             app_id = int(row["id"])
             conn.execute(
-                "UPDATE applications SET badge_photo_file_id = ?, badge_photo_path = ? WHERE id = ?",
-                (file_id, path, app_id),
+                """
+                UPDATE applications
+                SET badge_photo_file_id = ?, badge_photo_path = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (file_id, path, app_id, tid),
             )
             return app_id
 
-    def _get_user_language(self, user_id: int) -> str:
+    def _get_user_language(
+        self, user_id: int, tenant_id: int | str | None = None
+    ) -> str:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             row = conn.execute(
-                "SELECT language FROM bot_users WHERE user_id = ?", (user_id,)
+                "SELECT language FROM bot_users WHERE tenant_id = ? AND user_id = ?",
+                (tid, user_id),
             ).fetchone()
             return (row["language"] if row else None) or "ru"
 
-    def _approve(self, app_id: int, moderator: str) -> Optional[int]:
-        """Atomically assign the next registration number and mark approved.
-
-        Returns the assigned number, or None if the application was not pending
-        (already processed / not found).
-        """
+    def _approve(
+        self, app_id: int, moderator: str, tenant_id: int | str | None = None
+    ) -> Optional[int]:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT status, reg_number FROM applications WHERE id = ?", (app_id,)
+                "SELECT status, reg_number FROM applications WHERE id = ? AND tenant_id = ?",
+                (app_id, tid),
             ).fetchone()
             if row is None or row["status"] != STATUS_PENDING:
                 conn.rollback()
                 return None
             next_number = conn.execute(
-                "SELECT COALESCE(MAX(reg_number), 0) + 1 FROM applications"
+                "SELECT COALESCE(MAX(reg_number), 0) + 1 FROM applications WHERE tenant_id = ?",
+                (tid,),
             ).fetchone()[0]
             conn.execute(
                 """
                 UPDATE applications
                 SET status = ?, reg_number = ?, processed_at = ?, processed_by = ?
-                WHERE id = ?
+                WHERE id = ? AND tenant_id = ?
                 """,
-                (STATUS_APPROVED, next_number, _now(), moderator, app_id),
+                (STATUS_APPROVED, next_number, _now(), moderator, app_id, tid),
             )
             conn.commit()
             return int(next_number)
 
-    def _reject(self, app_id: int, moderator: str) -> bool:
-        """Mark rejected. Returns True if it was pending and got rejected."""
+    def _reject(
+        self, app_id: int, moderator: str, tenant_id: int | str | None = None
+    ) -> bool:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT status FROM applications WHERE id = ?", (app_id,)
+                "SELECT status FROM applications WHERE id = ? AND tenant_id = ?", (app_id, tid)
             ).fetchone()
             if row is None or row["status"] != STATUS_PENDING:
                 conn.rollback()
@@ -321,24 +930,21 @@ class Database:
                 """
                 UPDATE applications
                 SET status = ?, processed_at = ?, processed_by = ?
-                WHERE id = ?
+                WHERE id = ? AND tenant_id = ?
                 """,
-                (STATUS_REJECTED, _now(), moderator, app_id),
+                (STATUS_REJECTED, _now(), moderator, app_id, tid),
             )
             conn.commit()
             return True
 
-    def _set_status(self, app_id: int, status: str, moderator: str) -> bool:
-        """Admin override: force an application to any status, regardless of
-        its current one. Assigns a registration number on the transition to
-        approved if it doesn't already have one (keeps the existing number if
-        it does, e.g. rejected-then-re-approved). Returns False if the
-        application doesn't exist.
-        """
+    def _set_status(
+        self, app_id: int, status: str, moderator: str, tenant_id: int | str | None = None
+    ) -> bool:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT reg_number FROM applications WHERE id = ?", (app_id,)
+                "SELECT reg_number FROM applications WHERE id = ? AND tenant_id = ?", (app_id, tid)
             ).fetchone()
             if row is None:
                 conn.rollback()
@@ -346,85 +952,104 @@ class Database:
             reg_number = row["reg_number"]
             if status == STATUS_APPROVED and reg_number is None:
                 reg_number = conn.execute(
-                    "SELECT COALESCE(MAX(reg_number), 0) + 1 FROM applications"
+                    "SELECT COALESCE(MAX(reg_number), 0) + 1 FROM applications WHERE tenant_id = ?",
+                    (tid,),
                 ).fetchone()[0]
             conn.execute(
                 """
                 UPDATE applications
                 SET status = ?, reg_number = ?, processed_at = ?, processed_by = ?
-                WHERE id = ?
+                WHERE id = ? AND tenant_id = ?
                 """,
-                (status, reg_number, _now(), moderator, app_id),
+                (status, reg_number, _now(), moderator, app_id, tid),
             )
             conn.commit()
             return True
 
-    # --- admin panel queries ---
-
     def _list_applications(
-        self, status: Optional[str] = None, search: Optional[str] = None, limit: int = 500
+        self,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 500,
+        tenant_id: int | str | None = None,
     ) -> list[Application]:
-        query = "SELECT * FROM applications"
-        conds: list[str] = []
-        params: list = []
-        if status:
-            conds.append("status = ?")
-            params.append(status)
-        if search:
-            conds.append(
-                "(plate LIKE ? OR phone LIKE ? OR username LIKE ? OR country LIKE ? OR full_name LIKE ?)"
-            )
-            like = f"%{search}%"
-            params.extend([like, like, like, like, like])
-        if conds:
-            query += " WHERE " + " AND ".join(conds)
-        query += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
         with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-            return [_row_to_application(r) for r in rows]
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            query = "SELECT * FROM applications WHERE tenant_id = ?"
+            params: list[Any] = [tid]
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            if search:
+                query += (
+                    " AND (plate LIKE ? OR phone LIKE ? OR username LIKE ? OR country LIKE ? OR full_name LIKE ?)"
+                )
+                like = f"%{search}%"
+                params.extend([like, like, like, like, like])
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            return [_row_to_application(row) for row in conn.execute(query, params).fetchall()]
 
-    def _stats(self) -> dict:
+    def _stats(self, tenant_id: int | str | None = None) -> dict:
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             by_status = {
                 row["status"]: row["n"]
                 for row in conn.execute(
-                    "SELECT status, COUNT(*) AS n FROM applications GROUP BY status"
+                    "SELECT status, COUNT(*) AS n FROM applications WHERE tenant_id = ? GROUP BY status",
+                    (tid,),
                 ).fetchall()
             }
             by_direction = {
                 row["direction"] or "—": row["n"]
                 for row in conn.execute(
-                    "SELECT direction, COUNT(*) AS n FROM applications GROUP BY direction ORDER BY n DESC"
+                    """
+                    SELECT direction, COUNT(*) AS n FROM applications
+                    WHERE tenant_id = ? GROUP BY direction ORDER BY n DESC
+                    """,
+                    (tid,),
                 ).fetchall()
             }
             by_country = {
                 row["country"] or "—": row["n"]
                 for row in conn.execute(
-                    "SELECT country, COUNT(*) AS n FROM applications GROUP BY country ORDER BY n DESC"
+                    """
+                    SELECT country, COUNT(*) AS n FROM applications
+                    WHERE tenant_id = ? GROUP BY country ORDER BY n DESC
+                    """,
+                    (tid,),
                 ).fetchall()
             }
             by_language = {
                 row["language"] or "ru": row["n"]
                 for row in conn.execute(
-                    "SELECT language, COUNT(*) AS n FROM applications GROUP BY language ORDER BY n DESC"
+                    """
+                    SELECT language, COUNT(*) AS n FROM applications
+                    WHERE tenant_id = ? GROUP BY language ORDER BY n DESC
+                    """,
+                    (tid,),
                 ).fetchall()
             }
             by_date = {
                 row["dt"]: row["n"]
                 for row in conn.execute(
-                    "SELECT SUBSTR(created_at, 1, 10) AS dt, COUNT(*) AS n FROM applications GROUP BY dt ORDER BY dt DESC LIMIT 14"
+                    """
+                    SELECT SUBSTR(created_at, 1, 10) AS dt, COUNT(*) AS n
+                    FROM applications WHERE tenant_id = ?
+                    GROUP BY dt ORDER BY dt DESC LIMIT 14
+                    """,
+                    (tid,),
                 ).fetchall()
             }
             max_number = conn.execute(
-                "SELECT COALESCE(MAX(reg_number), 0) FROM applications"
+                "SELECT COALESCE(MAX(reg_number), 0) FROM applications WHERE tenant_id = ?", (tid,)
             ).fetchone()[0]
             approved_users = conn.execute(
                 """
-                SELECT COUNT(DISTINCT user_id) AS n
-                FROM applications WHERE status = ?
+                SELECT COUNT(DISTINCT user_id) AS n FROM applications
+                WHERE tenant_id = ? AND status = ?
                 """,
-                (STATUS_APPROVED,),
+                (tid, STATUS_APPROVED),
             ).fetchone()["n"]
         total = sum(by_status.values())
         return {
@@ -440,131 +1065,78 @@ class Database:
             "approved_users": int(approved_users),
         }
 
-    # --- async wrappers ---
-
-    async def init(self) -> None:
-        await asyncio.to_thread(self._init)
-
-    async def list_applications(
-        self, status: Optional[str] = None, search: Optional[str] = None, limit: int = 500
-    ) -> list[Application]:
-        return await asyncio.to_thread(self._list_applications, status, search, limit)
-
-    async def stats(self) -> dict:
-        return await asyncio.to_thread(self._stats)
-
-    async def create_application(self, **kwargs) -> int:
-        return await asyncio.to_thread(lambda: self._create_application(**kwargs))
-
-    async def get_application(self, app_id: int) -> Optional[Application]:
-        return await asyncio.to_thread(self._get_application, app_id)
-
-    async def get_latest_for_user(self, user_id: int) -> Optional[Application]:
-        return await asyncio.to_thread(self._get_latest_for_user, user_id)
-
-    async def has_active_application(self, user_id: int) -> Optional[Application]:
-        return await asyncio.to_thread(self._has_active_application, user_id)
-
-    async def set_badge_photo(self, user_id: int, file_id: str, path: str) -> Optional[int]:
-        return await asyncio.to_thread(self._set_badge_photo, user_id, file_id, path)
-
-    async def get_user_language(self, user_id: int) -> str:
-        return await asyncio.to_thread(self._get_user_language, user_id)
-
-    async def approve(self, app_id: int, moderator: str) -> Optional[int]:
-        return await asyncio.to_thread(self._approve, app_id, moderator)
-
-    async def reject(self, app_id: int, moderator: str) -> bool:
-        return await asyncio.to_thread(self._reject, app_id, moderator)
-
-    async def set_status(self, app_id: int, status: str, moderator: str) -> bool:
-        return await asyncio.to_thread(self._set_status, app_id, status, moderator)
-
-    def _touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
+    def _touch_user(
+        self,
+        user_id: int,
+        username: str = "",
+        language: str = "ru",
+        tenant_id: int | str | None = None,
+    ) -> None:
         now = _now()
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)
-            ).fetchone()
-            if row is None:
-                conn.execute(
-                    """
-                    INSERT INTO bot_users (user_id, username, language, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (user_id, username or "", language or "ru", now, now),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE bot_users
-                    SET username = CASE WHEN ? != '' THEN ? ELSE username END,
-                        language = CASE WHEN ? != '' THEN ? ELSE language END,
-                        last_seen = ?
-                    WHERE user_id = ?
-                    """,
-                    (username or "", username or "", language or "", language or "", now, user_id),
-                )
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            conn.execute(
+                """
+                INSERT INTO bot_users (tenant_id, user_id, username, language, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, user_id) DO UPDATE SET
+                    username = CASE WHEN excluded.username != '' THEN excluded.username ELSE bot_users.username END,
+                    language = CASE WHEN excluded.language != '' THEN excluded.language ELSE bot_users.language END,
+                    last_seen = excluded.last_seen
+                """,
+                (tid, user_id, username or "", language or "ru", now, now),
+            )
 
     def _recipients(
         self,
         audience: str,
         languages: Optional[list[str]] = None,
         directions: Optional[list[str]] = None,
+        tenant_id: int | str | None = None,
     ) -> list[tuple[int, str]]:
-        """Unique (user_id, language) for a broadcast audience.
-
-        ``languages`` narrows recipients to those specific language codes
-        (e.g. ["uz"]) and ``directions`` to specific participation directions
-        (matched against the canonical names in constants.DIRECTIONS). Either
-        filter left as None/empty leaves that dimension unrestricted.
-        """
-        lang_filter = [l for l in (languages or []) if l]
-        dir_filter = [d for d in (directions or []) if d]
+        """Unique ``(user_id, language)`` recipients within one tenant."""
+        lang_filter = [lang for lang in (languages or []) if lang]
+        dir_filter = [direction for direction in (directions or []) if direction]
         with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
             if audience == "starters":
-                query = "SELECT u.user_id, u.language FROM bot_users u"
-                conds: list[str] = []
-                params: list = []
+                query = "SELECT u.user_id, u.language FROM bot_users u WHERE u.tenant_id = ?"
+                params: list[Any] = [tid]
                 if dir_filter:
                     placeholders = ",".join("?" for _ in dir_filter)
-                    conds.append(
-                        "EXISTS (SELECT 1 FROM applications a "
-                        f"WHERE a.user_id = u.user_id AND a.direction IN ({placeholders}))"
+                    query += (
+                        " AND EXISTS (SELECT 1 FROM applications a "
+                        "WHERE a.tenant_id = u.tenant_id AND a.user_id = u.user_id "
+                        f"AND a.direction IN ({placeholders}))"
                     )
                     params.extend(dir_filter)
                 if lang_filter:
                     placeholders = ",".join("?" for _ in lang_filter)
-                    conds.append(f"u.language IN ({placeholders})")
+                    query += f" AND u.language IN ({placeholders})"
                     params.extend(lang_filter)
-                if conds:
-                    query += " WHERE " + " AND ".join(conds)
                 rows = conn.execute(query, params).fetchall()
             elif audience == "incomplete":
-                # Users with no application at all have no direction to match,
-                # so a direction filter excludes this whole audience.
                 if dir_filter:
                     rows = []
                 else:
-                    query = """
-                        SELECT u.user_id, u.language
-                        FROM bot_users u
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM applications a WHERE a.user_id = u.user_id
-                        )
-                    """
-                    params = []
+                    query = (
+                        "SELECT u.user_id, u.language FROM bot_users u "
+                        "WHERE u.tenant_id = ? AND NOT EXISTS ("
+                        "SELECT 1 FROM applications a WHERE a.tenant_id = u.tenant_id "
+                        "AND a.user_id = u.user_id)"
+                    )
+                    params = [tid]
                     if lang_filter:
                         placeholders = ",".join("?" for _ in lang_filter)
                         query += f" AND u.language IN ({placeholders})"
                         params.extend(lang_filter)
                     rows = conn.execute(query, params).fetchall()
             elif audience == "all_apps":
-                query = """
-                    SELECT user_id, language FROM applications
-                    WHERE id IN (SELECT MAX(id) FROM applications GROUP BY user_id)
-                """
-                params = []
+                query = (
+                    "SELECT user_id, language FROM applications WHERE tenant_id = ? "
+                    "AND id IN (SELECT MAX(id) FROM applications WHERE tenant_id = ? GROUP BY user_id)"
+                )
+                params = [tid, tid]
                 if lang_filter:
                     placeholders = ",".join("?" for _ in lang_filter)
                     query += f" AND language IN ({placeholders})"
@@ -580,15 +1152,11 @@ class Database:
                     "pending": STATUS_PENDING,
                     "rejected": STATUS_REJECTED,
                 }.get(audience, STATUS_APPROVED)
-                query = """
-                    SELECT user_id, language FROM applications
-                    WHERE id IN (
-                        SELECT MAX(id) FROM applications
-                        WHERE status = ?
-                        GROUP BY user_id
-                    )
-                """
-                params = [status]
+                query = (
+                    "SELECT user_id, language FROM applications WHERE tenant_id = ? AND id IN ("
+                    "SELECT MAX(id) FROM applications WHERE tenant_id = ? AND status = ? GROUP BY user_id)"
+                )
+                params = [tid, tid, status]
                 if lang_filter:
                     placeholders = ",".join("?" for _ in lang_filter)
                     query += f" AND language IN ({placeholders})"
@@ -598,23 +1166,141 @@ class Database:
                     query += f" AND direction IN ({placeholders})"
                     params.extend(dir_filter)
                 rows = conn.execute(query, params).fetchall()
-            return [(int(r["user_id"]), r["language"] or "ru") for r in rows]
+            return [(int(row["user_id"]), row["language"] or "ru") for row in rows]
 
-    def _audience_counts(self) -> dict[str, int]:
-        return {key: len(self._recipients(key)) for key in (
-            "approved", "pending", "rejected", "all_apps", "incomplete", "starters"
-        )}
+    def _audience_counts(self, tenant_id: int | str | None = None) -> dict[str, int]:
+        return {
+            key: len(self._recipients(key, tenant_id=tenant_id))
+            for key in ("approved", "pending", "rejected", "all_apps", "incomplete", "starters")
+        }
 
-    async def touch_user(self, user_id: int, username: str = "", language: str = "ru") -> None:
-        await asyncio.to_thread(self._touch_user, user_id, username, language)
+    # ------------------------------------------------------------------
+    # Async public API
+    # ------------------------------------------------------------------
+
+    async def init(self) -> None:
+        await asyncio.to_thread(self._init)
+
+    def for_tenant(self, tenant_id: int) -> TenantDatabase:
+        """Return a facade whose application/user queries cannot cross tenants."""
+        return TenantDatabase(self, tenant_id)
+
+    async def get_tenant(self, identifier: int | str) -> Optional[Tenant]:
+        return await asyncio.to_thread(self._get_tenant, identifier)
+
+    async def list_tenants(self, active_only: bool = False) -> list[Tenant]:
+        return await asyncio.to_thread(self._list_tenants, active_only)
+
+    async def get_tenant_by_slug(self, slug: str) -> Optional[Tenant]:
+        """Explicit readability alias for callers that resolve URL slugs."""
+        return await self.get_tenant(slug)
+
+    async def get_active_tenants(self) -> list[Tenant]:
+        """Return only polling-eligible tenant records."""
+        return await self.list_tenants(active_only=True)
+
+    async def create_tenant(self, **kwargs: Any) -> Tenant:
+        return await asyncio.to_thread(lambda: self._create_tenant(**kwargs))
+
+    async def update_tenant(self, identifier: int | str, **changes: Any) -> Optional[Tenant]:
+        return await asyncio.to_thread(lambda: self._update_tenant(identifier, **changes))
+
+    async def archive_tenant(self, identifier: int | str) -> bool:
+        return await asyncio.to_thread(self._archive_tenant, identifier)
+
+    async def delete_tenant(self, identifier: int | str) -> bool:
+        """Data-safe delete operation: archive the tenant and retain its audit data."""
+        return await self.archive_tenant(identifier)
+
+    async def set_tenant_active(self, identifier: int | str, is_active: bool) -> Optional[Tenant]:
+        """Convenience API for explicit activation/deactivation controls."""
+        return await self.update_tenant(identifier, is_active=is_active)
+
+    async def tenant_application_counts(self) -> dict[int, int]:
+        return await asyncio.to_thread(self._tenant_application_counts)
+
+    async def get_tenant_token(self, identifier: int | str) -> str:
+        return await asyncio.to_thread(self._get_tenant_token, identifier)
+
+    async def list_applications(
+        self,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 500,
+        *,
+        tenant_id: int | str | None = None,
+    ) -> list[Application]:
+        return await asyncio.to_thread(self._list_applications, status, search, limit, tenant_id)
+
+    async def stats(self, *, tenant_id: int | str | None = None) -> dict:
+        return await asyncio.to_thread(self._stats, tenant_id)
+
+    async def create_application(self, *, tenant_id: int | str | None = None, **kwargs: Any) -> int:
+        return await asyncio.to_thread(
+            lambda: self._create_application(tenant_id=tenant_id, **kwargs)
+        )
+
+    async def get_application(
+        self, app_id: int, *, tenant_id: int | str | None = None
+    ) -> Optional[Application]:
+        return await asyncio.to_thread(self._get_application, app_id, tenant_id)
+
+    async def get_latest_for_user(
+        self, user_id: int, *, tenant_id: int | str | None = None
+    ) -> Optional[Application]:
+        return await asyncio.to_thread(self._get_latest_for_user, user_id, tenant_id)
+
+    async def has_active_application(
+        self, user_id: int, *, tenant_id: int | str | None = None
+    ) -> Optional[Application]:
+        return await asyncio.to_thread(self._has_active_application, user_id, tenant_id)
+
+    async def set_badge_photo(
+        self, user_id: int, file_id: str, path: str, *, tenant_id: int | str | None = None
+    ) -> Optional[int]:
+        return await asyncio.to_thread(self._set_badge_photo, user_id, file_id, path, tenant_id)
+
+    async def get_user_language(
+        self, user_id: int, *, tenant_id: int | str | None = None
+    ) -> str:
+        return await asyncio.to_thread(self._get_user_language, user_id, tenant_id)
+
+    async def approve(
+        self, app_id: int, moderator: str, *, tenant_id: int | str | None = None
+    ) -> Optional[int]:
+        return await asyncio.to_thread(self._approve, app_id, moderator, tenant_id)
+
+    async def reject(
+        self, app_id: int, moderator: str, *, tenant_id: int | str | None = None
+    ) -> bool:
+        return await asyncio.to_thread(self._reject, app_id, moderator, tenant_id)
+
+    async def set_status(
+        self, app_id: int, status: str, moderator: str, *, tenant_id: int | str | None = None
+    ) -> bool:
+        return await asyncio.to_thread(self._set_status, app_id, status, moderator, tenant_id)
+
+    async def touch_user(
+        self,
+        user_id: int,
+        username: str = "",
+        language: str = "ru",
+        *,
+        tenant_id: int | str | None = None,
+    ) -> None:
+        await asyncio.to_thread(self._touch_user, user_id, username, language, tenant_id)
 
     async def recipients(
         self,
         audience: str,
         languages: Optional[list[str]] = None,
         directions: Optional[list[str]] = None,
+        *,
+        tenant_id: int | str | None = None,
     ) -> list[tuple[int, str]]:
-        return await asyncio.to_thread(self._recipients, audience, languages, directions)
+        return await asyncio.to_thread(
+            self._recipients, audience, languages, directions, tenant_id
+        )
 
-    async def audience_counts(self) -> dict[str, int]:
-        return await asyncio.to_thread(self._audience_counts)
+    async def audience_counts(self, *, tenant_id: int | str | None = None) -> dict[str, int]:
+        return await asyncio.to_thread(self._audience_counts, tenant_id)

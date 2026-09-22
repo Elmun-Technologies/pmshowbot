@@ -62,10 +62,12 @@ async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
     try:
         png = await asyncio.to_thread(
             generate_ticket,
+            getattr(config, "asset_scope", None),
             number=app.reg_number,
             plate=app.plate,
             direction=texts.localize_direction(app.direction, app.language),
             name=_get_display_name(app),
+            tenant_name=getattr(config, "tenant_name", ""),
             lang=app.language,
             hero_image_path=_pick_hero(app.photo_paths),
         )
