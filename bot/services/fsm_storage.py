@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS {table} (
 # A form that has not been touched for a month belongs to nobody.
 MAX_AGE_SECONDS = 30 * 24 * 3600
 
+# How long the storage stays on the in-memory fallback after a database failure
+# before it tries the file again.  Long enough not to hammer a volume that is
+# down, short enough that a transient problem does not keep the whole process
+# off the database.
+RECOVERY_COOLDOWN_SECONDS = 15.0
+
 
 class _BrokenStorage(RuntimeError):
     """Raised internally when the state database cannot be used."""
@@ -83,7 +89,12 @@ class SqliteFSMStorage(BaseStorage):
         self._connections_lock = threading.Lock()
         self._init_lock = asyncio.Lock()
         self._ready = False
+        # ``_broken``: currently degraded to the in-memory fallback.
+        # ``_permanent``: there is no database to go back to (no path at all).
         self._broken = not bool(path)
+        self._permanent = not bool(path)
+        # Monotonic deadline before which a broken database is not retried.
+        self._retry_after = 0.0
         if path:
             parent = os.path.dirname(path)
             if parent:
@@ -94,6 +105,7 @@ class SqliteFSMStorage(BaseStorage):
                         "Cannot create %s for FSM states — using memory storage", parent
                     )
                     self._broken = True
+                    self._permanent = True
 
     # ------------------------------------------------------------------
     # internals
@@ -136,10 +148,20 @@ class SqliteFSMStorage(BaseStorage):
         self._ready = True
 
     async def _run(self, func, *args):
-        """Run one SQLite operation in a thread, downgrading to memory if it fails."""
-        if self._broken:
+        """Run one SQLite operation in a thread, downgrading to memory if it fails.
+
+        A failure is not permanent any more.  It used to be: one transient
+        "database is locked" during start-up set ``_broken`` and the process
+        kept every form in memory for the rest of its life — invisible until the
+        next restart, when all the half-finished registrations were gone.  Now
+        the database is retried after :data:`RECOVERY_COOLDOWN_SECONDS`, and
+        whatever was collected in memory meanwhile is written back on recovery.
+        """
+        if self._permanent:
             raise _BrokenStorage
         if not self._ready:
+            if self._retry_after and time.monotonic() < self._retry_after:
+                raise _BrokenStorage
             await self._ensure_ready()
         return await asyncio.to_thread(func, *args)
 
@@ -163,12 +185,39 @@ class SqliteFSMStorage(BaseStorage):
             try:
                 await asyncio.to_thread(self._sync_init)
             except Exception:
-                logger.exception(
-                    "FSM storage database unavailable (%s) — keeping states in memory",
-                    self._path,
-                )
                 self._broken = True
+                self._retry_after = time.monotonic() + RECOVERY_COOLDOWN_SECONDS
+                logger.exception(
+                    "FSM storage database unavailable (%s) — keeping states in memory "
+                    "for %.0f s, then retrying the database",
+                    self._path,
+                    RECOVERY_COOLDOWN_SECONDS,
+                )
                 raise _BrokenStorage from None
+            self._ready = True
+            self._retry_after = 0.0
+            if self._broken:
+                # We were on the memory fallback: write back what was collected
+                # there, otherwise recovering would itself lose the forms.
+                moved = await asyncio.to_thread(self._sync_flush_fallback)
+                self._broken = False
+                logger.warning(
+                    "FSM storage database is available again (%s) — restored %d form(s) "
+                    "from memory, states are persisted from now on",
+                    self._path,
+                    moved,
+                )
+
+    def _sync_flush_fallback(self) -> int:
+        """Copy everything the memory fallback holds into SQLite. Returns rows."""
+        entries = list(getattr(self._fallback, "storage", {}).items())
+        for key, payload in entries:
+            state = getattr(payload, "state", None)
+            value = state.state if isinstance(state, State) else state
+            self._sync_set(_key_of(key), value, dict(getattr(payload, "data", {}) or {}))
+        if entries:
+            self._fallback.storage.clear()
+        return len(entries)
 
     def _sync_set(self, key: str, state: Any, data: Optional[dict]) -> None:
         with self._connect() as conn:

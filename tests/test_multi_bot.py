@@ -106,9 +106,14 @@ async def _exercise_manager(tmp: str) -> None:
     assert manager.get_bot(promotors.id).token == "promotors-token"
     assert manager.get_bot("adrenaline").token == "adrenaline-token"
     assert len(_FakeDispatcher.created) == 2
-    # Four fresh routers and separate scoped DB facades prove FSM/handler state
-    # was not reused between the two bots.
-    assert all(len(dispatcher.routers) == 4 for dispatcher in _FakeDispatcher.created)
+    # Fresh routers and separate scoped DB facades prove FSM/handler state was
+    # not reused between the two bots.  The last router is the safety net that
+    # answers updates nothing else claimed (bot/handlers/stay_alive.py), and it
+    # has to come after every other router.
+    for dispatcher in _FakeDispatcher.created:
+        assert len(dispatcher.routers) == 5, [r.name for r in dispatcher.routers]
+        assert [router.name for router in dispatcher.routers][-1] == "stay_alive"
+        assert dispatcher.routers[0].name == "registration"
     assert {
         dispatcher.values["db"].tenant_id for dispatcher in _FakeDispatcher.created
     } == {promotors.id, adrenaline.id}

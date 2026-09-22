@@ -140,10 +140,50 @@ def test_callback_query_mid_form_is_blocked():
     assert state.cleared is True
 
 
+def test_dropping_a_half_finished_form_is_logged_loudly(caplog=None):
+    """The one place that deliberately throws away a form must be visible.
+
+    Production question that could not be answered from the logs: "is the
+    registration-closed checkbox on for this tenant, and did it clear people
+    mid-form?"  The middleware now says so, with the tenant slug, the state it
+    dropped and the user id.
+    """
+    import logging
+
+    from bot.middlewares import logger as mw_logger
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture()
+    mw_logger.addHandler(handler)
+    previous = mw_logger.level
+    mw_logger.setLevel(logging.WARNING)
+    try:
+        mw = RegistrationClosedMiddleware()
+        state = _FakeState(current=Registration.photos, data={"lang": "ru"})
+        config = SimpleNamespace(registration_closed=True, tenant_slug="splshow")
+        _run(mw, _msg(state), {**_user_data(), "config": config, "state": state, "db": _FakeDb()})
+    finally:
+        mw_logger.removeHandler(handler)
+        mw_logger.setLevel(previous)
+
+    messages = [record.getMessage() for record in records]
+    assert any("Registration is closed" in m for m in messages), messages
+    assert any("splshow" in m for m in messages), messages
+    assert any("Registration:photos" in m for m in messages), messages
+    # And a warning, not an INFO nobody reads.
+    assert any(record.levelno >= logging.WARNING for record in records)
+
+
 if __name__ == "__main__":
     test_open_registration_passes_through()
     test_mid_form_is_blocked_when_closed()
     test_start_and_language_are_not_blocked()
     test_existing_applicant_still_passes_through()
     test_callback_query_mid_form_is_blocked()
+    test_dropping_a_half_finished_form_is_logged_loudly()
     print("All registration-closed middleware tests passed.")

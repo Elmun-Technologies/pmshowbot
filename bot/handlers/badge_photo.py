@@ -17,6 +17,7 @@ from aiogram.types import Message
 from .. import texts
 from ..config import Config
 from ..db import Database
+from ..services import media
 
 logger = logging.getLogger(__name__)
 router = Router(name="badge_photo")
@@ -34,12 +35,14 @@ async def receive_badge_photo(message: Message, bot: Bot, config: Config, db: Da
     lang = await db.get_user_language(message.from_user.id)
     t = texts.T(lang)
 
-    user_dir = os.path.join(config.media_dir, str(message.from_user.id))
-    os.makedirs(user_dir, exist_ok=True)
-    path = os.path.join(user_dir, "badge.jpg")
-
     photo = message.photo[-1]  # highest resolution
-    await bot.download(photo, destination=path)
+    path = os.path.join(config.media_dir, str(message.from_user.id), "badge.jpg")
+    # Bounded download + write on the slow-work pool: this handler also runs
+    # inside the per-user lock, so an unbounded download or a blocked volume
+    # would leave the sender with no answer at all.
+    if not await media.save_telegram_photo(bot, photo.file_id, path):
+        await message.answer(t.PHOTO_DOWNLOAD_FAILED)
+        return
 
     app_id = await db.set_badge_photo(message.from_user.id, photo.file_id, path)
     if app_id is None:
