@@ -110,6 +110,11 @@ Features:
   modification close-ups.
 - **Approve / Reject** from the panel — runs the exact same logic as the Telegram
   buttons (assigns the number, messages the applicant, exports to Google if enabled).
+- **Ticket management** (`/ticket-assets`) — manage ticket design directly from the panel:
+  - Preview how the ticket looks with current logos (live PNG).
+  - **Brand logos** — upload / delete `logo.png` (PROMOTORS SHOW) and `adrenaline.png`.
+  - **Sponsor logos / homiylar** — add, preview, and remove sponsor logos that appear in the top strip of the ticket. Order is controlled by the filename prefix (`1_`, `2_`, …).
+  - **Direction banners** — upload / delete banners shown when a user picks a direction.
 - **Broadcast** (`/broadcast`) — pick an audience (approved / pending / rejected /
   incomplete `/start` without an application / everyone the bot knows) and send
   a Telegram message. Confirm checkbox required; the panel shows sent / failed
@@ -120,7 +125,7 @@ Locally it listens on `PORT` (default `8080`): open `http://localhost:8080`.
 The panel is exposed publicly on Fly, so use a strong password (it is the only
 gate). Traffic is HTTPS on Fly (`force_https`).
 
-## Ticket logos
+## Ticket design & sponsor logos
 
 The generated ticket carries a strip of partner logos across its top. The four
 the strip is built around are:
@@ -132,7 +137,14 @@ the strip is built around are:
 | 3 | `/logo 3_drift_show` | Uzbekistan Drift Show |
 | 4 | `/logo 4_sof_expo` | SOF EXPO Samarkand |
 
-Send each logo to the moderation chat **as a file** with that caption — uploads
+You can now manage ticket design **directly from the admin panel** at `/ticket-assets`:
+
+- Live ticket preview (`/ticket-assets/preview.png`) with current logos.
+- Upload / delete **brand logos** (`logo.png`, `adrenaline.png`) that sit on top of the poster.
+- Add / remove **sponsor / homiylar logos** — filename controls order (`1_`, `2_`, …), transparent PNG recommended.
+- Manage **direction banners**.
+
+The old way still works: send each logo to the moderation chat **as a file** with that caption — uploads
 land on the Fly volume and appear on tickets immediately, no redeploy needed.
 `/assets` shows which of the four are still missing, `/diag` renders a test
 ticket. They can also be committed to `bot/assets/sponsors/` under the same

@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 import os
+import time
 from typing import Optional
 
 from aiohttp import web
@@ -17,9 +18,9 @@ from aiohttp import web
 from aiogram.types import BufferedInputFile
 
 from ..config import Config
-from ..constants import DIRECTIONS_CANON
+from ..constants import DIRECTIONS, DIRECTIONS_CANON
 from ..db import Database, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
-from ..services import decisions
+from ..services import assets, decisions
 from . import auth, views
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,16 @@ def create_admin_app(bot, config: Config, db: Database) -> web.Application:
     app.router.add_get("/export.xlsx", _export_excel)
     app.router.add_get("/broadcast", _broadcast_get)
     app.router.add_post("/broadcast", _broadcast_post)
+    # --- ticket / sponsor management ---
+    app.router.add_get("/ticket-assets", _ticket_assets)
+    app.router.add_get("/ticket-assets/preview.png", _ticket_preview)
+    app.router.add_get("/assets/file/{kind}/{filename}", _asset_file)
+    app.router.add_post("/ticket-assets/brand/upload", _brand_upload)
+    app.router.add_post("/ticket-assets/brand/delete", _brand_delete)
+    app.router.add_post("/ticket-assets/sponsor/upload", _sponsor_upload)
+    app.router.add_post("/ticket-assets/sponsor/delete", _sponsor_delete)
+    app.router.add_post("/ticket-assets/direction/upload", _direction_upload)
+    app.router.add_post("/ticket-assets/direction/delete", _direction_delete)
     return app
 
 
@@ -458,6 +469,253 @@ async def _broadcast_post(request: web.Request) -> web.Response:
         ),
         content_type="text/html",
     )
+
+
+# ---------------------------------------------------------------------------
+# Ticket / sponsor management
+# ---------------------------------------------------------------------------
+
+def _direction_slugs() -> list[str]:
+    return [d["slug"] for d in DIRECTIONS]
+
+
+async def _ticket_assets(request: web.Request) -> web.Response:
+    inv = assets.inventory()
+    sponsor_paths = assets.sponsor_files()
+
+    # Build detailed lists for the template
+    sponsors_info = []
+    for p in sponsor_paths:
+        try:
+            fname = os.path.basename(p)
+            name_no_ext = os.path.splitext(fname)[0]
+            stat = os.stat(p)
+            sponsors_info.append({
+                "path": p,
+                "filename": fname,
+                "name": name_no_ext,
+                "size": stat.st_size,
+                "is_runtime": bool(assets._runtime_dir("sponsors") and p.startswith(assets._runtime_dir("sponsors"))),
+            })
+        except Exception:
+            continue
+
+    brand_info = {}
+    for key in assets.BRAND_LOGOS:
+        bpath = assets.brand_logo(key)
+        is_runtime = False
+        if bpath:
+            runtime_dir = assets._runtime_dir("brand")
+            is_runtime = bool(runtime_dir and bpath.startswith(runtime_dir))
+        brand_info[key] = {
+            "path": bpath,
+            "exists": bool(bpath and os.path.exists(bpath)),
+            "is_runtime": is_runtime,
+        }
+
+    direction_info = []
+    for d in DIRECTIONS:
+        slug = d["slug"]
+        bpath = assets.direction_banner(slug)
+        is_runtime = False
+        if bpath:
+            runtime_dir = assets._runtime_dir("directions")
+            is_runtime = bool(runtime_dir and bpath.startswith(runtime_dir))
+        direction_info.append({
+            "slug": slug,
+            "canonical": d["canonical"],
+            "path": bpath,
+            "exists": bool(bpath and os.path.exists(bpath)),
+            "is_runtime": is_runtime,
+        })
+
+    msg = request.query.get("msg", "")
+    err = request.query.get("error", "")
+    return web.Response(
+        text=views.ticket_assets_page(
+            inventory=inv,
+            sponsors=sponsors_info,
+            brand=brand_info,
+            directions=direction_info,
+            message=msg,
+            error=err,
+        ),
+        content_type="text/html",
+    )
+
+
+async def _ticket_preview(request: web.Request) -> web.Response:
+    """Render a sample ticket with current assets."""
+    try:
+        from ..services.ticket import generate_ticket
+        # Use a dummy hero-less ticket so logos are clearly visible
+        png = await asyncio.to_thread(
+            generate_ticket,
+            number=1,
+            plate="01A777AA",
+            direction="Adrenaline Drift",
+            name="Test User",
+            lang="ru",
+            hero_image_path=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ticket preview failed: %s", exc)
+        raise web.HTTPInternalServerError(text=f"Preview failed: {exc}")
+    return web.Response(
+        body=png,
+        headers={
+            "Content-Type": "image/png",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+async def _asset_file(request: web.Request) -> web.StreamResponse:
+    kind = request.match_info["kind"]
+    filename = request.match_info["filename"]
+    # Basic sanitization: no path traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise web.HTTPNotFound()
+    if kind not in ("brand", "sponsors", "directions"):
+        raise web.HTTPNotFound()
+
+    path = None
+    if kind == "brand":
+        # filename can be "logo", "adrenaline" or "logo.png"
+        name = os.path.splitext(filename)[0]
+        if name not in assets.BRAND_LOGOS:
+            # also allow direct filename match
+            if filename not in (assets.BRAND_LOGOS.get("logo"), assets.BRAND_LOGOS.get("adrenaline")):
+                raise web.HTTPNotFound()
+            # resolve via bundled root fallback
+            from ..services.assets import _BUNDLED_ROOT
+            candidate = os.path.join(_BUNDLED_ROOT, filename)
+            if os.path.exists(candidate):
+                path = candidate
+        if path is None:
+            path = assets.brand_logo(name)
+    elif kind == "sponsors":
+        # Look for exact filename in sponsors dirs
+        for d in assets.sponsors_dirs():
+            cand = os.path.join(d, filename)
+            if os.path.exists(cand):
+                path = cand
+                break
+        # Also allow name without extension
+        if path is None:
+            name_no_ext = os.path.splitext(filename)[0]
+            if assets.is_safe_name(name_no_ext):
+                for d in assets.sponsors_dirs():
+                    for ext in assets._IMAGE_EXTS:
+                        cand = os.path.join(d, name_no_ext + ext)
+                        if os.path.exists(cand):
+                            path = cand
+                            break
+                    if path:
+                        break
+    else:  # directions
+        slug = os.path.splitext(filename)[0]
+        path = assets.direction_banner(slug)
+
+    if not path or not os.path.exists(path):
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
+
+
+def _read_upload_file(field) -> bytes | None:
+    if not isinstance(field, web.FileField):
+        return None
+    if not field.filename:
+        return None
+    try:
+        return field.file.read()
+    except Exception:
+        return None
+
+
+async def _brand_upload(request: web.Request) -> web.Response:
+    data = await request.post()
+    brand_name = str(data.get("brand_name", "")).strip()
+    file_field = data.get("file")
+    file_bytes = _read_upload_file(file_field)
+
+    if brand_name not in assets.BRAND_LOGOS:
+        raise web.HTTPFound("/ticket-assets?error=unknown_brand")
+    if not file_bytes:
+        raise web.HTTPFound("/ticket-assets?error=no_file")
+
+    try:
+        assets.save_brand(brand_name, file_bytes)
+    except Exception as exc:
+        logger.exception("brand upload failed")
+        raise web.HTTPFound(f"/ticket-assets?error={exc}")
+    raise web.HTTPFound("/ticket-assets?msg=brand_uploaded")
+
+
+async def _brand_delete(request: web.Request) -> web.Response:
+    data = await request.post()
+    brand_name = str(data.get("brand_name", "")).strip()
+    if brand_name in assets.BRAND_LOGOS:
+        assets.delete_asset("brand", brand_name)
+    raise web.HTTPFound("/ticket-assets?msg=brand_deleted")
+
+
+async def _sponsor_upload(request: web.Request) -> web.Response:
+    data = await request.post()
+    name = str(data.get("name", "")).strip()
+    file_field = data.get("file")
+    file_bytes = _read_upload_file(file_field)
+
+    if not name:
+        raise web.HTTPFound("/ticket-assets?error=name_required")
+    if not assets.is_safe_name(name):
+        raise web.HTTPFound("/ticket-assets?error=invalid_name")
+    if not file_bytes:
+        raise web.HTTPFound("/ticket-assets?error=no_file")
+
+    try:
+        assets.save_sponsor(name, file_bytes)
+    except Exception as exc:
+        logger.exception("sponsor upload failed")
+        raise web.HTTPFound(f"/ticket-assets?error={exc}")
+    raise web.HTTPFound("/ticket-assets?msg=sponsor_uploaded")
+
+
+async def _sponsor_delete(request: web.Request) -> web.Response:
+    data = await request.post()
+    name = str(data.get("name", "")).strip()
+    # Allow passing filename with extension: strip it
+    name = os.path.splitext(name)[0]
+    if assets.is_safe_name(name):
+        assets.delete_asset("sponsors", name)
+    raise web.HTTPFound("/ticket-assets?msg=sponsor_deleted")
+
+
+async def _direction_upload(request: web.Request) -> web.Response:
+    data = await request.post()
+    slug = str(data.get("slug", "")).strip()
+    file_field = data.get("file")
+    file_bytes = _read_upload_file(file_field)
+
+    if slug not in _direction_slugs():
+        raise web.HTTPFound("/ticket-assets?error=unknown_direction")
+    if not file_bytes:
+        raise web.HTTPFound("/ticket-assets?error=no_file")
+
+    try:
+        assets.save_direction(slug, file_bytes)
+    except Exception as exc:
+        logger.exception("direction upload failed")
+        raise web.HTTPFound(f"/ticket-assets?error={exc}")
+    raise web.HTTPFound("/ticket-assets?msg=direction_uploaded")
+
+
+async def _direction_delete(request: web.Request) -> web.Response:
+    data = await request.post()
+    slug = str(data.get("slug", "")).strip()
+    if slug in _direction_slugs():
+        assets.delete_asset("directions", slug)
+    raise web.HTTPFound("/ticket-assets?msg=direction_deleted")
 
 
 def _int_or_404(value: str) -> int:
