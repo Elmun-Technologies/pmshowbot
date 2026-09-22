@@ -81,6 +81,14 @@ _RU = dict(
         "Произошла техническая ошибка. Попробуйте ещё раз или нажмите /start, "
         "чтобы начать регистрацию заново."
     ),
+    UNRECOGNIZED=(
+        "Я не понял это сообщение. Чтобы начать регистрацию, нажмите /start. "
+        "Узнать свой номер — «Узнать свой номер»."
+    ),
+    FORM_STEP_REPEATED=(
+        "Продолжаем с текущего шага — смотрите вопрос выше. "
+        "Начать заново: /start."
+    ),
     DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
     BAD_PHONE=(
@@ -201,6 +209,13 @@ _UZ = dict(
     RECOVER_TECHNICAL=(
         "Texnik xatolik yuz berdi. Yana urinib ko‘ring yoki ro‘yxatdan o‘tishni "
         "boshidan boshlash uchun /start tugmasini bosing."
+    ),
+    UNRECOGNIZED=(
+        "Bu xabarni tushunmadim. Ro‘yxatdan o‘tishni boshlash uchun /start "
+        "tugmasini bosing. Raqamingizni bilish — «Raqamimni bilish»."
+    ),
+    FORM_STEP_REPEATED=(
+        "Joriy qadamdan davom etamiz — savol yuqorida. Boshidan boshlash: /start."
     ),
     DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
