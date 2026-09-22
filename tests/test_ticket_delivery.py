@@ -356,3 +356,58 @@ def test_resend_button_explains_itself_when_the_bot_worker_is_down():
                 assert "Не удалось отправить билет" in body, body[-500:]
 
         asyncio.run(run())
+
+
+def test_the_diag_self_test_ticket_shows_the_tenants_own_schedule():
+    """`/diag` renders a sample ticket — it must not show another event's dates.
+
+    The self-test is how the team checks "will the poster come out right?", so a
+    September/SOF EXPO sample on a Tashkent October event reads as a wrong-date
+    bug.  It now renders through the same tenant-branded path as the real one.
+    """
+
+    async def run():
+        from bot.handlers import moderation
+        from bot.services import ticket as ticket_service
+
+        harness = BotHarness()
+        await harness.start()
+        try:
+            await _register(harness)
+            harness.session.methods.clear()
+
+            real = moderation.generate_ticket
+            captured: dict = {}
+
+            def spy(*args, **kwargs):
+                captured.update(kwargs)
+                return real(*args, **kwargs)
+
+            moderation.generate_ticket = spy
+            try:
+                await harness.send_text(
+                    MODERATOR, "/diag", chat_id=harness.admin_chat_id
+                )
+            finally:
+                moderation.generate_ticket = real
+
+            assert captured, "the self-test never rendered a ticket"
+            config = captured.get("tenant_config")
+            assert config is not None, "the self-test rendered without the tenant"
+
+            copy = ticket_service._resolve_ticket_copy(
+                "ru", config, ticket_service._COPY["ru"]
+            )
+            assert "сентябр" not in copy["date"].lower(), copy
+            assert "SOF EXPO" not in copy["place"].upper(), copy
+            assert "октябр" in copy["date"].lower(), copy
+
+            assert [
+                m
+                for m in harness.session.methods_named("SendPhoto")
+                if getattr(m, "chat_id", None) == harness.admin_chat_id
+            ], "the self-test ticket never reached the moderation chat"
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())

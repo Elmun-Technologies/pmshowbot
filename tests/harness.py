@@ -111,11 +111,19 @@ class FakeSession(BaseSession):
         if name in {"AnswerCallbackQuery", "DeleteMessage", "SetMyCommands", "DeleteWebhook"}:
             return True
         if name == "GetChat":
+            # Telegram accepts "@handle" as well as an id; /diag asks for the
+            # channel by handle, and pydantic refuses a string as a chat id —
+            # mimic the real answer instead of failing the call.
+            asked = getattr(method, "chat_id", -100)
+            username = "testchannel"
+            if isinstance(asked, str):
+                username = asked.lstrip("@") or "testchannel"
+                asked = -1001234567890
             return ChatFullInfo(
-                id=getattr(method, "chat_id", -100),
+                id=asked,
                 type="channel",
                 title="Test channel",
-                username="testchannel",
+                username=username,
                 max_reaction_count=0,
                 accent_color_id=0,
             )

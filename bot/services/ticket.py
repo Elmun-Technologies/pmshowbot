@@ -67,6 +67,9 @@ def _font(kind: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(path, size) if path else ImageFont.load_default()
 
 
+# The legacy Promotors default, used **only** when a ticket is rendered with no
+# tenant at all (tools and tests).  A tenant-branded render never borrows these
+# values: see ``_resolve_ticket_copy``.
 _COPY = {
     "ru": {"participant": "УЧАСТНИК", "date": "Заезд · 11 сентября 2026, 10:00", "place": "SOF EXPO · SAMARKAND"},
     "uz": {"participant": "ISHTIROKCHI", "date": "Kirish · 11-sentyabr 2026, 10:00", "place": "SOF EXPO · SAMARQAND"},
@@ -392,32 +395,22 @@ def _resolve_ticket_copy(lang: str, tenant: Any | None, base_copy: dict) -> dict
         ev_date = (getattr(tenant, "event_date_text_ru", "") or "").strip()
         venue = (getattr(tenant, "event_venue_text_ru", "") or "").strip()
 
-    # Build date line: if tenant provides date, use it as-is prefixed with Заезд/Kirish if not already
-    # For ticket we want concise: date + place
-    date_line = base_copy["date"]
-    place_line = base_copy["place"]
+    # A tenant-branded ticket carries **only** that tenant's own data.  Falling
+    # back to the base copy here is what put "11 сентября" (Promotors' old
+    # schedule) and "SOF EXPO · SAMARKAND" (their venue) on another event's
+    # ticket whenever one of the two fields was empty — a SPL participant with a
+    # date but no venue got the September venue, and a tenant with neither got
+    # both.  An empty part is simply left out; the renderer skips a blank line.
+    date_line = ""
     if ev_date:
-        # Keep it simple: use tenant date as date line, but keep participant prefix logic from base?
-        # If ev_date already contains "Заезд" or similar, use as is.
-        # Otherwise prefix with base's participant context? We'll just use ev_date directly.
-        if lang == "ru":
-            # If ev_date doesn't start with Заезд, prefix
-            if "заезд" not in ev_date.lower() and "·" not in ev_date:
-                date_line = f"Заезд · {ev_date}"
-            else:
-                date_line = ev_date
-        else:
-            if "kirish" not in ev_date.lower() and "·" not in ev_date:
-                date_line = f"Kirish · {ev_date}"
-            else:
-                date_line = ev_date
-    if venue:
-        place_line = venue.upper()
+        marker = "kirish" if lang == "uz" else "заезд"
+        prefix = "Kirish" if lang == "uz" else "Заезд"
+        date_line = ev_date if marker in ev_date.lower() or "·" in ev_date else f"{prefix} · {ev_date}"
 
     return {
         "participant": base_copy["participant"],
         "date": date_line,
-        "place": place_line,
+        "place": venue.upper(),
     }
 
 
@@ -467,10 +460,13 @@ def generate_ticket(
     if tenant_config is not None:
         copy = _resolve_ticket_copy(lang, tenant_config, base_copy)
     elif event_date_text or event_venue_text:
-        # Build copy from explicit texts
-        date_line = event_date_text or base_copy["date"]
-        place_line = (event_venue_text or base_copy["place"]).upper()
-        copy = {"participant": base_copy["participant"], "date": date_line, "place": place_line}
+        # Build copy from explicit texts — again only what the caller passed:
+        # an explicit render must not borrow the base event's other half.
+        copy = {
+            "participant": base_copy["participant"],
+            "date": event_date_text or "",
+            "place": (event_venue_text or "").upper(),
+        }
     else:
         copy = base_copy
 
@@ -503,18 +499,22 @@ def generate_ticket(
 
     clean_name = name.strip()
     info = f"{plate}  •  {direction}".strip(" •")
-    date_line = f"{copy['date']}  •  {copy['place']}"
+    # Only the parts this tenant actually has: "  •  " with nothing around it
+    # would look like a rendering bug on the poster.
+    date_line = "  •  ".join(part for part in (copy["date"], copy["place"]) if part)
 
     if clean_name:
         nfont_stub = _fit(draw, clean_name, "bold", 42, cw - 140, min_size=24)
         _center(draw, W // 2, TEAR_Y + 40, clean_name, nfont_stub, WHITE)
         ifont = _fit(draw, info, "bold", 34, cw - 140, min_size=20)
         _center(draw, W // 2, TEAR_Y + 110, info, ifont, WHITE)
-        _fit_spaced_center(draw, W // 2, TEAR_Y + 180, date_line, "regular", 22, cw - 120, MUTED, spacing=1)
+        if date_line:
+            _fit_spaced_center(draw, W // 2, TEAR_Y + 180, date_line, "regular", 22, cw - 120, MUTED, spacing=1)
     else:
         ifont = _fit(draw, info, "bold", 44, cw - 140, min_size=24)
         _center(draw, W // 2, TEAR_Y + 60, info, ifont, WHITE)
-        _fit_spaced_center(draw, W // 2, TEAR_Y + 150, date_line, "regular", 24, cw - 120, MUTED, spacing=1)
+        if date_line:
+            _fit_spaced_center(draw, W // 2, TEAR_Y + 150, date_line, "regular", 24, cw - 120, MUTED, spacing=1)
 
     mask = Image.new("L", (W, H), 0)
     md = ImageDraw.Draw(mask)

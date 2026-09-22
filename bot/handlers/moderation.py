@@ -335,6 +335,10 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
                 tenant_name=getattr(config, "tenant_name", ""),
                 lang=app.language,
                 hero_image_path=hero,
+                # The self-test has to show what a participant would receive:
+                # without the tenant here it borrowed the legacy Promotors copy
+                # ("11 сентября", "SOF EXPO") and looked like a wrong-date bug.
+                tenant_config=config,
             )
         else:
             hero_note = "нет заявок → заглушка"
@@ -347,6 +351,7 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
                 name="Иван Иванов",
                 tenant_name=getattr(config, "tenant_name", ""),
                 lang="ru",
+                tenant_config=config,
             )
         await message.answer_photo(
             BufferedInputFile(png, filename="diag_ticket.png"),

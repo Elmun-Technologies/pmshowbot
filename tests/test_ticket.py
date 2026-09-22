@@ -32,6 +32,85 @@ def test_generates_png():
     assert png[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic header
 
 
+# ---------------------------------------------------------------------------
+# One tenant's ticket may only carry that tenant's own event data.
+#
+# Complaint #3/#6 of the launch list ("неправильные даты, время") came from
+# ticket and message copy that fell back to Promotors' September schedule and
+# their SOF EXPO venue.  Tenant-branded renders now take the tenant's values and
+# nothing else; the base copy below is only for a render with no tenant at all.
+# ---------------------------------------------------------------------------
+
+
+class _TenantStub:
+    def __init__(self, **fields):
+        self.event_date_text_ru = fields.get("event_date_text_ru", "")
+        self.event_date_text_uz = fields.get("event_date_text_uz", "")
+        self.event_venue_text_ru = fields.get("event_venue_text_ru", "")
+        self.event_venue_text_uz = fields.get("event_venue_text_uz", "")
+
+
+def test_a_tenant_ticket_carries_only_its_own_event_data():
+    base = ticket._COPY["ru"]
+
+    spl = _TenantStub(
+        event_date_text_ru="02 октября 2026 с 17:00 до 22:00",
+        event_venue_text_ru="Tashkent INDEX",
+    )
+    copy = ticket._resolve_ticket_copy("ru", spl, base)
+    assert copy["date"] == "Заезд · 02 октября 2026 с 17:00 до 22:00", copy
+    assert copy["place"] == "TASHKENT INDEX", copy
+
+    # A date without a venue must not borrow the other event's venue.
+    copy = ticket._resolve_ticket_copy(
+        "ru", _TenantStub(event_date_text_ru="02 октября 2026"), base
+    )
+    assert copy["date"] == "Заезд · 02 октября 2026", copy
+    assert copy["place"] == "", copy
+
+    # Nor may a venue without a date borrow the other event's dates.
+    copy = ticket._resolve_ticket_copy("ru", _TenantStub(event_venue_text_ru="Tashkent INDEX"), base)
+    assert copy["date"] == "", copy
+    assert copy["place"] == "TASHKENT INDEX", copy
+
+    # A tenant that filled nothing shows nothing, instead of September + SOF EXPO.
+    copy = ticket._resolve_ticket_copy("ru", _TenantStub(), base)
+    assert copy["date"] == "" and copy["place"] == "", copy
+
+    # The legacy default stays available for a render with no tenant at all.
+    assert ticket._resolve_ticket_copy("ru", None, base) == base
+
+
+def test_the_spl_ticket_shows_the_confirmed_schedule():
+    """The seeded SPL copy is what a participant's ticket must say."""
+    from bot.db import SPL_EVENT_COPY
+
+    tenant = _TenantStub(**SPL_EVENT_COPY)
+    for lang, expected_date, expected_place in (
+        ("ru", "02 октября 2026 с 17:00 до 22:00", "TASHKENT INDEX"),
+        ("uz", "02-oktyabr 2026, soat 17:00 dan 22:00 gacha", "TASHKENT INDEX"),
+    ):
+        copy = ticket._resolve_ticket_copy(lang, tenant, ticket._COPY[lang])
+        assert expected_date in copy["date"], copy
+        assert copy["place"] == expected_place, copy
+        assert "sentyabr" not in copy["date"].lower(), copy
+        assert "сентябр" not in copy["date"].lower(), copy
+        assert "SOF EXPO" not in copy["place"].upper(), copy
+
+
+def test_a_ticket_without_event_data_renders_without_borrowed_lines():
+    png = generate_ticket(
+        number=5,
+        plate="01A123BC",
+        direction="Тюнинг",
+        name="Иван Иванов",
+        lang="ru",
+        tenant_config=_TenantStub(),
+    )
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(png) > 5000
+
+
 def test_handles_long_number_and_uz():
     png = generate_ticket(
         number=1234, plate="01A123BC VERY LONG", direction="Drift", name="Nazir Elmurodov", lang="uz"
