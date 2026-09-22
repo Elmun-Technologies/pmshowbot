@@ -180,7 +180,16 @@ _STRINGS: dict[str, dict[str, str]] = {
             "например, если он его не получил."
         ),
         "ticket.resend_button": "🎫 Отправить билет повторно",
-        "ticket.sent_notice": "Билет отправлен участнику в Telegram.",
+        "ticket.preview_hint": (
+            "Так выглядит билет, который получит участник (его фото, номер, "
+            "текущие логотипы). Его можно скачать или переслать вручную."
+        ),
+        "ticket.preview_full_size": "Полный размер",
+        "ticket.preview_download": "Скачать PNG",
+        "ticket.sending_notice": (
+            "⏳ Билет отправляется участнику… Страница обновится автоматически."
+        ),
+        "ticket.sent_notice": "✅ Билет отправлен участнику в Telegram.",
         "ticket.failed_notice": "Не удалось отправить билет: {error}",
         "delete.title": "🗑 Удаление заявки",
         "delete.hint": (
@@ -744,7 +753,16 @@ _STRINGS: dict[str, dict[str, str]] = {
             "masalan, u biletni olmagan bo‘lsa."
         ),
         "ticket.resend_button": "🎫 Biletni qayta yuborish",
-        "ticket.sent_notice": "Bilet ishtirokchiga Telegram orqali yuborildi.",
+        "ticket.preview_hint": (
+            "Ishtirokchi aynan shunday bilet oladi (uning fotosi, raqami, "
+            "joriy logotiplar). Uni yuklab olish yoki qo‘lda uzatish mumkin."
+        ),
+        "ticket.preview_full_size": "To‘liq o‘lcham",
+        "ticket.preview_download": "PNG ni yuklab olish",
+        "ticket.sending_notice": (
+            "⏳ Bilet ishtirokchiga yuborilmoqda… Sahifa avtomatik yangilanadi."
+        ),
+        "ticket.sent_notice": "✅ Bilet ishtirokchiga Telegram orqali yuborildi.",
         "ticket.failed_notice": "Biletni yuborib bo‘lmadi: {error}",
         "delete.title": "🗑 Arizani o‘chirish",
         "delete.hint": (

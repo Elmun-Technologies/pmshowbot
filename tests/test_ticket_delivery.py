@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -205,7 +206,12 @@ def test_ticket_command_is_silent_for_non_admins():
 
 
 def test_panel_has_a_resend_button_for_approved_applications():
-    """The team can resend the ticket from the panel, without a developer."""
+    """The team can resend the ticket from the panel, without a developer.
+
+    The click answers at once; the delivery runs behind the redirect and the
+    page reports the outcome.  The participant's actual ticket is previewed
+    on the same page (``/application/{id}/ticket.png``).
+    """
     import tempfile
     from types import SimpleNamespace
 
@@ -215,8 +221,10 @@ def test_panel_has_a_resend_button_for_approved_applications():
     from aiogram import Bot
 
     from bot.admin import auth
+    from bot.admin import server as admin_server
     from bot.admin.server import create_admin_app
     from bot.db import Database
+    from bot.services import decisions
     from harness import FAKE_TOKEN, FakeSession
 
     password = "panel-pass"
@@ -264,40 +272,70 @@ def test_panel_has_a_resend_button_for_approved_applications():
 
         async def run():
             async with TestClient(TestServer(admin_app)) as client:
+                # The preview cache is process-wide; start from a clean slate.
+                admin_server._ticket_preview_cache.clear()
                 page = await client.get(f"/application/{approved_id}", headers=headers)
                 body = await page.text()
                 assert page.status == 200
                 assert f'action="/application/{approved_id}/ticket"' in body
                 assert "Отправить билет повторно" in body
+                # The participant's actual ticket is previewed on the page…
+                assert f"/application/{approved_id}/ticket.png" in body
+                # …and the preview endpoint renders a valid PNG.
+                preview = await client.get(
+                    f"/application/{approved_id}/ticket.png", headers=headers
+                )
+                assert preview.status == 200
+                assert (await preview.read())[:8] == b"\x89PNG\r\n\x1a\n"
 
+                # Resend: the click is answered with a redirect right away;
+                # the render + upload run behind it.
                 response = await client.post(
                     f"/application/{approved_id}/ticket",
                     headers=headers,
                     allow_redirects=False,
                 )
                 assert response.status == 302
-                assert response.headers["Location"].endswith("?ticket=sent")
+                assert response.headers["Location"].endswith(
+                    f"/application/{approved_id}"
+                )
+                await decisions.wait_background()
                 assert [
                     m for m in session.methods_named("SendPhoto") if m.chat_id == 7
                 ], "the participant did not receive the resent ticket"
+
+                # The page reports the outcome from the job registry, not a
+                # URL parameter.
+                after = await client.get(f"/application/{approved_id}", headers=headers)
+                after_body = await after.text()
+                assert "Билет отправлен участнику в Telegram" in after_body, after_body[-800:]
 
                 # A pending application has no ticket yet: no button at all.
                 pending_page = await client.get(
                     f"/application/{pending_id}", headers=headers
                 )
-                assert f'action="/application/{pending_id}/ticket"' not in (
-                    await pending_page.text()
-                )
+                pending_body = await pending_page.text()
+                assert f'action="/application/{pending_id}/ticket"' not in pending_body
+                assert f"/application/{pending_id}/ticket.png" not in pending_body
+                # …and its preview endpoint does not exist either.
+                assert (
+                    await client.get(
+                        f"/application/{pending_id}/ticket.png", headers=headers
+                    )
+                ).status == 404
 
         asyncio.run(run())
         asyncio.run(bot.session.close())
 
 
 def test_resend_button_explains_itself_when_the_bot_worker_is_down():
-    """A panel click must never fail silently (the worker may be restarting)."""
+    """A panel click must never fail silently (the worker may be restarting).
+
+    The failure reason appears on the page human-readable — not as
+    percent-encoded garbage in a URL parameter.
+    """
     import tempfile
     from types import SimpleNamespace
-    from urllib.parse import quote
 
     from aiohttp.test_utils import TestClient, TestServer
     from cryptography.fernet import Fernet
@@ -347,13 +385,18 @@ def test_resend_button_explains_itself_when_the_bot_worker_is_down():
                     f"/application/{app_id}/ticket", headers=headers, allow_redirects=False
                 )
                 assert response.status == 302
-                location = response.headers["Location"]
-                assert "ticket=failed" in location, location
+                assert response.headers["Location"].endswith(f"/application/{app_id}")
 
-                page = await client.get(location, headers=headers)
+                page = await client.get(response.headers["Location"], headers=headers)
                 body = await page.text()
                 assert page.status == 200
-                assert "Не удалось отправить билет" in body, body[-500:]
+                assert "Не удалось отправить билет" in body, body[-800:]
+                # The exact, readable reason — as decisions.send_ticket worded it.
+                assert "рабочий процесс бота не запущен" in body, body[-800:]
+                # …and no percent-encoded leftovers of the old URL-parameter flow.
+                error_box = re.search(r'<div class="err">.*?</div>', body, flags=re.S)
+                assert error_box, "the failure notice is missing"
+                assert "%" not in error_box.group(0), error_box.group(0)
 
         asyncio.run(run())
 

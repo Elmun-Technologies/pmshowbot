@@ -112,8 +112,14 @@ def _page(
     lang: str,
     active: str = "",
     nav: bool = True,
+    refresh: Optional[int] = None,
 ) -> str:
-    """Layout for the tenant-admin panel with the language switcher."""
+    """Layout for the tenant-admin panel with the language switcher.
+
+    ``refresh`` re-loads the page every N seconds; it is used while a ticket
+    resend is in flight so the participant-facing outcome appears without a
+    second click.
+    """
     lang = i18n.normalize_lang(lang)
     switcher = i18n.lang_switcher(lang)
     if nav:
@@ -140,10 +146,14 @@ def _page(
     else:
         nav_html = ""
         switcher_html = f'<div class="login-lang">{switcher}</div>'
+    refresh_tag = (
+        f"<meta http-equiv='refresh' content='{int(refresh)}'>" if refresh else ""
+    )
     return (
         f"<!doctype html><html lang='{_html_lang_attribute(lang)}'>"
         "<head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"{refresh_tag}"
         f"<title>{escape(title)}</title><style>{_CSS}</style></head>"
         f"<body>{nav_html}<main>{switcher_html}{body}</main></body></html>"
     )
@@ -401,28 +411,48 @@ def _delete_application_form(lang: str, app: Application) -> str:
     )
 
 
-def _resend_ticket_form(lang: str, app: Application, message: str = "", error: str = "") -> str:
-    """Send the generated ticket to the participant again.
+def _ticket_section(lang: str, app: Application, job: Optional[dict], ts: int) -> str:
+    """The application's ticket block: live preview + resend.
 
-    "The picture never arrived" is a report the team has to act on during the
-    event; without a button the only options were to re-approve (impossible)
-    or to ask a developer.  Only approved applications have a ticket.
+    The preview is the participant's *actual* ticket (the same render path as
+    delivery), so the team can see exactly what the person received and
+    forward it by hand when the Telegram send fails.  The resend click answers
+    immediately and delivers in the background; ``job`` is the server's record
+    of that delivery (``sending`` → ``sent``/``failed``) and is shown here.
+    Only approved applications have a ticket.
     """
     if app.status != STATUS_APPROVED or app.reg_number is None:
         return ""
     notice = ""
-    if message:
-        notice = f'<div class="ok">{escape(message)}</div>'
-    if error:
-        notice = f'<div class="err">{escape(error)}</div>'
+    if job:
+        status = job.get("status")
+        if status == "sending":
+            notice = f'<div class="ok">{t(lang, "ticket.sending_notice")}</div>'
+        elif status == "sent":
+            notice = f'<div class="ok">{t(lang, "ticket.sent_notice")}</div>'
+        elif status == "failed":
+            # Escape before ``t()`` formats the template: the escaped error
+            # cannot contain braces, so ``str.format`` cannot choke on it.
+            safe_error = escape(str(job.get("error") or ""))
+            notice = f'<div class="err">{t(lang, "ticket.failed_notice", error=safe_error)}</div>'
+    preview_src = f"/application/{app.id}/ticket.png?ts={ts}"
     return (
         '<div class="section">'
         f'<h2>{t(lang, "ticket.resend_title")}</h2>'
         f'<p class="muted">{t(lang, "ticket.resend_hint", number=app.reg_number)}</p>'
         + notice
-        + f'<form method="post" action="/application/{app.id}/ticket">'
+        + '<div class="ticket-preview-wrap">'
+        f'<img class="ticket-preview-img" src="{preview_src}" alt="Ticket preview" loading="lazy">'
+        '<div style="flex:1;min-width:240px">'
+        f'<p class="muted" style="font-size:13px">{t(lang, "ticket.preview_hint")}</p>'
+        f'<a class="btn btn-ghost btn-small" href="{preview_src}" target="_blank">'
+        f'{t(lang, "ticket.preview_full_size")}</a> '
+        f'<a class="btn btn-ghost btn-small" href="{preview_src}">'
+        f'{t(lang, "ticket.preview_download")}</a>'
+        '</div></div>'
+        + f'<div style="margin-top:14px"><form method="post" action="/application/{app.id}/ticket" style="display:inline">'
         f'<button class="btn btn-primary" type="submit">{t(lang, "ticket.resend_button")}</button>'
-        '</form></div>'
+        '</form></div></div>'
     )
 
 
@@ -433,8 +463,7 @@ def application_detail_page(
     msg_error: str = "",
     status_changed: bool = False,
     status_error: str = "",
-    ticket_sent: bool = False,
-    ticket_error: str = "",
+    ticket_job: Optional[dict] = None,
 ) -> str:
     lang = i18n.normalize_lang(lang)
     photos = ""
@@ -513,15 +542,15 @@ def application_detail_page(
         f'<div class="section"><h2>{t(lang, "detail.badge_photo")}</h2>{badge_html}</div>'
         + _status_control(lang, app.id, app.status, changed=status_changed, error=status_error)
         + _individual_message_form(lang, app.id, sent=msg_sent, error=msg_error)
-        + _resend_ticket_form(
-            lang,
-            app,
-            message=t(lang, "ticket.sent_notice") if ticket_sent else "",
-            error=ticket_error,
-        )
+        + _ticket_section(lang, app, ticket_job, ts=int(time.time()))
         + _delete_application_form(lang, app)
     )
-    return _page(t(lang, "detail.page_title", id=app.id), body, lang, active="apps")
+    # While the resend delivery is in flight, re-load the page until the
+    # outcome (sent / failed with a readable reason) is known.
+    refresh = 2 if ticket_job and ticket_job.get("status") == "sending" else None
+    return _page(
+        t(lang, "detail.page_title", id=app.id), body, lang, active="apps", refresh=refresh
+    )
 
 
 def _broadcast_textarea(
