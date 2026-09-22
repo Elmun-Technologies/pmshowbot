@@ -16,7 +16,7 @@ from .admin.server import create_admin_app
 from .bot_manager import BotManager, publish_commands as _publish_commands
 from .config import Config, load_config
 from .db import DEFAULT_TENANT_SLUG, Database
-from .services import assets
+from .services import assets, media
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +68,9 @@ async def main() -> None:
         await manager.shutdown()
         if web_runner is not None:
             await web_runner.cleanup()
+        # Photo downloads run as their own tasks (they must not hold an update
+        # back): stop the ones that are still in flight before the loop closes.
+        await media.ingest.cancel_pending()
         # Release the pooled SQLite connections held by the worker threads.
         await asyncio.to_thread(db.close)
         # Let queued Google/Excel work finish, then drop the slow-work pool.

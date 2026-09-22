@@ -72,6 +72,26 @@ _RU = dict(
     PHOTO_DOWNLOAD_FAILED=(
         "Не удалось сохранить эту фотографию. Пришлите, пожалуйста, её ещё раз."
     ),
+    # The photo step answers first and saves afterwards (bot/services/media.py),
+    # so a failed save is reported by the download itself, naming the side the
+    # participant has to send again — the slot it belongs to stays reserved.
+    PHOTO_SAVE_FAILED=(
+        "⚠️ Не удалось сохранить фото ({what}). Пришлите его, пожалуйста, ещё раз."
+    ),
+    PHOTO_RESEND_ASK=(
+        "⚠️ Пока не сохранилось: {what}. Пришлите, пожалуйста, ещё раз."
+    ),
+    PHOTO_RESEND_BEFORE_FINISH=(
+        "⚠️ Чтобы завершить регистрацию, пришлите, пожалуйста, ещё раз: {what}."
+    ),
+    PHOTOS_SAVING="⏳ Сохраняю фотографии — секунду…",
+    SIDE_NAMES={
+        "left": "левая сторона",
+        "right": "правая сторона",
+        "front": "передняя сторона",
+        "back": "задняя сторона",
+    },
+    MOD_PHOTO_NAME="фото изменений №{n}",
     STEP_STALE="Эта кнопка уже устарела — продолжаем с текущего шага.",
     RECOVER_RESTART=(
         "Что-то пошло не так, и форма сбилась. Нажмите /start, чтобы начать "
@@ -201,6 +221,23 @@ _UZ = dict(
     PHOTO_DOWNLOAD_FAILED=(
         "Bu suratni saqlab bo‘lmadi. Iltimos, uni yana bir marta yuboring."
     ),
+    PHOTO_SAVE_FAILED=(
+        "⚠️ Suratni ({what}) saqlab bo‘lmadi. Iltimos, uni yana bir marta yuboring."
+    ),
+    PHOTO_RESEND_ASK=(
+        "⚠️ Hali saqlanmadi: {what}. Iltimos, yana bir marta yuboring."
+    ),
+    PHOTO_RESEND_BEFORE_FINISH=(
+        "⚠️ Ro‘yxatdan o‘tishni tugatish uchun yana yuborishingiz kerak: {what}."
+    ),
+    PHOTOS_SAVING="⏳ Suratlar saqlanmoqda — bir soniya…",
+    SIDE_NAMES={
+        "left": "chap tomon",
+        "right": "o‘ng tomon",
+        "front": "old tomon",
+        "back": "orqa tomon",
+    },
+    MOD_PHOTO_NAME="o‘zgarish surati №{n}",
     STEP_STALE="Bu tugma eskirgan — joriy qadamdan davom etamiz.",
     RECOVER_RESTART=(
         "Nimadir xato ketdi va shakl buzildi. Ro‘yxatdan o‘tishni boshidan "
@@ -291,6 +328,21 @@ def T(lang: str) -> SimpleNamespace:
 def localize_direction(canonical: str, lang: str) -> str:
     """Map a canonical direction to its label in ``lang``."""
     return direction_label(canonical, lang)
+
+
+def side_name(lang: str, side: str) -> str:
+    """Name one of the four required sides ("левая сторона") for messages.
+
+    The registration flow answers before the photo is on the volume, so a failed
+    save has to name the side it belongs to: "send the *left* side again" is
+    actionable, "something failed" is not.
+    """
+    return T(lang).SIDE_NAMES.get(side, side)
+
+
+def mod_photo_name(lang: str, number: int) -> str:
+    """Label for one modification close-up, e.g. "фото изменений №2"."""
+    return T(lang).MOD_PHOTO_NAME.format(n=number)
 
 
 # --- Language-independent data ---
@@ -478,7 +530,7 @@ def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
             f"Sizning ro‘yxat raqamingiz — <b>№{number}</b>.\n"
         )
         if ev_date:
-            base += f"Ishtirokchi avtomobillari kirishi: <b>{ev_date}</b>.\n"
+            base += f"Ishtirokchilar kirishi — <b>{ev_date}</b>.\n"
         note = _event_note(tenant, lang)
         if note:
             base += f"{note}\n"
@@ -492,7 +544,9 @@ def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
             f"Ваш регистрационный номер — <b>№{number}</b>.\n"
         )
         if ev_date:
-            base += f"Заезд авто участников: <b>{ev_date}</b>.\n"
+            # The client's wording for the line participants read first:
+            # «Заезд участников — 2 октября».
+            base += f"Заезд участников — <b>{ev_date}</b>.\n"
         note = _event_note(tenant, lang)
         if note:
             base += f"{note}\n"

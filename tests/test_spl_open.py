@@ -119,7 +119,7 @@ def test_approved_message_includes_arrival_show_start_and_car_rule():
     ru = approved_for_tenant("ru", tenant, 7)
     uz = approved_for_tenant("uz", tenant, 7)
     assert "№7" in ru
-    assert "Заезд авто участников" in ru
+    assert "Заезд участников — " in ru
     assert "02 октября 2026 с 17:00 до 22:00" in ru
     assert "Tashkent INDEX" in ru
     assert "09:00" in ru
@@ -133,7 +133,7 @@ def test_approved_message_includes_arrival_show_start_and_car_rule():
         type("T", (), {"tenant_name": "Promotors Show", "event_date_text_ru": "11 сентября"})(),
         1,
     )
-    assert "Заезд авто участников" in plain
+    assert "Заезд участников — " in plain
     assert "09:00" not in plain
 
 
