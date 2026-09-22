@@ -1,8 +1,15 @@
-"""Registration flow: /start → language → subscription gate → form → moderation."""
+"""Registration flow: /start → language → subscription gate → form → moderation.
+
+Tenant-branded:
+- greetings, subscribe, closed messages from TenantConfig
+- directions loaded from DB (tenant-specific, 2-level)
+- stores direction as "Parent — Child" string + direction_id for export
+"""
 from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
@@ -11,10 +18,15 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from .. import keyboards, texts
-from ..config import Config
+from ..config import Config, TenantConfig
 from ..constants import MAX_MOD_PHOTOS, SIDES, direction_image_path
 from ..db import Database
 from ..services import subscription
+from ..services.directions import (
+    build_hierarchy,
+    format_final_choice,
+    localized_final_choice,
+)
 from ..states import Registration
 from ..validation import clean_country, clean_phone, clean_plate
 
@@ -33,38 +45,56 @@ async def _lang(state: FSMContext) -> str:
     return (await state.get_data()).get("lang", "ru")
 
 
+def _config_tenant_id(config) -> int | str | None:
+    return getattr(config, "tenant_id", None) or getattr(config, "tenant_slug", None)
+
+
+async def _load_tenant_directions(db: Database, config) -> list:
+    """Load active directions for this tenant, fallback to empty."""
+    try:
+        tid = _config_tenant_id(config)
+        if tid is None:
+            return []
+        return await db.list_directions(tenant_id=tid, active_only=True)
+    except Exception:
+        logger.exception("Failed to load directions for tenant %s", getattr(config, "tenant_slug", "unknown"))
+        return []
+
+
 async def _gate_or_start(
-    message: Message, state: FSMContext, bot: Bot, config: Config, user_id: int, lang: str
+    message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig, user_id: int, lang: str, db: Database | None = None
 ) -> None:
     """After the language is known: subscription gate, then the form."""
-    t = texts.T(lang)
-    # Registration is over — block even someone mid-flow who already picked a language.
-    if config.registration_closed:
-        await message.answer(t.REGISTRATION_CLOSED)
+    if getattr(config, "registration_closed", False):
+        await message.answer(texts.registration_closed_for_tenant(lang, config))
         return
-    if config.require_subscription and not await subscription.is_subscribed(
+    if getattr(config, "require_subscription", True) and not await subscription.is_subscribed(
         bot, config.required_channel, user_id
     ):
         await message.answer(
-            t.SUBSCRIBE_REQUIRED,
+            texts.subscribe_required_for_tenant(lang, config),
             reply_markup=keyboards.subscription_keyboard(
-                subscription.channel_url(config.required_channel, config.channel_url), lang
+                subscription.channel_url(config.required_channel, getattr(config, "channel_url", "")),
+                lang,
             ),
         )
         return
-    await _start_form(message, state, lang)
+    await _start_form(message, state, lang, config)
 
 
-async def _start_form(message: Message, state: FSMContext, lang: str) -> None:
+async def _start_form(message: Message, state: FSMContext, lang: str, config: Config | TenantConfig | None = None) -> None:
     """Send greeting and move to the first form step (country)."""
-    t = texts.T(lang)
+    if config is not None:
+        greet = texts.greeting_for_tenant(lang, config)
+    else:
+        greet = texts.T(lang).GREETING
     await state.set_state(Registration.country)
-    await message.answer(t.GREETING)
-    await message.answer(t.ASK_COUNTRY, reply_markup=keyboards.country_keyboard(lang))
+    await message.answer(greet)
+    await message.answer(texts.T(lang).ASK_COUNTRY, reply_markup=keyboards.country_keyboard(lang))
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Config, db: Database) -> None:
+async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig, db: Database) -> None:
     await db.touch_user(
         message.from_user.id,
         username=_user_label(message),
@@ -72,27 +102,24 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, config: Confi
     )
     await state.clear()
 
-    # If the user already has a pending/approved application, show status instead.
     active = await db.has_active_application(message.from_user.id)
     if active is not None:
-        from .mynumber import show_status  # local import avoids a cycle
+        from .mynumber import show_status
 
         await show_status(message, active)
         return
 
-    # Registration is over — new applicants just get the "closed" notice.
-    if config.registration_closed:
-        await message.answer(texts.REGISTRATION_CLOSED_BILINGUAL)
+    if getattr(config, "registration_closed", False):
+        await message.answer(texts.registration_closed_bilingual_for_tenant(config))
         return
 
-    # First ask the language (prompt is bilingual).
     await state.set_state(Registration.language)
     await message.answer(texts.ASK_LANGUAGE, reply_markup=keyboards.language_keyboard())
 
 
 @router.callback_query(Registration.language, F.data.startswith(f"{keyboards.CB_LANG}:"))
 async def choose_language(
-    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config, db: Database
+    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config | TenantConfig, db: Database
 ) -> None:
     lang = query.data.split(":", 1)[1]
     if lang not in ("uz", "ru"):
@@ -100,12 +127,12 @@ async def choose_language(
     await state.update_data(lang=lang)
     await db.touch_user(query.from_user.id, language=lang)
     await query.answer()
-    await _gate_or_start(query.message, state, bot, config, query.from_user.id, lang)
+    await _gate_or_start(query.message, state, bot, config, query.from_user.id, lang, db)
 
 
 @router.callback_query(F.data == keyboards.CB_CHECK_SUB)
 async def check_subscription(
-    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config, db: Database
+    query: CallbackQuery, state: FSMContext, bot: Bot, config: Config | TenantConfig, db: Database
 ) -> None:
     active = await db.has_active_application(query.from_user.id)
     if active is not None:
@@ -116,15 +143,14 @@ async def check_subscription(
         return
 
     lang = await _lang(state)
-    # Registration is over — the "I subscribed" button must not open the form.
-    if config.registration_closed:
+    if getattr(config, "registration_closed", False):
         await query.answer()
-        await query.message.answer(texts.T(lang).REGISTRATION_CLOSED)
+        await query.message.answer(texts.registration_closed_for_tenant(lang, config))
         return
 
     if await subscription.is_subscribed(bot, config.required_channel, query.from_user.id):
         await query.answer()
-        await _start_form(query.message, state, lang)
+        await _start_form(query.message, state, lang, config)
     else:
         await query.answer(texts.T(lang).SUBSCRIBE_STILL_NOT, show_alert=True)
 
@@ -140,7 +166,6 @@ async def choose_country(query: CallbackQuery, state: FSMContext) -> None:
         await query.answer()
         return
 
-    # Store the canonical (Russian) country name regardless of display language.
     await state.update_data(country=texts.COUNTRIES_CANON[int(value)])
     await state.set_state(Registration.plate)
     await query.message.answer(texts.T(lang).ASK_PLATE)
@@ -161,7 +186,7 @@ async def country_other(message: Message, state: FSMContext) -> None:
 
 # --- License plate ---
 @router.message(Registration.plate, F.text)
-async def set_plate(message: Message, state: FSMContext) -> None:
+async def set_plate(message: Message, state: FSMContext, config: Config | TenantConfig, db: Database) -> None:
     lang = await _lang(state)
     plate = clean_plate(message.text)
     if plate is None:
@@ -175,23 +200,81 @@ async def set_plate(message: Message, state: FSMContext) -> None:
         mod_paths=[],
     )
     await state.set_state(Registration.direction)
-    await message.answer(
-        texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
-    )
+
+    # Load tenant-specific directions from DB; fallback to legacy static list
+    db_directions = await _load_tenant_directions(db, config)
+    if db_directions:
+        await message.answer(
+            texts.T(lang).ASK_DIRECTION,
+            reply_markup=keyboards.direction_keyboard_from_db(db_directions, lang=lang),
+        )
+    else:
+        await message.answer(
+            texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
+        )
 
 
-# --- Direction (right after the plate, before photos) ---
+# --- Direction (right after the plate, before photos) — now DB-aware with podnapravleniya ---
 @router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
-async def choose_direction(query: CallbackQuery, state: FSMContext, config: Config) -> None:
+async def choose_direction(query: CallbackQuery, state: FSMContext, config: Config | TenantConfig, db: Database) -> None:
     lang = await _lang(state)
-    _, idx = query.data.split(":", 1)
-    # Store the canonical (Russian) direction name.
-    canonical = texts.DIRECTIONS_CANON[int(idx)]
-    await state.update_data(direction=canonical)
+    raw = query.data.split(":", 1)[1]
+
+    # Try DB path first: callback is direction:<id>
+    db_directions = await _load_tenant_directions(db, config)
+    if db_directions:
+        try:
+            dir_id = int(raw)
+            # Find selected
+            selected = next((d for d in db_directions if d.id == dir_id), None)
+            if selected is None:
+                await query.answer(texts.T(lang).DIRECTION_PICKED.format(direction=""), show_alert=True)
+                return
+            # Check if has children
+            children = [d for d in db_directions if d.parent_id == selected.id and d.is_active]
+            if children:
+                # Show sub-direction selection
+                await state.update_data(direction_parent_id=selected.id, direction_parent_canonical=selected.canonical)
+                await state.set_state(Registration.sub_direction)
+                await query.message.answer(
+                    texts.T(lang).ASK_DIRECTION,  # Could add ASK_SUB_DIRECTION key later
+                    reply_markup=keyboards.direction_keyboard_from_db(
+                        db_directions, lang=lang, parent_id=selected.id
+                    ),
+                )
+                await query.answer()
+                return
+            # Leaf direction — store final
+            final_str = format_final_choice(db_directions, leaf_id=selected.id)
+            await state.update_data(direction=final_str, direction_id=selected.id)
+            await state.set_state(Registration.photos)
+            banner = direction_image_path(selected.canonical, getattr(config, "asset_scope", None))
+            if banner:
+                try:
+                    await query.message.answer_photo(
+                        FSInputFile(banner),
+                        caption=texts.T(lang).DIRECTION_PICKED.format(
+                            direction=localized_final_choice(db_directions, leaf_id=selected.id, lang=lang)
+                        ),
+                    )
+                except Exception:
+                    logger.exception("Could not send direction banner for %s", selected.canonical)
+            await query.message.answer(texts.T(lang).PHOTO_PROMPTS[0])
+            await query.answer()
+            return
+        except ValueError:
+            # Not an int — fall through to legacy
+            pass
+
+    # Legacy fallback: index into static DIRECTIONS_CANON
+    try:
+        idx = int(raw)
+        canonical = texts.DIRECTIONS_CANON[idx]
+    except Exception:
+        canonical = raw
+    await state.update_data(direction=canonical, direction_id=None)
     await state.set_state(Registration.photos)
 
-    # Show the direction's promo banner so the participant sees the category
-    # they just joined (skipped silently if the asset isn't bundled).
     banner = direction_image_path(canonical, getattr(config, "asset_scope", None))
     if banner:
         try:
@@ -201,7 +284,52 @@ async def choose_direction(query: CallbackQuery, state: FSMContext, config: Conf
                     direction=texts.localize_direction(canonical, lang)
                 ),
             )
-        except Exception:  # noqa: BLE001 - a banner must never block registration
+        except Exception:
+            logger.exception("Could not send direction banner for %s", canonical)
+
+    await query.message.answer(texts.T(lang).PHOTO_PROMPTS[0])
+    await query.answer()
+
+
+@router.callback_query(Registration.sub_direction, F.data.startswith(f"{keyboards.CB_SUB_DIRECTION}:"))
+async def choose_sub_direction(query: CallbackQuery, state: FSMContext, config: Config | TenantConfig, db: Database) -> None:
+    """Second level: podnapravleniya. Callback format subdirection:parent_id:child_id."""
+    lang = await _lang(state)
+    try:
+        _, parent_s, child_s = query.data.split(":")
+        parent_id = int(parent_s)
+        child_id = int(child_s)
+    except Exception:
+        await query.answer()
+        return
+
+    db_directions = await _load_tenant_directions(db, config)
+    if not db_directions:
+        await query.answer()
+        return
+
+    final_str = format_final_choice(db_directions, leaf_id=child_id)
+    if not final_str:
+        # Child not found, fallback
+        child = next((d for d in db_directions if d.id == child_id), None)
+        final_str = child.canonical if child else ""
+
+    await state.update_data(direction=final_str, direction_id=child_id, direction_parent_id=None)
+    await state.set_state(Registration.photos)
+
+    # Banner for final choice
+    leaf = next((d for d in db_directions if d.id == child_id), None)
+    canonical = leaf.canonical if leaf else final_str
+    banner = direction_image_path(canonical, getattr(config, "asset_scope", None))
+    if banner:
+        try:
+            await query.message.answer_photo(
+                FSInputFile(banner),
+                caption=texts.T(lang).DIRECTION_PICKED.format(
+                    direction=localized_final_choice(db_directions, leaf_id=child_id, lang=lang)
+                ),
+            )
+        except Exception:
             logger.exception("Could not send direction banner for %s", canonical)
 
     await query.message.answer(texts.T(lang).PHOTO_PROMPTS[0])
@@ -210,7 +338,7 @@ async def choose_direction(query: CallbackQuery, state: FSMContext, config: Conf
 
 # --- Photos (4, one by one) ---
 @router.message(Registration.photos, F.photo)
-async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: Config) -> None:
+async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
     file_ids: list[str] = data.get("photo_file_ids", [])
@@ -222,7 +350,7 @@ async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: C
     os.makedirs(user_dir, exist_ok=True)
     path = os.path.join(user_dir, f"{side}.jpg")
 
-    photo = message.photo[-1]  # highest resolution
+    photo = message.photo[-1]
     await bot.download(photo, destination=path)
 
     file_ids.append(photo.file_id)
@@ -240,7 +368,7 @@ async def photos_not_a_photo(message: Message, state: FSMContext) -> None:
     await message.answer(texts.T(await _lang(state)).PHOTO_NOT_A_PHOTO)
 
 
-# --- Modifications: close-ups of what was changed on the car ---
+# --- Modifications ---
 async def _ask_mods(message: Message, state: FSMContext, lang: str) -> None:
     await state.set_state(Registration.mods)
     await message.answer(
@@ -250,7 +378,7 @@ async def _ask_mods(message: Message, state: FSMContext, lang: str) -> None:
 
 
 @router.message(Registration.mods, F.photo)
-async def collect_mod_photo(message: Message, state: FSMContext, bot: Bot, config: Config) -> None:
+async def collect_mod_photo(message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
     file_ids: list[str] = data.get("mod_file_ids", [])
@@ -261,14 +389,13 @@ async def collect_mod_photo(message: Message, state: FSMContext, bot: Bot, confi
     os.makedirs(user_dir, exist_ok=True)
     path = os.path.join(user_dir, f"mod_{len(file_ids) + 1}.jpg")
 
-    photo = message.photo[-1]  # highest resolution
+    photo = message.photo[-1]
     await bot.download(photo, destination=path)
 
     file_ids.append(photo.file_id)
     paths.append(path)
     await state.update_data(mod_file_ids=file_ids, mod_paths=paths)
 
-    # The cap keeps the moderation album within Telegram's media-group limit.
     if len(file_ids) >= MAX_MOD_PHOTOS:
         await message.answer(t.MODS_LIMIT.format(max=MAX_MOD_PHOTOS))
         await _ask_phone(message, state, lang)
@@ -284,10 +411,9 @@ async def collect_mod_photo(message: Message, state: FSMContext, bot: Bot, confi
 async def mods_done(query: CallbackQuery, state: FSMContext) -> None:
     lang = await _lang(state)
     await query.answer()
-    # Drop the button so an old message can't be pressed again mid-form.
     try:
         await query.message.edit_reply_markup(reply_markup=None)
-    except Exception:  # noqa: BLE001 - a stale message must not block the form
+    except Exception:
         logger.debug("Could not clear the mods keyboard", exc_info=True)
     await _ask_phone(query.message, state, lang)
 
@@ -312,20 +438,16 @@ async def _ask_phone(message: Message, state: FSMContext, lang: str) -> None:
 # --- Phone ---
 @router.message(Registration.phone, F.contact)
 async def set_phone_contact(
-    message: Message, state: FSMContext, bot: Bot, config: Config, db: Database
+    message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig, db: Database
 ) -> None:
-    # Telegram's own number, so it needs no validation — only normalising.
     phone = clean_phone(message.contact.phone_number) or message.contact.phone_number
     await _finalize(message, state, bot, config, db, phone=phone)
 
 
 @router.message(Registration.phone, F.text)
 async def set_phone_text(
-    message: Message, state: FSMContext, bot: Bot, config: Config, db: Database
+    message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig, db: Database
 ) -> None:
-    # Accept a typed number too, in case the user doesn't use the button — but
-    # only if it can actually be one, so a stray "/mynumber" or "salom" doesn't
-    # get filed as somebody's phone number.
     phone = clean_phone(message.text)
     if phone is None:
         lang = await _lang(state)
@@ -340,13 +462,14 @@ async def _finalize(
     message: Message,
     state: FSMContext,
     bot: Bot,
-    config: Config,
+    config: Config | TenantConfig,
     db: Database,
     *,
     phone: str,
 ) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
+    direction_id = data.get("direction_id")
     app_id = await db.create_application(
         user_id=message.from_user.id,
         username=_user_label(message),
@@ -354,6 +477,7 @@ async def _finalize(
         country=data.get("country", ""),
         plate=data.get("plate", ""),
         direction=data.get("direction", ""),
+        direction_id=direction_id,
         phone=phone,
         photo_file_ids=data.get("photo_file_ids", []),
         photo_paths=data.get("photo_paths", []),
@@ -380,7 +504,7 @@ async def _finalize(
 
 async def _send_moderation_card(
     bot: Bot,
-    config: Config,
+    config: Config | TenantConfig,
     *,
     app_id: int,
     country: str,
@@ -391,11 +515,6 @@ async def _send_moderation_card(
     photo_file_ids: list[str],
     mod_file_ids: list[str] | None = None,
 ) -> None:
-    """Send the car photos + a summary card with Accept/Reject to the admin chat.
-
-    The modification close-ups go into the same album, right after the four
-    sides, so a moderator sees the whole car in one scroll.
-    """
     mod_file_ids = mod_file_ids or []
     try:
         all_file_ids = list(photo_file_ids) + list(mod_file_ids)
@@ -422,16 +541,11 @@ async def _send_moderation_card(
             card,
             reply_markup=keyboards.moderation_keyboard(app_id),
         )
-    except Exception:  # noqa: BLE001 - never lose the applicant over a delivery error
+    except Exception:
         logger.exception("Failed to send moderation card for application %s", app_id)
 
 
 def create_router() -> Router:
-    """Build a new registration router for one tenant dispatcher.
-
-    The module-level ``router`` remains for backwards compatibility, but a
-    Router object cannot be mounted in more than one aiogram Dispatcher.
-    """
     fresh = Router(name="registration")
     fresh.message.register(cmd_start, CommandStart())
     fresh.callback_query.register(
@@ -451,6 +565,11 @@ def create_router() -> Router:
         choose_direction,
         Registration.direction,
         F.data.startswith(f"{keyboards.CB_DIRECTION}:"),
+    )
+    fresh.callback_query.register(
+        choose_sub_direction,
+        Registration.sub_direction,
+        F.data.startswith(f"{keyboards.CB_SUB_DIRECTION}:"),
     )
     fresh.message.register(collect_photo, Registration.photos, F.photo)
     fresh.message.register(photos_not_a_photo, Registration.photos)

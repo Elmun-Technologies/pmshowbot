@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -52,6 +53,13 @@ class Tenant:
     admin_password: str
     created_at: str
     updated_at: str
+    # Event branding — optional, empty means that sentence is omitted.
+    event_date_text_ru: str = ""
+    event_date_text_uz: str = ""
+    event_venue_text_ru: str = ""
+    event_venue_text_uz: str = ""
+    event_guest_date_text_ru: str = ""
+    event_guest_date_text_uz: str = ""
 
     @property
     def bot_token(self) -> str:
@@ -74,6 +82,23 @@ class Tenant:
     @property
     def password_configured(self) -> bool:
         return bool(self.admin_password)
+
+
+@dataclass
+class Direction:
+    """One participation direction, tenant-scoped, optionally hierarchical."""
+
+    id: int
+    tenant_id: int
+    parent_id: Optional[int]
+    canonical: str
+    label_ru: str
+    label_uz: str
+    slug: str
+    sort_order: int
+    is_active: bool
+    created_at: str
+    updated_at: str
 
 
 @dataclass
@@ -103,6 +128,9 @@ class Application:
     badge_photo_file_id: str = ""
     badge_photo_path: str = ""
     tenant_id: int = 0
+    # Optional FK to the new directions table; ``direction`` string stays canonical
+    # for backward compatibility (e.g. "SPL Тюнинг — Show").
+    direction_id: Optional[int] = None
 
 
 _TENANTS_SCHEMA = """
@@ -124,6 +152,15 @@ CREATE TABLE IF NOT EXISTS tenants (
     updated_at       TEXT NOT NULL
 );
 """
+
+_TENANTS_EVENT_MIGRATIONS = [
+    ("event_date_text_ru", "ALTER TABLE tenants ADD COLUMN event_date_text_ru TEXT NOT NULL DEFAULT ''"),
+    ("event_date_text_uz", "ALTER TABLE tenants ADD COLUMN event_date_text_uz TEXT NOT NULL DEFAULT ''"),
+    ("event_venue_text_ru", "ALTER TABLE tenants ADD COLUMN event_venue_text_ru TEXT NOT NULL DEFAULT ''"),
+    ("event_venue_text_uz", "ALTER TABLE tenants ADD COLUMN event_venue_text_uz TEXT NOT NULL DEFAULT ''"),
+    ("event_guest_date_text_ru", "ALTER TABLE tenants ADD COLUMN event_guest_date_text_ru TEXT NOT NULL DEFAULT ''"),
+    ("event_guest_date_text_uz", "ALTER TABLE tenants ADD COLUMN event_guest_date_text_uz TEXT NOT NULL DEFAULT ''"),
+]
 
 _APPLICATIONS_CREATE = """
 CREATE TABLE applications (
@@ -147,7 +184,26 @@ CREATE TABLE applications (
     mod_file_ids        TEXT NOT NULL DEFAULT '[]',
     mod_paths           TEXT NOT NULL DEFAULT '[]',
     badge_photo_file_id TEXT NOT NULL DEFAULT '',
-    badge_photo_path    TEXT NOT NULL DEFAULT ''
+    badge_photo_path    TEXT NOT NULL DEFAULT '',
+    direction_id        INTEGER REFERENCES directions(id) ON DELETE SET NULL
+);
+"""
+
+_DIRECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS directions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id   INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    parent_id   INTEGER REFERENCES directions(id) ON DELETE SET NULL,
+    canonical   TEXT NOT NULL,
+    label_ru    TEXT NOT NULL,
+    label_uz    TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(tenant_id, canonical),
+    UNIQUE(tenant_id, slug)
 );
 """
 
@@ -173,6 +229,7 @@ _APPLICATION_MIGRATIONS = [
     ("badge_photo_file_id", "ALTER TABLE applications ADD COLUMN badge_photo_file_id TEXT NOT NULL DEFAULT ''"),
     ("badge_photo_path", "ALTER TABLE applications ADD COLUMN badge_photo_path TEXT NOT NULL DEFAULT ''"),
     ("tenant_id", "ALTER TABLE applications ADD COLUMN tenant_id INTEGER"),
+    ("direction_id", "ALTER TABLE applications ADD COLUMN direction_id INTEGER REFERENCES directions(id) ON DELETE SET NULL"),
 ]
 
 _DIRECTION_RENAMES = [("Дрифт", "Adrenaline Drift")]
@@ -189,6 +246,22 @@ def _json_list(value: Any) -> list[str]:
         return decoded if isinstance(decoded, list) else []
     except (TypeError, ValueError, json.JSONDecodeError):
         return []
+
+
+def _row_to_direction(row: sqlite3.Row) -> Direction:
+    return Direction(
+        id=int(row["id"]),
+        tenant_id=int(row["tenant_id"]),
+        parent_id=int(row["parent_id"]) if row["parent_id"] is not None else None,
+        canonical=str(row["canonical"]),
+        label_ru=str(row["label_ru"]),
+        label_uz=str(row["label_uz"]),
+        slug=str(row["slug"]),
+        sort_order=int(row["sort_order"] or 0),
+        is_active=bool(row["is_active"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
 
 
 def _row_to_application(row: sqlite3.Row) -> Application:
@@ -215,10 +288,12 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         mod_paths=_json_list(row["mod_paths"]) if "mod_paths" in keys else [],
         badge_photo_file_id=row["badge_photo_file_id"] if "badge_photo_file_id" in keys else "",
         badge_photo_path=row["badge_photo_path"] if "badge_photo_path" in keys else "",
+        direction_id=int(row["direction_id"]) if "direction_id" in keys and row["direction_id"] is not None else None,
     )
 
 
 def _row_to_tenant(row: sqlite3.Row) -> Tenant:
+    keys = row.keys()
     return Tenant(
         id=int(row["id"]),
         slug=str(row["slug"]),
@@ -235,6 +310,12 @@ def _row_to_tenant(row: sqlite3.Row) -> Tenant:
         admin_password=str(row["admin_password"] or ""),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        event_date_text_ru=str(row["event_date_text_ru"] or "") if "event_date_text_ru" in keys else "",
+        event_date_text_uz=str(row["event_date_text_uz"] or "") if "event_date_text_uz" in keys else "",
+        event_venue_text_ru=str(row["event_venue_text_ru"] or "") if "event_venue_text_ru" in keys else "",
+        event_venue_text_uz=str(row["event_venue_text_uz"] or "") if "event_venue_text_uz" in keys else "",
+        event_guest_date_text_ru=str(row["event_guest_date_text_ru"] or "") if "event_guest_date_text_ru" in keys else "",
+        event_guest_date_text_uz=str(row["event_guest_date_text_uz"] or "") if "event_guest_date_text_uz" in keys else "",
     )
 
 
@@ -305,6 +386,25 @@ class TenantDatabase:
 
     async def audience_counts(self) -> dict[str, int]:
         return await self._database.audience_counts(tenant_id=self.tenant_id)
+
+    # Directions (tenant-scoped)
+    async def list_directions(self, active_only: bool = True) -> list[Direction]:
+        return await self._database.list_directions(tenant_id=self.tenant_id, active_only=active_only)
+
+    async def get_direction(self, direction_id: int) -> Optional[Direction]:
+        return await self._database.get_direction(direction_id, tenant_id=self.tenant_id)
+
+    async def create_direction(self, **kwargs) -> Direction:
+        return await self._database.create_direction(tenant_id=self.tenant_id, **kwargs)
+
+    async def update_direction(self, direction_id: int, **kwargs) -> Optional[Direction]:
+        return await self._database.update_direction(direction_id, tenant_id=self.tenant_id, **kwargs)
+
+    async def delete_direction(self, direction_id: int) -> bool:
+        return await self._database.delete_direction(direction_id, tenant_id=self.tenant_id)
+
+    async def list_all_directions(self) -> list[Direction]:
+        return await self._database.list_directions(tenant_id=self.tenant_id, active_only=False)
 
 
 class Database:
@@ -410,6 +510,13 @@ class Database:
                 self._bootstrap_value(b, "legacy_drive_folder_id", "drive_folder_id", default="") or ""
             ),
             "admin_password": password,
+            # Promotors defaults — client-confirmed dates/venue, kept for regression.
+            "event_date_text_ru": "11 сентября 2026 с 10:00 до 19:00",
+            "event_date_text_uz": "11-sentyabr 2026, 10:00 dan 19:00 gacha",
+            "event_venue_text_ru": "SOF EXPO",
+            "event_venue_text_uz": "SOF EXPO",
+            "event_guest_date_text_ru": "12 и 13 сентября с 10:00",
+            "event_guest_date_text_uz": "12 va 13-sentyabr, 10:00 dan",
         }
 
     def _ensure_default_tenant(self, conn: sqlite3.Connection) -> int:
@@ -424,28 +531,79 @@ class Database:
         password = values["admin_password"]
         if password and not is_password_hash(password):
             password = hash_password(password)
-        cur = conn.execute(
-            """
-            INSERT INTO tenants (
-                slug, name, is_active, bot_token, admin_chat_id, required_channel,
-                channel_url, instagram_handle, instagram_url, spreadsheet_id,
-                drive_folder_id, admin_password, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                values["slug"], values["name"], values["is_active"], encrypted,
-                values["admin_chat_id"], values["required_channel"], values["channel_url"],
-                values["instagram_handle"], values["instagram_url"], values["spreadsheet_id"],
-                values["drive_folder_id"], password, now, now,
-            ),
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tenants)").fetchall()} if self._table_exists(conn, "tenants") else set()
+        # Base insert - include event columns if they exist
+        base_cols = [
+            "slug", "name", "is_active", "bot_token", "admin_chat_id", "required_channel",
+            "channel_url", "instagram_handle", "instagram_url", "spreadsheet_id",
+            "drive_folder_id", "admin_password", "created_at", "updated_at",
+        ]
+        base_vals = [
+            values["slug"], values["name"], values["is_active"], encrypted,
+            values["admin_chat_id"], values["required_channel"], values["channel_url"],
+            values["instagram_handle"], values["instagram_url"], values["spreadsheet_id"],
+            values["drive_folder_id"], password, now, now,
+        ]
+        extra_cols = []
+        extra_vals = []
+        for k in (
+            "event_date_text_ru", "event_date_text_uz",
+            "event_venue_text_ru", "event_venue_text_uz",
+            "event_guest_date_text_ru", "event_guest_date_text_uz",
+        ):
+            if k in cols:
+                extra_cols.append(k)
+                extra_vals.append(values.get(k, ""))
+        all_cols = base_cols + extra_cols
+        all_vals = base_vals + extra_vals
+        placeholders = ", ".join("?" for _ in all_cols)
+        conn.execute(
+            f"INSERT INTO tenants ({', '.join(all_cols)}) VALUES ({placeholders})",
+            tuple(all_vals),
         )
-        return int(cur.lastrowid)
+        row = conn.execute("SELECT id FROM tenants WHERE slug = ?", (DEFAULT_TENANT_SLUG,)).fetchone()
+        return int(row["id"]) if row else 0
 
     def _create_applications_table(self, conn: sqlite3.Connection) -> None:
         conn.execute(_APPLICATIONS_CREATE)
 
     def _create_bot_users_table(self, conn: sqlite3.Connection) -> None:
         conn.execute(_BOT_USERS_CREATE)
+
+    def _create_directions_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(_DIRECTIONS_SCHEMA)
+
+    def _migrate_tenants(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "tenants"):
+            return
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tenants)").fetchall()}
+        for col, ddl in _TENANTS_EVENT_MIGRATIONS:
+            if col not in cols:
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass
+        # Seed promotors event fields if empty
+        row = conn.execute("SELECT * FROM tenants WHERE slug = ?", (DEFAULT_TENANT_SLUG,)).fetchone()
+        if row:
+            defaults = self._default_tenant_values()
+            updates: dict[str, str] = {}
+            for k in (
+                "event_date_text_ru", "event_date_text_uz",
+                "event_venue_text_ru", "event_venue_text_uz",
+                "event_guest_date_text_ru", "event_guest_date_text_uz",
+            ):
+                if k in cols:
+                    try:
+                        cur_val = row[k]
+                    except Exception:
+                        cur_val = ""
+                    if not (cur_val or "").strip():
+                        updates[k] = defaults.get(k, "")
+            if updates:
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                params = list(updates.values()) + [_now(), row["id"]]
+                conn.execute(f"UPDATE tenants SET {set_clause}, updated_at = ? WHERE id = ?", params)
 
     def _migrate_applications(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
         if not self._table_exists(conn, "applications"):
@@ -455,7 +613,10 @@ class Database:
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(applications)")}
         for column, ddl in _APPLICATION_MIGRATIONS:
             if column not in columns:
-                conn.execute(ddl)
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass
                 columns.add(column)
         conn.execute(
             "UPDATE applications SET tenant_id = ? WHERE tenant_id IS NULL", (default_tenant_id,)
@@ -472,8 +633,6 @@ class Database:
         if has_tenant_fk:
             return
 
-        # ``ALTER TABLE ADD COLUMN`` cannot add a durable FK to old SQLite
-        # tables. Rebuild once, preserving ids and every historical field.
         conn.execute("ALTER TABLE applications RENAME TO applications_legacy_tenant_migration")
         self._create_applications_table(conn)
         conn.execute(
@@ -482,7 +641,7 @@ class Database:
                 id, tenant_id, user_id, username, country, plate, direction, phone,
                 photo_file_ids, photo_paths, status, reg_number, created_at,
                 processed_at, processed_by, language, full_name, mod_file_ids,
-                mod_paths, badge_photo_file_id, badge_photo_path
+                mod_paths, badge_photo_file_id, badge_photo_path, direction_id
             )
             SELECT id, COALESCE(tenant_id, ?), user_id,
                    COALESCE(username, ''), COALESCE(country, ''), COALESCE(plate, ''),
@@ -491,7 +650,8 @@ class Database:
                    COALESCE(status, 'pending'), reg_number, created_at, processed_at,
                    processed_by, COALESCE(language, 'ru'), COALESCE(full_name, ''),
                    COALESCE(mod_file_ids, '[]'), COALESCE(mod_paths, '[]'),
-                   COALESCE(badge_photo_file_id, ''), COALESCE(badge_photo_path, '')
+                   COALESCE(badge_photo_file_id, ''), COALESCE(badge_photo_path, ''),
+                   direction_id
             FROM applications_legacy_tenant_migration
             """,
             (default_tenant_id,),
@@ -529,9 +689,6 @@ class Database:
                    {first_expr}, {last_expr}
             FROM bot_users_legacy_tenant_migration
             """,
-            # There can be one placeholder in tenant_expr and one each in the
-            # optional timestamps. Passing extras to sqlite is not allowed, so
-            # build the exact parameter list alongside the expressions.
             tuple(
                 [default_tenant_id]
                 + ([now] if "first_seen" in old_cols else [now])
@@ -552,9 +709,16 @@ class Database:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bot_users_tenant ON bot_users(tenant_id)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_directions_tenant_parent "
+            "ON directions(tenant_id, parent_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_directions_tenant_active "
+            "ON directions(tenant_id, is_active)"
+        )
 
     def _seed_known_users(self, conn: sqlite3.Connection) -> None:
-        # Existing applications predate ``bot_users`` in some deployments.
         conn.execute(
             """
             INSERT OR IGNORE INTO bot_users
@@ -570,14 +734,136 @@ class Database:
             """
         )
 
+    def _seed_directions(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
+        # Seed promotors (default) from GLOBAL_DIRECTIONS if empty
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM directions WHERE tenant_id = ?", (default_tenant_id,)
+        ).fetchone()[0]
+        if cnt == 0:
+            try:
+                from .constants import DIRECTIONS as GLOBAL_DIRECTIONS
+            except Exception:
+                GLOBAL_DIRECTIONS = []
+            now = _now()
+            for idx, d in enumerate(GLOBAL_DIRECTIONS):
+                try:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO directions
+                            (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
+                        VALUES (?, NULL, ?, ?, ?, ?, ?, 1, ?, ?)
+                        """,
+                        (
+                            default_tenant_id,
+                            d["canonical"],
+                            d["ru"],
+                            d["uz"],
+                            d["slug"],
+                            idx,
+                            now,
+                            now,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+
+        # Seed splshow tenant with SPL-specific structure (if tenant exists and empty)
+        # Structure per user request:
+        # 1. SQ (quality)
+        # 2. Выставка (exhibition hall, no judging)
+        # 3. Тюнинг -> T1 Новичок, T2 Профессионал
+        # 4. SPL Автозвук -> SPL (and extensible)
+        try:
+            spl_row = conn.execute("SELECT id FROM tenants WHERE slug = ?", ("splshow",)).fetchone()
+            if spl_row:
+                spl_tid = int(spl_row["id"])
+                spl_cnt = conn.execute("SELECT COUNT(*) FROM directions WHERE tenant_id = ?", (spl_tid,)).fetchone()[0]
+                if spl_cnt == 0:
+                    now = _now()
+                    # Roots
+                    roots = [
+                        {"canonical": "SQ", "label_ru": "SQ - Качество звучания", "label_uz": "SQ - Ovoz sifati", "slug": "sq", "sort": 0},
+                        {"canonical": "Выставка", "label_ru": "Выставка", "label_uz": "Ko'rgazma", "slug": "vistavka", "sort": 1},
+                        {"canonical": "Тюнинг", "label_ru": "Тюнинг", "label_uz": "Tuning", "slug": "tuning", "sort": 2},
+                        {"canonical": "SPL Автозвук", "label_ru": "SPL Автозвук", "label_uz": "SPL Avtozvuk", "slug": "spl_avtozvuk", "sort": 3},
+                    ]
+                    root_ids = {}
+                    for r in roots:
+                        try:
+                            cur = conn.execute(
+                                """
+                                INSERT INTO directions
+                                    (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
+                                VALUES (?, NULL, ?, ?, ?, ?, ?, 1, ?, ?)
+                                """,
+                                (spl_tid, r["canonical"], r["label_ru"], r["label_uz"], r["slug"], r["sort"], now, now),
+                            )
+                            root_ids[r["canonical"]] = cur.lastrowid
+                        except sqlite3.IntegrityError:
+                            # fetch existing id
+                            existing = conn.execute(
+                                "SELECT id FROM directions WHERE tenant_id = ? AND slug = ?", (spl_tid, r["slug"])
+                            ).fetchone()
+                            if existing:
+                                root_ids[r["canonical"]] = int(existing["id"])
+                            continue
+
+                    # Children for Тюнинг
+                    tuning_id = root_ids.get("Тюнинг")
+                    if tuning_id:
+                        children_tuning = [
+                            {"canonical": "Тюнинг — Т1 Новичок", "label_ru": "Т1 Новичок", "label_uz": "T1 Yangi", "slug": "tuning_t1_novichok", "sort": 0},
+                            {"canonical": "Тюнинг — Т2 Профессионал", "label_ru": "Т2 Профессионал", "label_uz": "T2 Professional", "slug": "tuning_t2_pro", "sort": 1},
+                        ]
+                        for ch in children_tuning:
+                            try:
+                                conn.execute(
+                                    """
+                                    INSERT OR IGNORE INTO directions
+                                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                                    """,
+                                    (spl_tid, tuning_id, ch["canonical"], ch["label_ru"], ch["label_uz"], ch["slug"], ch["sort"], now, now),
+                                )
+                            except sqlite3.IntegrityError:
+                                continue
+
+                    # Children for SPL Автозвук
+                    spl_id = root_ids.get("SPL Автозвук")
+                    if spl_id:
+                        children_spl = [
+                            {"canonical": "SPL Автозвук — SPL", "label_ru": "SPL", "label_uz": "SPL", "slug": "spl", "sort": 0},
+                            # Placeholders for future SPL subcategories, can be extended via admin CRUD
+                            {"canonical": "SPL Автозвук — SPL Т1", "label_ru": "SPL Т1", "label_uz": "SPL T1", "slug": "spl_t1", "sort": 1},
+                            {"canonical": "SPL Автозвук — SPL Т2", "label_ru": "SPL Т2", "label_uz": "SPL T2", "slug": "spl_t2", "sort": 2},
+                        ]
+                        for ch in children_spl:
+                            try:
+                                conn.execute(
+                                    """
+                                    INSERT OR IGNORE INTO directions
+                                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                                    """,
+                                    (spl_tid, spl_id, ch["canonical"], ch["label_ru"], ch["label_uz"], ch["slug"], ch["sort"], now, now),
+                                )
+                            except sqlite3.IntegrityError:
+                                continue
+        except Exception:
+            # Seeding SPL must never break init
+            pass
+
     def _init(self) -> None:
         with self._connect() as conn:
             conn.executescript(_TENANTS_SCHEMA)
+            conn.executescript(_DIRECTIONS_SCHEMA)
             default_tenant_id = self._ensure_default_tenant(conn)
+            self._migrate_tenants(conn)
             self._migrate_applications(conn, default_tenant_id)
             self._migrate_bot_users(conn, default_tenant_id)
             self._create_indexes(conn)
             self._seed_known_users(conn)
+            self._seed_directions(conn, default_tenant_id)
 
     # ------------------------------------------------------------------
     # Tenant administration
@@ -585,8 +871,6 @@ class Database:
 
     @staticmethod
     def _clean_slug(slug: str) -> str:
-        import re
-
         value = (slug or "").strip().lower()
         if not re.fullmatch(r"[a-z0-9]+(?:[a-z0-9-]{0,62}[a-z0-9])?", value):
             raise ValueError(
@@ -642,6 +926,12 @@ class Database:
         drive_folder_id: str = "",
         admin_password: str = "",
         is_active: bool = True,
+        event_date_text_ru: str = "",
+        event_date_text_uz: str = "",
+        event_venue_text_ru: str = "",
+        event_venue_text_uz: str = "",
+        event_guest_date_text_ru: str = "",
+        event_guest_date_text_uz: str = "",
     ) -> Tenant:
         slug = self._clean_slug(slug)
         name = (name or "").strip()
@@ -661,8 +951,11 @@ class Database:
                 INSERT INTO tenants (
                     slug, name, is_active, bot_token, admin_chat_id, required_channel,
                     channel_url, instagram_handle, instagram_url, spreadsheet_id,
-                    drive_folder_id, admin_password, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    drive_folder_id, admin_password, created_at, updated_at,
+                    event_date_text_ru, event_date_text_uz,
+                    event_venue_text_ru, event_venue_text_uz,
+                    event_guest_date_text_ru, event_guest_date_text_uz
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slug, name, self._to_bool(is_active), self._encrypt_token(bot_token),
@@ -670,6 +963,12 @@ class Database:
                     (instagram_handle or "").strip(), (instagram_url or "").strip(),
                     (spreadsheet_id or "").strip(), (drive_folder_id or "").strip(),
                     password, now, now,
+                    (event_date_text_ru or "").strip(),
+                    (event_date_text_uz or "").strip(),
+                    (event_venue_text_ru or "").strip(),
+                    (event_venue_text_uz or "").strip(),
+                    (event_guest_date_text_ru or "").strip(),
+                    (event_guest_date_text_uz or "").strip(),
                 ),
             )
             row = conn.execute("SELECT * FROM tenants WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -679,6 +978,9 @@ class Database:
         allowed = {
             "name", "is_active", "admin_chat_id", "required_channel", "channel_url",
             "instagram_handle", "instagram_url", "spreadsheet_id", "drive_folder_id",
+            "event_date_text_ru", "event_date_text_uz",
+            "event_venue_text_ru", "event_venue_text_uz",
+            "event_guest_date_text_ru", "event_guest_date_text_uz",
         }
         with self._connect() as conn:
             tenant_id = self._resolve_tenant_id(conn, identifier)
@@ -703,9 +1005,6 @@ class Database:
                     value = str(value or "").strip()
                 fields.append(f"{key} = ?")
                 params.append(value)
-            # Bot token and password deliberately have separate semantics:
-            # ``None`` means retain, an explicit empty string clears the token,
-            # and a nonempty password is always hashed before writing.
             if "bot_token" in changes and changes["bot_token"] is not None:
                 fields.append("bot_token = ?")
                 params.append(self._encrypt_token(str(changes["bot_token"])))
@@ -727,7 +1026,6 @@ class Database:
         with self._connect() as conn:
             tenant_id = self._resolve_tenant_id(conn, identifier)
             if tenant_id == self._resolve_tenant_id(conn, DEFAULT_TENANT_SLUG):
-                # Promotors data is the migration anchor and must never vanish.
                 return False
             cur = conn.execute(
                 "UPDATE tenants SET is_active = 0, updated_at = ? WHERE id = ?",
@@ -756,6 +1054,156 @@ class Database:
             return self._decrypt_token(str(row["bot_token"] or "")) if row else ""
 
     # ------------------------------------------------------------------
+    # Directions (tenant-scoped)
+    # ------------------------------------------------------------------
+
+    def _clean_direction_slug(self, slug: str) -> str:
+        value = (slug or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9]+(?:[a-z0-9_-]{0,62}[a-z0-9])?", value):
+            raise ValueError("Direction slug must be ascii letters/digits/_/-")
+        return value
+
+    def _list_directions(self, tenant_id: int | str | None = None, active_only: bool = True) -> list[Direction]:
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            sql = "SELECT * FROM directions WHERE tenant_id = ?"
+            params: list[Any] = [tid]
+            if active_only:
+                sql += " AND is_active = 1"
+            sql += " ORDER BY sort_order ASC, id ASC"
+            return [_row_to_direction(r) for r in conn.execute(sql, params).fetchall()]
+
+    def _get_direction(self, direction_id: int, tenant_id: int | str | None = None) -> Optional[Direction]:
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            row = conn.execute(
+                "SELECT * FROM directions WHERE id = ? AND tenant_id = ?", (direction_id, tid)
+            ).fetchone()
+            return _row_to_direction(row) if row else None
+
+    def _create_direction(
+        self,
+        *,
+        tenant_id: int | str | None = None,
+        parent_id: int | None = None,
+        canonical: str = "",
+        label_ru: str = "",
+        label_uz: str = "",
+        slug: str = "",
+        sort_order: int = 0,
+        is_active: bool = True,
+    ) -> Direction:
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            canonical = (canonical or "").strip()
+            label_ru = (label_ru or "").strip()
+            label_uz = (label_uz or "").strip()
+            slug = self._clean_direction_slug(slug or canonical.lower().replace(" ", "_")[:40] or "dir")
+            if not canonical:
+                raise ValueError("canonical is required")
+            if not label_ru:
+                label_ru = canonical
+            if not label_uz:
+                label_uz = canonical
+            # Validate parent belongs to same tenant
+            if parent_id is not None:
+                parent_row = conn.execute(
+                    "SELECT id FROM directions WHERE id = ? AND tenant_id = ?", (parent_id, tid)
+                ).fetchone()
+                if not parent_row:
+                    raise ValueError("parent_id does not belong to this tenant")
+                # Prevent self-parent
+                if int(parent_id) == 0:
+                    parent_id = None
+            now = _now()
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO directions
+                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (tid, parent_id, canonical, label_ru, label_uz, slug, int(sort_order or 0), self._to_bool(is_active), now, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"Direction already exists: {exc}") from exc
+            row = conn.execute("SELECT * FROM directions WHERE id = ?", (cur.lastrowid,)).fetchone()
+            return _row_to_direction(row)
+
+    def _update_direction(self, direction_id: int, tenant_id: int | str | None = None, **changes: Any) -> Optional[Direction]:
+        allowed = {"canonical", "label_ru", "label_uz", "slug", "sort_order", "is_active", "parent_id"}
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            existing = conn.execute(
+                "SELECT * FROM directions WHERE id = ? AND tenant_id = ?", (direction_id, tid)
+            ).fetchone()
+            if not existing:
+                return None
+            fields: list[str] = []
+            params: list[Any] = []
+            for key in allowed:
+                if key not in changes:
+                    continue
+                val = changes[key]
+                if key == "canonical":
+                    val = str(val or "").strip()
+                    if not val:
+                        raise ValueError("canonical required")
+                elif key in ("label_ru", "label_uz"):
+                    val = str(val or "").strip() or existing["canonical"]
+                elif key == "slug":
+                    val = self._clean_direction_slug(str(val or ""))
+                elif key == "sort_order":
+                    try:
+                        val = int(val or 0)
+                    except (TypeError, ValueError):
+                        val = 0
+                elif key == "is_active":
+                    val = self._to_bool(val)
+                elif key == "parent_id":
+                    if val in (None, "", 0, "0"):
+                        val = None
+                    else:
+                        try:
+                            pid = int(val)
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError("parent_id must be integer") from exc
+                        if pid == direction_id:
+                            raise ValueError("direction cannot be its own parent")
+                        # Ensure parent belongs to same tenant and is not a child (prevent deeper than 2 levels if desired)
+                        parent_row = conn.execute(
+                            "SELECT id, parent_id FROM directions WHERE id = ? AND tenant_id = ?", (pid, tid)
+                        ).fetchone()
+                        if not parent_row:
+                            raise ValueError("parent_id not found in tenant")
+                        # Optional: prevent grandchild (enforce max 2 levels)
+                        if parent_row["parent_id"] is not None:
+                            raise ValueError("Only 2 levels allowed: child cannot have its own children")
+                        val = pid
+                fields.append(f"{key} = ?")
+                params.append(val)
+            if not fields:
+                return _row_to_direction(existing)
+            fields.append("updated_at = ?")
+            params.extend([_now(), direction_id, tid])
+            try:
+                conn.execute(f"UPDATE directions SET {', '.join(fields)} WHERE id = ? AND tenant_id = ?", params)
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"Direction conflict: {exc}") from exc
+            row = conn.execute("SELECT * FROM directions WHERE id = ? AND tenant_id = ?", (direction_id, tid)).fetchone()
+            return _row_to_direction(row) if row else None
+
+    def _delete_direction(self, direction_id: int, tenant_id: int | str | None = None) -> bool:
+        """Soft-delete: set is_active=0, preserving historical applications."""
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            cur = conn.execute(
+                "UPDATE directions SET is_active = 0, updated_at = ? WHERE id = ? AND tenant_id = ?",
+                (_now(), direction_id, tid),
+            )
+            return bool(cur.rowcount)
+
+    # ------------------------------------------------------------------
     # Tenant-scoped application operations (sync core)
     # ------------------------------------------------------------------
 
@@ -774,6 +1222,7 @@ class Database:
         full_name: str = "",
         mod_file_ids: list[str] | None = None,
         mod_paths: list[str] | None = None,
+        direction_id: int | None = None,
         tenant_id: int | str | None = None,
     ) -> int:
         with self._connect() as conn:
@@ -784,8 +1233,8 @@ class Database:
                 INSERT INTO applications
                     (tenant_id, user_id, username, country, plate, direction, phone,
                      photo_file_ids, photo_paths, status, created_at, language, full_name,
-                     mod_file_ids, mod_paths)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     mod_file_ids, mod_paths, direction_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     tid, user_id, username or "", country or "", plate or "", direction or "",
@@ -794,6 +1243,7 @@ class Database:
                     language or "ru", full_name or "",
                     json.dumps(mod_file_ids or [], ensure_ascii=False),
                     json.dumps(mod_paths or [], ensure_ascii=False),
+                    direction_id,
                 ),
             )
             conn.execute(
@@ -1304,3 +1754,24 @@ class Database:
 
     async def audience_counts(self, *, tenant_id: int | str | None = None) -> dict[str, int]:
         return await asyncio.to_thread(self._audience_counts, tenant_id)
+
+    async def list_directions(
+        self, *, tenant_id: int | str | None = None, active_only: bool = True
+    ) -> list[Direction]:
+        return await asyncio.to_thread(self._list_directions, tenant_id, active_only)
+
+    async def get_direction(
+        self, direction_id: int, *, tenant_id: int | str | None = None
+    ) -> Optional[Direction]:
+        return await asyncio.to_thread(self._get_direction, direction_id, tenant_id)
+
+    async def create_direction(self, *, tenant_id: int | str | None = None, **kwargs: Any) -> Direction:
+        return await asyncio.to_thread(lambda: self._create_direction(tenant_id=tenant_id, **kwargs))
+
+    async def update_direction(
+        self, direction_id: int, *, tenant_id: int | str | None = None, **kwargs: Any
+    ) -> Optional[Direction]:
+        return await asyncio.to_thread(lambda: self._update_direction(direction_id, tenant_id=tenant_id, **kwargs))
+
+    async def delete_direction(self, direction_id: int, *, tenant_id: int | str | None = None) -> bool:
+        return await asyncio.to_thread(self._delete_direction, direction_id, tenant_id)

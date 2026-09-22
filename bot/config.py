@@ -105,6 +105,13 @@ class TenantConfig:
     channel_url: str
     instagram_handle: str
     instagram_url: str
+    # Event branding — optional, empty means sentence omitted.
+    event_date_text_ru: str = ""
+    event_date_text_uz: str = ""
+    event_venue_text_ru: str = ""
+    event_venue_text_uz: str = ""
+    event_guest_date_text_ru: str = ""
+    event_guest_date_text_uz: str = ""
 
     @property
     def sheets_enabled(self) -> bool:
@@ -216,6 +223,12 @@ class Config:
             channel_url=tenant.channel_url,
             instagram_handle=tenant.instagram_handle,
             instagram_url=tenant.instagram_url,
+            event_date_text_ru=getattr(tenant, "event_date_text_ru", "") or "",
+            event_date_text_uz=getattr(tenant, "event_date_text_uz", "") or "",
+            event_venue_text_ru=getattr(tenant, "event_venue_text_ru", "") or "",
+            event_venue_text_uz=getattr(tenant, "event_venue_text_uz", "") or "",
+            event_guest_date_text_ru=getattr(tenant, "event_guest_date_text_ru", "") or "",
+            event_guest_date_text_uz=getattr(tenant, "event_guest_date_text_uz", "") or "",
         )
 
 

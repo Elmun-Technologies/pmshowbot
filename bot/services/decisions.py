@@ -5,6 +5,9 @@ Both entry points assign the registration number, notify the applicant over
 Telegram, and (on approval) export to Google in the background. The only thing
 that differs is the surrounding UI (editing the Telegram card vs an HTTP
 redirect), which stays in the respective callers.
+
+Tenant-branding: uses TenantConfig for channel_url, event dates/venue,
+tenant_name for ticket wordmark, and tenant-branded texts.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import BufferedInputFile
 
 from .. import keyboards, texts
-from ..config import Config
+from ..config import Config, TenantConfig
 from ..constants import SIDES, SIDE_LABELS_TRANSLIT
 from ..db import (
     Application,
@@ -34,10 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 def _pick_hero(photo_paths: list[str]) -> Optional[str]:
-    """Choose the poster background: prefer the front shot, then back, then any.
-
-    SIDES order is left, right, front, back → indices 2, 3, 0, 1.
-    """
+    """Choose the poster background: prefer the front shot, then back, then any."""
     for idx in (2, 3, 0, 1):
         if idx < len(photo_paths):
             p = photo_paths[idx]
@@ -57,35 +57,34 @@ def _get_display_name(app: Application) -> str:
     return ""
 
 
-async def send_ticket(bot: Bot, config: Config, app: Application) -> None:
+async def send_ticket(bot: Bot, config: Config | TenantConfig, app: Application) -> None:
     """Render and send the shareable Stories ticket, then a short share message."""
     try:
+        tenant_scope = getattr(config, "asset_scope", None) or getattr(config, "tenant_slug", None)
+        tenant_name = getattr(config, "tenant_name", "")
+        # Pass full tenant config for date/venue branding
         png = await asyncio.to_thread(
             generate_ticket,
-            getattr(config, "asset_scope", None),
+            tenant_scope,
             number=app.reg_number,
             plate=app.plate,
             direction=texts.localize_direction(app.direction, app.language),
             name=_get_display_name(app),
-            tenant_name=getattr(config, "tenant_name", ""),
+            tenant_name=tenant_name,
             lang=app.language,
             hero_image_path=_pick_hero(app.photo_paths),
+            tenant_config=config,
         )
         await bot.send_photo(
             app.user_id,
             BufferedInputFile(png, filename=f"ticket_{app.reg_number}.png"),
         )
-        t = texts.T(app.language)
-        if config.instagram_handle:
-            handle = config.instagram_handle
-            if not handle.startswith("@"):
-                handle = f"@{handle}"
-            await bot.send_message(app.user_id, t.SHARE_CTA.format(handle=handle))
-        else:
-            await bot.send_message(app.user_id, t.SHARE_CTA_PLAIN)
+        # Share CTA tenant-branded
+        share_text = texts.share_cta_for_tenant(app.language, config)
+        await bot.send_message(app.user_id, share_text)
     except TelegramForbiddenError:
         logger.warning("Could not send ticket to user %s (bot blocked?)", app.user_id)
-    except Exception:  # noqa: BLE001 - a ticket failure must not break approval
+    except Exception:
         logger.exception("Failed to generate/send ticket for application %s", app.id)
 
 
@@ -93,13 +92,12 @@ async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") 
     try:
         await bot.send_message(user_id, text, reply_markup=keyboards.main_menu_keyboard(lang))
     except TelegramForbiddenError:
-        # User blocked the bot; nothing we can do.
         logger.warning("Could not notify user %s (bot blocked?)", user_id)
-    except Exception:  # noqa: BLE001 - a delivery error must not break the decision
+    except Exception:
         logger.exception("Failed to notify user %s", user_id)
 
 
-async def export_to_google(config: Config, app: Application) -> None:
+async def export_to_google(config: Config | TenantConfig, app: Application) -> None:
     """Upload photos to Drive and append the row to Sheets. Best-effort."""
     photo_urls: list[str] = []
     mod_urls: list[str] = []
@@ -113,7 +111,7 @@ async def export_to_google(config: Config, app: Application) -> None:
             photo_urls = await drive.upload_photos(
                 config.google_credentials_file, config.drive_folder_id, files
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Drive upload failed for application %s", app.id)
 
     try:
@@ -126,55 +124,53 @@ async def export_to_google(config: Config, app: Application) -> None:
             mod_urls = await drive.upload_photos(
                 config.google_credentials_file, config.drive_folder_id, files
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Drive upload of modification photos failed for %s", app.id)
 
     try:
         if config.sheets_enabled:
             await sheets.append_application(config, app, photo_urls, mod_urls)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Sheets append failed for application %s", app.id)
 
 
 async def approve_application(
-    bot: Bot, config: Config, db: Database, app_id: int, moderator: str
+    bot: Bot, config: Config | TenantConfig, db: Database, app_id: int, moderator: str
 ) -> Optional[int]:
-    """Approve an application. Returns the assigned number, or None if it was
-    already processed / not found."""
+    """Approve an application. Returns the assigned number, or None if already processed."""
     number = await db.approve(app_id, moderator)
     if number is None:
         return None
     app = await db.get_application(app_id)
-    await notify_applicant(
-        bot, app.user_id, texts.T(app.language).APPROVED.format(number=number), app.language
-    )
-    # Send the shareable Stories ticket right after the approval message.
+    # Tenant-branded approved text
+    approved_text = texts.approved_for_tenant(app.language, config, number)
+    await notify_applicant(bot, app.user_id, approved_text, app.language)
     await send_ticket(bot, config, app)
-    # Export in the background so the caller's UI stays responsive.
     asyncio.create_task(export_to_google(config, app))
     return number
 
 
 async def reject_application(
-    bot: Bot, config: Config, db: Database, app_id: int, moderator: str
+    bot: Bot, config: Config | TenantConfig, db: Database, app_id: int, moderator: str
 ) -> bool:
     """Reject an application. Returns True if it was pending and got rejected."""
     ok = await db.reject(app_id, moderator)
     if not ok:
         return False
     app = await db.get_application(app_id)
-    await notify_applicant(bot, app.user_id, texts.T(app.language).REJECTED, app.language)
+    rejected_text = texts.rejected_for_tenant(app.language, config)
+    await notify_applicant(bot, app.user_id, rejected_text, app.language)
     return True
 
 
 async def set_status(
-    bot: Bot, config: Config, db: Database, app_id: int, status: str, moderator: str
+    bot: Bot, config: Config | TenantConfig, db: Database, app_id: int, status: str, moderator: str
 ) -> bool:
-    """Admin-panel override: force an application's status regardless of what
-    it currently is (e.g. flip a previously rejected applicant to approved
-    after they were contacted individually). Notifies the applicant and, on
-    a transition to approved, sends the ticket and exports to Google — same
-    as the normal one-shot approve/reject flow."""
+    """Admin-panel override: force an application's status regardless of current.
+
+    Notifies the applicant and, on transition to approved, sends the ticket
+    and exports to Google — same as normal approve/reject flow.
+    """
     if status not in (STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED):
         return False
     ok = await db.set_status(app_id, status, moderator)
@@ -182,11 +178,11 @@ async def set_status(
         return False
     app = await db.get_application(app_id)
     if status == STATUS_APPROVED:
-        await notify_applicant(
-            bot, app.user_id, texts.T(app.language).APPROVED.format(number=app.reg_number), app.language
-        )
+        approved_text = texts.approved_for_tenant(app.language, config, app.reg_number)
+        await notify_applicant(bot, app.user_id, approved_text, app.language)
         await send_ticket(bot, config, app)
         asyncio.create_task(export_to_google(config, app))
     elif status == STATUS_REJECTED:
-        await notify_applicant(bot, app.user_id, texts.T(app.language).REJECTED, app.language)
+        rejected_text = texts.rejected_for_tenant(app.language, config)
+        await notify_applicant(bot, app.user_id, rejected_text, app.language)
     return True

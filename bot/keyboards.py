@@ -1,5 +1,7 @@
-"""Keyboard builders for the bot (language-aware)."""
+"""Keyboard builders for the bot (language-aware, tenant-aware)."""
 from __future__ import annotations
+
+from typing import Optional
 
 from aiogram.types import (
     InlineKeyboardButton,
@@ -10,11 +12,13 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from . import texts
+from .db import Direction
 
 # --- Callback data prefixes ---
 CB_LANG = "lang"
 CB_COUNTRY = "country"
 CB_DIRECTION = "direction"
+CB_SUB_DIRECTION = "subdirection"
 CB_MODS_DONE = "modsdone"
 CB_APPROVE = "approve"
 CB_REJECT = "reject"
@@ -32,8 +36,6 @@ def language_keyboard() -> InlineKeyboardMarkup:
 def subscription_keyboard(channel_url: str, lang: str) -> InlineKeyboardMarkup:
     t = texts.T(lang)
     builder = InlineKeyboardBuilder()
-    # Only add the link button when we have a usable URL (numeric-id channels
-    # without a CHANNEL_URL override have none).
     if channel_url:
         builder.row(InlineKeyboardButton(text=t.BTN_SUBSCRIBE, url=channel_url))
     builder.row(
@@ -53,6 +55,7 @@ def country_keyboard(lang: str) -> InlineKeyboardMarkup:
 
 
 def direction_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Legacy global keyboard (fallback for promotors when DB empty)."""
     t = texts.T(lang)
     builder = InlineKeyboardBuilder()
     for idx, name in enumerate(t.DIRECTIONS):
@@ -61,12 +64,37 @@ def direction_keyboard(lang: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def mods_keyboard(lang: str, has_photos: bool) -> InlineKeyboardMarkup:
-    """Finish the "what did you change?" step.
+def direction_keyboard_from_db(
+    directions: list[Direction], lang: str, *, parent_id: Optional[int] = None
+) -> InlineKeyboardMarkup:
+    """Build inline keyboard from DB directions, filtered by parent_id.
 
-    The label changes with what the participant has already sent, so the same
-    button reads as "done" after a photo and as "nothing changed" before one.
+    - When ``parent_id`` is None, shows root directions.
+    - When ``parent_id`` is set, shows its children (podnapravleniya).
+    - Callback data uses DB id: ``direction:<id>`` for roots,
+      ``subdirection:<parent_id>:<child_id>`` for children.
     """
+    builder = InlineKeyboardBuilder()
+    # Filter
+    if parent_id is None:
+        filtered = [d for d in directions if d.parent_id is None and d.is_active]
+    else:
+        filtered = [d for d in directions if d.parent_id == parent_id and d.is_active]
+    # Sort by sort_order
+    filtered = sorted(filtered, key=lambda d: (d.sort_order, d.id))
+    for d in filtered:
+        label = d.label_uz if lang == "uz" else d.label_ru
+        label = label or d.canonical
+        if parent_id is None:
+            builder.button(text=label, callback_data=f"{CB_DIRECTION}:{d.id}")
+        else:
+            builder.button(text=label, callback_data=f"{CB_SUB_DIRECTION}:{parent_id}:{d.id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def mods_keyboard(lang: str, has_photos: bool) -> InlineKeyboardMarkup:
+    """Finish the "what did you change?" step."""
     t = texts.T(lang)
     builder = InlineKeyboardBuilder()
     builder.button(
@@ -90,7 +118,6 @@ def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 
 def moderation_keyboard(app_id: int) -> InlineKeyboardMarkup:
-    # Admin-facing buttons — Russian only.
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Принять", callback_data=f"{CB_APPROVE}:{app_id}")
     builder.button(text="❌ Отклонить", callback_data=f"{CB_REJECT}:{app_id}")

@@ -1,10 +1,13 @@
 """Tenant-scoped ticket artwork storage.
 
-Bundled artwork remains a read-only fallback, while uploaded logos and banners
-live below ``MEDIA_DIR/_tenants/<tenant-scope>/``.  Every public helper accepts
-a ``tenant_id``/scope argument so concurrently polling bots never share mutable
-asset state.  Calling helpers without one preserves the old single-tenant
-layout for migration and backwards-compatible scripts.
+Bundled artwork remains a read-only fallback **only for the default
+``promotors`` tenant** and legacy single-tenant calls (``tenant_id=None``).
+Every other tenant starts with an empty sponsor strip and a typographic
+wordmark — no Promotors branding ever leaks into another event.
+
+Runtime uploads live below ``MEDIA_DIR/_tenants/<tenant-scope>/``.  Every
+public helper accepts a ``tenant_id``/scope argument so concurrently polling
+bots never share mutable asset state.
 """
 from __future__ import annotations
 
@@ -28,20 +31,26 @@ _configured_tenant_scope: Optional[str] = None
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
-
 # The two marks shown at the top of the original ticket poster.  A tenant can
 # replace them or leave them empty to use the ticket's typographic fallback.
+# For ``promotors`` the bundled files remain a fallback; other tenants never
+# fall back to repo logos.
 BRAND_LOGOS = {
     "logo": "logo.png",
     "adrenaline": "adrenaline.png",
 }
 
+# Promotors-specific partner checklist — intentionally not shown for other
+# tenants.  Kept for backward compatibility and for the promotors panel only.
 PARTNER_LOGOS = [
     {"name": "1_mcs_sherdor", "title": "Мотоклуб MCS «Sherdor» (Самарканд)"},
     {"name": "2_retro_tashkent", "title": "Авто-Ретро Клуб (Ташкент)"},
     {"name": "3_drift_show", "title": "Uzbekistan Drift Show"},
     {"name": "4_sof_expo", "title": "SOF EXPO Samarkand"},
 ]
+
+# Default tenant slug that is allowed to use bundled fallback.
+_DEFAULT_TENANT_SCOPE = "promotors"
 
 
 def configure(media_dir: str | os.PathLike[str] | None, tenant_id: object | None = None) -> None:
@@ -64,6 +73,13 @@ def _normalise_scope(tenant_id: object | None) -> Optional[str]:
     if not _SAFE_SCOPE.fullmatch(scope):
         raise ValueError(f"unsafe tenant asset scope: {scope!r}")
     return scope
+
+
+def _is_default_scope(tenant_id: object | None) -> bool:
+    """True if this scope may use bundled Promotors assets as fallback."""
+    scope = _normalise_scope(tenant_id) if tenant_id is not None else _configured_tenant_scope
+    # Legacy calls (None) and explicit promotors scope are allowed to fallback.
+    return scope is None or scope == _DEFAULT_TENANT_SCOPE
 
 
 def tenant_root(tenant_id: object) -> Optional[str]:
@@ -133,26 +149,31 @@ def migrate_legacy_assets(media_dir: str, tenant_id: object = "promotors") -> di
         try:
             source.rmdir()
         except OSError:
-            # Never fail a startup because an unrelated hidden file is present.
             pass
     return moved
 
 
 def sponsors_dirs(tenant_id: object | None = None) -> list[str]:
-    """Search paths for sponsor logos, tenant upload first then bundled fallback."""
+    """Search paths for sponsor logos, tenant upload first then bundled fallback.
+
+    Bundled fallback is only included for the default ``promotors`` tenant
+    (or legacy calls without a scope). Other tenants see only their own uploads.
+    """
     dirs: list[str] = []
     runtime = _runtime_dir("sponsors", tenant_id)
     if runtime:
         dirs.append(runtime)
-    dirs.append(_BUNDLED_SPONSORS)
+    if _is_default_scope(tenant_id):
+        dirs.append(_BUNDLED_SPONSORS)
     return dirs
 
 
 def sponsor_files(tenant_id: object | None = None) -> list[str]:
     """Return sponsor paths in filename order for exactly one tenant.
 
-    If a tenant uploaded any sponsor logo, its set fully replaces the bundled
-    fallback rather than silently mixing unrelated event branding.
+    For ``promotors`` (and legacy None scope) the bundled repo logos act as
+    fallback when nothing was uploaded. For any other tenant the list is
+    strictly its own uploads — empty when nothing was uploaded.
     """
     for directory in sponsors_dirs(tenant_id):
         if not os.path.isdir(directory):
@@ -164,14 +185,18 @@ def sponsor_files(tenant_id: object | None = None) -> list[str]:
 
 
 def direction_banner(slug: str, tenant_id: object | None = None) -> Optional[str]:
-    """Return a direction banner path; tenant upload takes priority."""
+    """Return a direction banner path; tenant upload takes priority.
+
+    Bundled direction banners are only fallback for promotors/legacy.
+    """
     if not slug:
         return None
     candidates: list[str] = []
     runtime = _runtime_dir("directions", tenant_id)
     if runtime:
         candidates.append(runtime)
-    candidates.append(_BUNDLED_DIRECTIONS)
+    if _is_default_scope(tenant_id):
+        candidates.append(_BUNDLED_DIRECTIONS)
     for directory in candidates:
         for ext in _IMAGE_EXTS:
             path = os.path.join(directory, slug + ext)
@@ -181,7 +206,16 @@ def direction_banner(slug: str, tenant_id: object | None = None) -> Optional[str
 
 
 def partner_status(tenant_id: object | None = None) -> list[dict]:
-    """Report expected partner slots for one tenant's ticket strip."""
+    """Report expected partner slots for one tenant's ticket strip.
+
+    Only the default ``promotors`` tenant sees the hard-coded checklist.
+    Other tenants return an empty list so their panel never shows another
+    client's partners.
+    """
+    scope = _normalise_scope(tenant_id) if tenant_id is not None else _configured_tenant_scope
+    # Only promotors (and legacy None for old scripts) gets the checklist.
+    if scope is not None and scope != _DEFAULT_TENANT_SCOPE:
+        return []
     loaded = {os.path.splitext(os.path.basename(path))[0]: path for path in sponsor_files(tenant_id)}
     runtime = _runtime_dir("sponsors", tenant_id)
     output = []
@@ -198,7 +232,11 @@ def partner_status(tenant_id: object | None = None) -> list[dict]:
 
 
 def brand_logo(name: str, tenant_id: object | None = None) -> Optional[str]:
-    """Return a main brand logo path scoped to one tenant."""
+    """Return a main brand logo path scoped to one tenant.
+
+    For ``promotors`` and legacy None scope the bundled repo file is fallback.
+    For other tenants only runtime uploads are considered — otherwise None.
+    """
     bundled_name = BRAND_LOGOS.get(name)
     if not bundled_name:
         return None
@@ -208,8 +246,10 @@ def brand_logo(name: str, tenant_id: object | None = None) -> Optional[str]:
             path = os.path.join(runtime, name + ext)
             if os.path.exists(path):
                 return path
-    path = os.path.join(_BUNDLED_ROOT, bundled_name)
-    return path if os.path.exists(path) else None
+    if _is_default_scope(tenant_id):
+        path = os.path.join(_BUNDLED_ROOT, bundled_name)
+        return path if os.path.exists(path) else None
+    return None
 
 
 def save_brand(name: str, data: bytes, tenant_id: object | None = None) -> str:
@@ -286,9 +326,9 @@ def inventory(tenant_id: object | None = None) -> dict:
     return {
         "partners": partner_status(tenant_id),
         "sponsors_runtime": listing(runtime_sponsors),
-        "sponsors_bundled": listing(_BUNDLED_SPONSORS),
+        "sponsors_bundled": listing(_BUNDLED_SPONSORS) if _is_default_scope(tenant_id) else [],
         "directions_runtime": listing(runtime_directions),
-        "directions_bundled": listing(_BUNDLED_DIRECTIONS),
+        "directions_bundled": listing(_BUNDLED_DIRECTIONS) if _is_default_scope(tenant_id) else [],
         "brand": brand,
         "storage_configured": bool(_runtime_root),
         "tenant_scope": _normalise_scope(tenant_id) if tenant_id is not None else _configured_tenant_scope,
