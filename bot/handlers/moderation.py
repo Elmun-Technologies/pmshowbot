@@ -6,6 +6,8 @@ lives in ``bot.services.decisions`` and is shared with the web admin panel.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Optional
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
@@ -292,6 +294,16 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
         return
 
     lines = [f"<b>Диагностика</b>", f"REQUIRED_CHANNEL = <code>{config.required_channel}</code>"]
+
+    # What the bot will actually write on a participant's approval and poster.
+    # «Заезд показывает не ту дату» cannot be answered from the group without
+    # this: the text below is the very value the message and the ticket use.
+    for lang in ("ru", "uz"):
+        lines.append(
+            f"📅 Заезд ({lang.upper()}): <code>{texts._event_date(config, lang) or '—'}</code>"
+        )
+    lines.append(f"📍 Площадка: <code>{texts._venue(config, 'ru') or '—'}</code>")
+    lines.append(f"📝 Инструкция: <code>{texts._event_note(config, 'ru') or '—'}</code>")
     channel = subscription.normalize_channel(config.required_channel)
 
     try:
@@ -447,52 +459,123 @@ async def cmd_ticket(message: Message, bot: Bot, config: Config, db: Database) -
         await message.answer(texts.TICKET_CMD_NOT_APPROVED.format(status=app.status))
         return
 
-    result = await decisions.send_ticket(bot, config, app, report_failure=False)
-    if result:
-        await message.answer(texts.TICKET_CMD_SENT.format(number=app.reg_number))
-    else:
-        await message.answer(texts.TICKET_CMD_FAILED.format(error=result.error))
+    # Acknowledge immediately, deliver behind the answer: the render plus a
+    # multi-megabyte upload takes seconds, and a command that only replies at the
+    # end looks like the very "ticket never arrives" it is meant to fix.
+    ack = await message.answer(texts.TICKET_CMD_STARTED.format(number=app.reg_number))
+
+    async def _resend() -> None:
+        result = await decisions.send_ticket(bot, config, app, report_failure=False)
+        text = (
+            texts.TICKET_CMD_SENT.format(number=app.reg_number)
+            if result
+            else texts.TICKET_CMD_FAILED.format(error=result.error)
+        )
+        try:
+            await ack.edit_text(text)
+        except Exception:  # noqa: BLE001 - the ack may be gone; post it instead
+            await message.answer(text)
+
+    decisions.spawn(_resend())
 
 
 @router.callback_query(F.data.startswith(f"{keyboards.CB_APPROVE}:"))
 async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
+    """Accept one application: decide now, deliver behind the answer.
+
+    The reported sequence was «Accept stays spinning → tap again → "эта заявка
+    уже обработана" → the participant never gets a ticket».  The cause was that
+    the moderator's callback was answered *after* the whole delivery (render +
+    multi-megabyte upload + share hint), which takes tens of seconds on the
+    event's uplink.  Order now:
+
+    1. the SQLite decision — milliseconds (this is what "already processed"
+       refers to, so it must be the only awaited step);
+    2. the card is marked and the buttons removed, and the tap is answered;
+    3. the participant is notified, the ticket is rendered and sent, the sheet
+       is appended — in a background task that edits the card afterwards with
+       «🎫 билет отправлен» or the exact failure.
+    """
     app_id = _callback_app_id(query)
     moderator = _moderator_label(query)
 
     try:
-        number = await decisions.approve_application(bot, config, db, app_id, moderator)
+        app = await decisions.claim_approval(db, app_id, moderator)
     except Exception:  # noqa: BLE001 - the moderator must always get an answer
         logger.exception("Approving application %s failed", app_id)
         await query.answer(texts.MODERATION_FAILED, show_alert=True)
         return
-    if number is None:
-        await query.answer(texts.MODERATION_ALREADY, show_alert=True)
+    if app is None:
+        await _answer_already(query, db, app_id)
         return
 
+    number = app.reg_number if app.reg_number is not None else "—"
+    status_line = texts.MODERATION_APPROVED.format(number=number, moderator=moderator)
     # Keep all the application details visible; append the decision below them.
-    await _append_status(
-        query, texts.MODERATION_APPROVED.format(number=number, moderator=moderator)
+    card = await _append_status(
+        query, f"{status_line} · {texts.MODERATION_TICKET_SENDING}"
     )
-    await query.answer(f"Одобрено, №{number}")
+    await query.answer(texts.MODERATION_APPROVED_TOAST.format(number=number))
+
+    async def _deliver() -> None:
+        try:
+            result = await decisions.deliver_approval(
+                bot, config, app, moderator=moderator
+            )
+        except Exception as exc:  # noqa: BLE001 - the card must not stay on "sending…"
+            logger.exception("Delivery of application %s failed", app_id)
+            await _finalize_card(
+                bot,
+                card,
+                status_line,
+                texts.MODERATION_TICKET_FAILED.format(
+                    error=f"{type(exc).__name__}: {exc}"[:120], app_id=app_id
+                ),
+            )
+            return
+        if result:
+            final = texts.MODERATION_TICKET_SENT
+        else:
+            final = texts.MODERATION_TICKET_FAILED.format(
+                error=(result.error or "неизвестная ошибка")[:120], app_id=app_id
+            )
+        await _finalize_card(bot, card, status_line, final)
+
+    decisions.spawn(_deliver())
 
 
 @router.callback_query(F.data.startswith(f"{keyboards.CB_REJECT}:"))
 async def reject(query: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
+    """Reject one application: same decide-first ordering as :func:`approve`."""
     app_id = _callback_app_id(query)
     moderator = _moderator_label(query)
 
     try:
-        ok = await decisions.reject_application(bot, config, db, app_id, moderator)
+        app = await decisions.claim_rejection(db, app_id, moderator)
     except Exception:  # noqa: BLE001 - the moderator must always get an answer
         logger.exception("Rejecting application %s failed", app_id)
         await query.answer(texts.MODERATION_FAILED, show_alert=True)
         return
-    if not ok:
-        await query.answer(texts.MODERATION_ALREADY, show_alert=True)
+    if app is None:
+        await _answer_already(query, db, app_id)
         return
 
-    await _append_status(query, texts.MODERATION_REJECTED.format(moderator=moderator))
+    status_line = texts.MODERATION_REJECTED.format(moderator=moderator)
+    await _append_status(query, status_line)
     await query.answer("Отклонено")
+    decisions.spawn(
+        decisions.deliver_rejection(bot, config, app, moderator=moderator)
+    )
+
+
+async def _answer_already(query: CallbackQuery, db: Database, app_id: int) -> None:
+    """Answer a second tap with the decision that is already there."""
+    app = None
+    try:
+        app = await db.get_application(app_id)
+    except Exception:  # noqa: BLE001 - the alert must still be shown
+        logger.debug("Could not read application %s for the alert", app_id, exc_info=True)
+    await query.answer(decisions.already_processed_text(app, app_id), show_alert=True)
 
 
 def _callback_app_id(query: CallbackQuery) -> int:
@@ -503,7 +586,16 @@ def _callback_app_id(query: CallbackQuery) -> int:
         return 0
 
 
-async def _append_status(query: CallbackQuery, status_line: str) -> None:
+@dataclass
+class _Card:
+    """Where a decision card lives, so it can be edited again later."""
+
+    chat_id: int
+    message_id: Optional[int]
+    base: str
+
+
+async def _append_status(query: CallbackQuery, status_line: str) -> Optional[_Card]:
     """Mark the decision on the card and make sure it is visible in the group.
 
     The group is where the whole team watches the queue, so a decision has to
@@ -515,6 +607,9 @@ async def _append_status(query: CallbackQuery, status_line: str) -> None:
     * if the card cannot be edited at all — too old, too long, or another
       moderator already deleted it — the status is posted as a new message
       instead of vanishing into the log.
+
+    Returns the card reference so a background delivery can append its outcome
+    («🎫 билет отправлен» / the failure) to the very same message.
     """
     message = query.message
     base = ""
@@ -525,10 +620,22 @@ async def _append_status(query: CallbackQuery, status_line: str) -> None:
     if len(text) > 4000:
         text = text[-4000:]
 
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    message_id = getattr(message, "message_id", None)
+    card = (
+        _Card(
+            chat_id=int(chat_id),
+            message_id=int(message_id) if message_id is not None else None,
+            base=base,
+        )
+        if chat_id is not None
+        else None
+    )
+
     if message is not None:
         try:
             await message.edit_text(text, reply_markup=None)
-            return
+            return card
         except Exception:  # noqa: BLE001 - fall back to a plain group message
             logger.warning(
                 "Could not edit moderation card %s — posting the decision instead",
@@ -539,12 +646,35 @@ async def _append_status(query: CallbackQuery, status_line: str) -> None:
             except Exception:  # noqa: BLE001
                 logger.debug("Could not clear the card buttons", exc_info=True)
 
-    chat_id = getattr(getattr(message, "chat", None), "id", None)
     if chat_id is not None:
         try:
             await query.bot.send_message(chat_id, status_line)
         except Exception:  # noqa: BLE001 - nothing else can be done, log it
             logger.exception("Could not post the moderation decision")
+    return card
+
+
+async def _finalize_card(
+    bot: Bot, card: Optional[_Card], status_line: str, outcome: str
+) -> None:
+    """Append the delivery outcome (ticket sent / exact error) to the card."""
+    line = f"{status_line} · {outcome}"
+    text = f"{card.base}\n\n{line}".strip() if card and card.base else line
+    if len(text) > 4000:
+        text = text[-4000:]
+    if card is not None and card.message_id is not None:
+        try:
+            await bot.edit_message_text(
+                chat_id=card.chat_id, message_id=card.message_id, text=text
+            )
+            return
+        except Exception:  # noqa: BLE001 - the card may be gone; say it in the group
+            logger.debug("Could not append the delivery outcome to the card", exc_info=True)
+    if card is not None:
+        try:
+            await bot.send_message(card.chat_id, line)
+        except Exception:  # noqa: BLE001 - a failed report must not raise
+            logger.debug("Could not post the delivery outcome", exc_info=True)
 
 
 def create_router() -> Router:

@@ -288,15 +288,35 @@ class BotHarness:
         return self
 
     async def stop(self) -> None:
+        # A delivery scheduled by the last update may still be running (a test
+        # that asserted with ``settle=False``); let it finish before the session
+        # and the temp database disappear.
+        await self.settle(timeout=10.0)
         await self.bot.session.close()
         if self.dispatcher is not None and self.dispatcher.storage is not None:
             await self.dispatcher.storage.close()
         self._tmp.cleanup()
 
     # -- feeding updates -------------------------------------------------
-    async def feed(self, update: Update) -> None:
+    async def feed(self, update: Update, *, settle: bool = True) -> None:
+        """Dispatch one update, then let its background work finish.
+
+        A decision handler answers the moderator first and delivers the ticket
+        in a background task (``decisions.spawn``), so an assertion right after
+        ``feed`` would run before the participant's photo was sent.  ``settle``
+        is what the production event loop does while the test is not looking;
+        the ordering tests pass ``settle=False`` on purpose.
+        """
         self.dispatcher.run_workflow = getattr(self.dispatcher, "run_workflow", None)
         await self.dispatcher.feed_update(self.bot, update)
+        if settle:
+            await self.settle()
+
+    async def settle(self, timeout: float = 30.0) -> None:
+        """Wait for background deliveries scheduled by the handlers."""
+        from bot.services import decisions
+
+        await decisions.wait_background(timeout=timeout)
 
     def _next_update(self, payload: Any) -> Update:
         self._update_id += 1
@@ -345,7 +365,15 @@ class BotHarness:
             )
         )
 
-    async def tap(self, user_id: int, data: str, *, chat_id: Optional[int] = None, text: str = "card") -> Any:
+    async def tap(
+        self,
+        user_id: int,
+        data: str,
+        *,
+        chat_id: Optional[int] = None,
+        text: str = "card",
+        settle: bool = True,
+    ) -> Any:
         """Feed a callback query as if an inline button was pressed."""
         message = _message(user_id, chat_id, text=text)
         query = CallbackQuery(
@@ -355,7 +383,7 @@ class BotHarness:
             message=message,
             data=data,
         )
-        await self.feed(self._next_update({"callback_query": query}))
+        await self.feed(self._next_update({"callback_query": query}), settle=settle)
         return query
 
     # -- assertions ------------------------------------------------------

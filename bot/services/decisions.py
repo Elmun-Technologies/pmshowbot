@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Awaitable, Optional
 
 from aiogram import Bot
 from aiogram.exceptions import (
@@ -34,11 +34,68 @@ from ..db import (
     STATUS_PENDING,
     STATUS_REJECTED,
 )
-from ..executors import run_heavy
+from ..executors import run_render
 from . import drive, sheets, subscription
 from .ticket import generate_ticket, ticket_as_jpeg
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Background work
+# ---------------------------------------------------------------------------
+#
+# Approving from the Telegram group used to be one long await: number, notify,
+# render, upload, share hint — and only then the answer to the moderator's tap.
+# Telegram keeps a callback "spinning" for those seconds, so the moderator
+# tapped Accept again and the second tap was answered with «Эта заявка уже
+# обработана» while the first one was still delivering.  The decision (a
+# millisecond SQLite write) is now answered immediately and the delivery runs
+# here, in a task that is kept referenced until it finishes.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def spawn(coro: Awaitable[Any]) -> asyncio.Task:
+    """Run ``coro`` in the background, keeping a strong reference to the task.
+
+    A bare ``asyncio.create_task`` may be garbage-collected mid-flight, which
+    would lose a ticket with no trace in the log.
+    """
+    task = asyncio.ensure_future(coro)
+    _BACKGROUND_TASKS.add(task)
+
+    def _done(finished: asyncio.Task) -> None:
+        _BACKGROUND_TASKS.discard(finished)
+        if finished.cancelled():
+            return
+        error = finished.exception()
+        if error is not None:  # a delivery must never die silently
+            logger.error(
+                "Background delivery failed: %s: %s",
+                type(error).__name__,
+                error,
+                exc_info=error,
+            )
+
+    task.add_done_callback(_done)
+    return task
+
+
+def background_tasks() -> list[asyncio.Task]:
+    """Currently running background deliveries (tests and diagnostics)."""
+    return [task for task in _BACKGROUND_TASKS if not task.done()]
+
+
+async def wait_background(timeout: float = 30.0) -> None:
+    """Wait for every spawned delivery to finish. Never raises."""
+    while True:
+        pending = background_tasks()
+        if not pending:
+            return
+        done, still = await asyncio.wait(pending, timeout=timeout)
+        if not done:
+            logger.warning("%d background task(s) did not finish in %.0fs", len(still), timeout)
+            return
 
 
 def _pick_hero(photo_paths: list[str]) -> Optional[str]:
@@ -70,6 +127,13 @@ _MAX_PHOTO_BYTES = 9 * 1024 * 1024
 # stuck render must not hold the approval handler (and the group card) forever.
 _RENDER_TIMEOUT_SECONDS = 90.0
 
+# Above this size the PNG poster is not worth uploading: Telegram re-encodes
+# every photo it accepts, so a quality-88 JPEG copy is visually identical and
+# several times smaller — the difference between a participant waiting 20+
+# seconds on a phone uplink and getting the ticket in a couple of seconds.
+# (Measured on a realistic 3024x4032 hero photo: 2.77 MB PNG vs 0.5 MB JPEG.)
+_JPEG_FIRST_BYTES = 1_200_000
+
 
 @dataclass
 class TicketResult:
@@ -93,9 +157,14 @@ def _applicant_label(app: Application) -> str:
 async def _render_ticket(
     config: Config | TenantConfig, app: Application, hero_path: Optional[str]
 ) -> bytes:
-    """Render the ticket in a worker thread, with a timeout."""
+    """Render the ticket in a worker thread, with a timeout.
+
+    Runs on the *render* pool, not the general slow-work pool: a queue of Drive
+    uploads must not be able to make an approval look like "the ticket was never
+    delivered" (the render would time out while it only ever waited in line).
+    """
     return await asyncio.wait_for(
-        run_heavy(
+        run_render(
             generate_ticket,
             _tenant_scope(config),
             number=app.reg_number,
@@ -203,13 +272,16 @@ async def send_ticket(
     png_name = f"ticket_{app.reg_number}.png"
     jpg_name = f"ticket_{app.reg_number}.jpg"
     jpeg: Optional[bytes] = None
-    # A PNG over the photo limit would be rejected by Telegram anyway — send the
-    # compact JPEG copy first in that case instead of wasting the upload.
-    transports = (
-        ("photo", "photo_jpeg", "document")
-        if len(png) <= _MAX_PHOTO_BYTES
-        else ("photo_jpeg", "document")
-    )
+    # A poster over the photo limit would be rejected by Telegram anyway, and a
+    # photographic poster is several megabytes of PNG: upload the compact JPEG
+    # copy first (Telegram stores photos as JPEG regardless), keeping the PNG as
+    # the fallback transport.
+    if len(png) > _MAX_PHOTO_BYTES:
+        transports = ("photo_jpeg", "document")
+    elif len(png) > _JPEG_FIRST_BYTES:
+        transports = ("photo_jpeg", "photo", "document")
+    else:
+        transports = ("photo", "photo_jpeg", "document")
 
     for kind in transports:
         for attempt in (1, 2):
@@ -220,7 +292,8 @@ async def send_ticket(
                     )
                 elif kind == "photo_jpeg":
                     if jpeg is None:
-                        jpeg = ticket_as_jpeg(png)
+                        # Pillow is CPU work: never re-encode on the event loop.
+                        jpeg = await run_render(ticket_as_jpeg, png)
                     if not jpeg:
                         break  # nothing to send on this transport
                     await bot.send_photo(
@@ -272,13 +345,27 @@ async def send_ticket(
     return TicketResult(False, error or "ticket delivery failed")
 
 
-async def notify_applicant(bot: Bot, user_id: int, text: str, lang: str = "ru") -> None:
+async def notify_applicant(
+    bot: Optional[Bot], user_id: int, text: str, lang: str = "ru"
+) -> bool:
+    """Send the participant their decision text; ``False`` when it cannot arrive.
+
+    The return value matters: a participant whose chat we cannot reach (bot
+    blocked, account deleted) still appears as "processed" in the panel, so the
+    team has to be told in the moderation chat instead of finding it only in a
+    log line.
+    """
+    if bot is None:
+        return False
     try:
         await bot.send_message(user_id, text, reply_markup=keyboards.main_menu_keyboard(lang))
+        return True
     except TelegramForbiddenError:
         logger.warning("Could not notify user %s (bot blocked?)", user_id)
+        return False
     except Exception:
         logger.exception("Failed to notify user %s", user_id)
+        return False
 
 
 async def export_to_google(config: Config | TenantConfig, app: Application) -> None:
@@ -366,6 +453,101 @@ async def announce_decision_to_chat(
         logger.warning("Could not post the decision to the moderation chat", exc_info=True)
 
 
+async def claim_approval(
+    db: Database, app_id: int, moderator: str
+) -> Optional[Application]:
+    """Assign the registration number and return the application.
+
+    This is the whole *decision*: one ``BEGIN IMMEDIATE`` write, a few
+    milliseconds.  Everything the participant sees (notification, ticket,
+    Google export) is :func:`deliver_approval` and can run behind an already
+    answered button.  ``None`` means the application was not pending — the
+    caller should say which decision it already has, not just "already
+    processed".
+    """
+    number = await db.approve(app_id, moderator)
+    if number is None:
+        return None
+    return await db.get_application(app_id)
+
+
+async def claim_rejection(
+    db: Database, app_id: int, moderator: str
+) -> Optional[Application]:
+    """Reject an application (the decision only — see :func:`claim_approval`)."""
+    ok = await db.reject(app_id, moderator)
+    if not ok:
+        return None
+    return await db.get_application(app_id)
+
+
+async def deliver_approval(
+    bot: Optional[Bot],
+    config: Config | TenantConfig,
+    app: Application,
+    *,
+    moderator: str = "",
+    announce_in_chat: bool = False,
+) -> TicketResult:
+    """Notify the approved participant, send the ticket, export to Google.
+
+    Never raises: the decision is already stored, so a failure here is a
+    delivery problem that is reported (moderation chat / log) rather than a lost
+    approval.  Returns the ticket result so the caller can tell the group
+    whether the participant really received their ticket.
+    """
+    # Tenant-branded approved text
+    approved_text = texts.approved_for_tenant(app.language, config, app.reg_number)
+    await notify_applicant(bot, app.user_id, approved_text, app.language)
+    result = await send_ticket(bot, config, app)
+    if announce_in_chat:
+        await announce_decision_to_chat(
+            bot,
+            config,
+            app,
+            status=STATUS_APPROVED,
+            number=app.reg_number,
+            moderator=moderator,
+        )
+    spawn(export_to_google(config, app))
+    return result
+
+
+async def deliver_rejection(
+    bot: Optional[Bot],
+    config: Config | TenantConfig,
+    app: Application,
+    *,
+    moderator: str = "",
+    announce_in_chat: bool = False,
+) -> bool:
+    """Notify a rejected participant (and the panel chat when asked).
+
+    ``False`` when the participant could not be reached — the moderation chat is
+    told, because "the bot never answered me" reports usually start there.
+    """
+    rejected_text = texts.rejected_for_tenant(app.language, config)
+    delivered = await notify_applicant(bot, app.user_id, rejected_text, app.language)
+    if not delivered:
+        chat_id = getattr(config, "admin_chat_id", 0)
+        if chat_id and bot is not None:
+            try:
+                await bot.send_message(
+                    chat_id,
+                    texts.MODERATION_UNREACHABLE.format(
+                        number=app.reg_number if app.reg_number is not None else "—",
+                        user=_applicant_label(app),
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - reporting must never break the decision
+                logger.debug("Could not report the unreachable participant", exc_info=True)
+    if announce_in_chat:
+        await announce_decision_to_chat(
+            bot, config, app, status=STATUS_REJECTED, moderator=moderator
+        )
+    return delivered
+
+
 async def approve_application(
     bot: Bot,
     config: Config | TenantConfig,
@@ -375,21 +557,20 @@ async def approve_application(
     *,
     announce_in_chat: bool = False,
 ) -> Optional[int]:
-    """Approve an application. Returns the assigned number, or None if already processed."""
-    number = await db.approve(app_id, moderator)
-    if number is None:
+    """Approve an application and deliver it. Returns the number, or None.
+
+    Kept as the single call for callers that want the old synchronous
+    behaviour (the web panel's own tests, the diagnostics).  Interactive callers
+    answer the moderator first and use :func:`claim_approval` plus
+    :func:`deliver_approval` instead.
+    """
+    app = await claim_approval(db, app_id, moderator)
+    if app is None:
         return None
-    app = await db.get_application(app_id)
-    # Tenant-branded approved text
-    approved_text = texts.approved_for_tenant(app.language, config, number)
-    await notify_applicant(bot, app.user_id, approved_text, app.language)
-    await send_ticket(bot, config, app)
-    if announce_in_chat:
-        await announce_decision_to_chat(
-            bot, config, app, status=STATUS_APPROVED, number=number, moderator=moderator
-        )
-    asyncio.create_task(export_to_google(config, app))
-    return number
+    await deliver_approval(
+        bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat
+    )
+    return app.reg_number
 
 
 async def reject_application(
@@ -401,18 +582,77 @@ async def reject_application(
     *,
     announce_in_chat: bool = False,
 ) -> bool:
-    """Reject an application. Returns True if it was pending and got rejected."""
-    ok = await db.reject(app_id, moderator)
-    if not ok:
+    """Reject an application and notify it. True if it was pending."""
+    app = await claim_rejection(db, app_id, moderator)
+    if app is None:
         return False
-    app = await db.get_application(app_id)
-    rejected_text = texts.rejected_for_tenant(app.language, config)
-    await notify_applicant(bot, app.user_id, rejected_text, app.language)
-    if announce_in_chat:
-        await announce_decision_to_chat(
-            bot, config, app, status=STATUS_REJECTED, moderator=moderator
-        )
+    await deliver_rejection(
+        bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat
+    )
     return True
+
+
+def already_processed_text(app: Optional[Application], app_id: int = 0) -> str:
+    """Say *what* an application's decision was, not just that there is one.
+
+    «Эта заявка уже обработана» is what made a slow approval look like a lost
+    one: the moderator tapped Accept, the answer took seconds, they tapped again
+    and only saw that bare line.  With the number and the moderator in it, the
+    second tap confirms the first one worked.
+    """
+    if app is None:
+        return texts.MODERATION_ALREADY
+    moderator = (app.processed_by or "").strip()
+    if app.status == STATUS_APPROVED:
+        return texts.MODERATION_ALREADY_APPROVED.format(
+            number=app.reg_number if app.reg_number is not None else "—",
+            moderator=moderator or "—",
+            app_id=app.id or app_id,
+        )
+    if app.status == STATUS_REJECTED:
+        return texts.MODERATION_ALREADY_REJECTED.format(moderator=moderator or "—")
+    return texts.MODERATION_ALREADY
+
+
+async def claim_status(
+    db: Database, app_id: int, status: str, moderator: str
+) -> Optional[Application]:
+    """Force a status (the decision only). ``None`` when it could not be stored."""
+    if status not in (STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED):
+        return None
+    ok = await db.set_status(app_id, status, moderator)
+    if not ok:
+        return None
+    return await db.get_application(app_id)
+
+
+async def deliver_status(
+    bot: Optional[Bot],
+    config: Config | TenantConfig,
+    app: Application,
+    status: str,
+    *,
+    moderator: str = "",
+    announce_in_chat: bool = False,
+) -> None:
+    """Deliver an overridden status: notify the participant, ticket when approved."""
+    if status == STATUS_APPROVED:
+        await deliver_approval(
+            bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat
+        )
+    elif status == STATUS_REJECTED:
+        await deliver_rejection(
+            bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat
+        )
+    elif announce_in_chat:
+        await announce_decision_to_chat(
+            bot,
+            config,
+            app,
+            status=status,
+            number=app.reg_number,
+            moderator=moderator,
+        )
 
 
 async def set_status(
@@ -428,29 +668,14 @@ async def set_status(
     """Admin-panel override: force an application's status regardless of current.
 
     Notifies the applicant and, on transition to approved, sends the ticket
-    and exports to Google — same as normal approve/reject flow.
+    and exports to Google — same as normal approve/reject flow.  Interactive
+    callers use :func:`claim_status` + :func:`deliver_status` instead, so the
+    panel does not wait for the upload.
     """
-    if status not in (STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED):
+    app = await claim_status(db, app_id, status, moderator)
+    if app is None:
         return False
-    ok = await db.set_status(app_id, status, moderator)
-    if not ok:
-        return False
-    app = await db.get_application(app_id)
-    if status == STATUS_APPROVED:
-        approved_text = texts.approved_for_tenant(app.language, config, app.reg_number)
-        await notify_applicant(bot, app.user_id, approved_text, app.language)
-        await send_ticket(bot, config, app)
-        asyncio.create_task(export_to_google(config, app))
-    elif status == STATUS_REJECTED:
-        rejected_text = texts.rejected_for_tenant(app.language, config)
-        await notify_applicant(bot, app.user_id, rejected_text, app.language)
-    if announce_in_chat:
-        await announce_decision_to_chat(
-            bot,
-            config,
-            app,
-            status=status,
-            number=app.reg_number,
-            moderator=moderator,
-        )
+    await deliver_status(
+        bot, config, app, status, moderator=moderator, announce_in_chat=announce_in_chat
+    )
     return True

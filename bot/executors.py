@@ -35,7 +35,16 @@ T = TypeVar("T")
 # logs and keeps memory predictable.
 MAX_WORKERS = 8
 
+# Rendering a ticket is not just slow work — it is *interactive* slow work: the
+# moderator is standing in the group with a frozen button while it happens, and
+# the participant is waiting for their poster.  On its own small pool it can
+# never queue behind a batch of Drive uploads from other applications (eight of
+# those fill ``MAX_WORKERS`` and the render waits, which is what made an
+# approval come back "ticket not delivered" while Google was busy).
+RENDER_WORKERS = 2
+
 _executor: Optional[ThreadPoolExecutor] = None
+_render_executor: Optional[ThreadPoolExecutor] = None
 _lock = threading.Lock()
 
 
@@ -53,6 +62,25 @@ def get_executor() -> ThreadPoolExecutor:
     return _executor
 
 
+def get_render_executor() -> ThreadPoolExecutor:
+    """The small pool reserved for ticket rendering / JPEG re-encoding."""
+    global _render_executor
+    if _render_executor is None:
+        with _lock:
+            if _render_executor is None:
+                _render_executor = ThreadPoolExecutor(
+                    max_workers=RENDER_WORKERS,
+                    thread_name_prefix="render",
+                )
+    return _render_executor
+
+
+async def run_render(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """Run a ticket render on the reserved pool (see :data:`RENDER_WORKERS`)."""
+    call = functools.partial(func, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(get_render_executor(), call)
+
+
 async def run_heavy(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run blocking ``func`` in the slow-work pool rather than the default one.
 
@@ -63,9 +91,12 @@ async def run_heavy(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
 
 
 def shutdown(*, wait: bool = False) -> None:
-    """Stop the pool.  Safe to call when it was never created."""
-    global _executor
+    """Stop the pools.  Safe to call when they were never created."""
+    global _executor, _render_executor
     with _lock:
         executor, _executor = _executor, None
+        renderer, _render_executor = _render_executor, None
     if executor is not None:
         executor.shutdown(wait=wait)
+    if renderer is not None:
+        renderer.shutdown(wait=wait)

@@ -394,6 +394,25 @@ MODERATION_MODS_COUNT = "{n} фото (последние в альбоме)"
 MODERATION_APPROVED = "✅ Принято — №{number} ({moderator})"
 MODERATION_REJECTED = "❌ Отклонено ({moderator})"
 MODERATION_ALREADY = "Эта заявка уже обработана."
+# The moderator gets an answer in a second now, and the ticket follows in the
+# background — so the card says what is still happening instead of being drawn
+# only when the participant already has the poster.
+MODERATION_TICKET_SENDING = "🎫 Билет отправляется участнику…"
+MODERATION_TICKET_SENT = "🎫 Билет отправлен участнику"
+MODERATION_TICKET_FAILED = "🎫 Билет НЕ ушёл: {error} — отправьте вручную: /ticket {app_id}"
+# A second tap on an already decided card must say which decision it is (and who
+# made it), otherwise it reads as "the button is broken".
+MODERATION_ALREADY_APPROVED = (
+    "Уже принята — №{number} ({moderator}). Отправить билет повторно: /ticket {app_id}"
+)
+MODERATION_ALREADY_REJECTED = "Уже отклонена ({moderator})."
+MODERATION_APPROVED_TOAST = "Одобрено, №{number} — билет отправляется"
+# The participant we could not reach still looks "processed" in the panel, so
+# the group has to see it.
+MODERATION_UNREACHABLE = (
+    "⚠️ Сообщение не доставлено: {user} не получает сообщения от бота "
+    "(заблокировал бота или удалил чат). Заявка №{number} обработана."
+)
 MODERATION_FAILED = "Не удалось обработать заявку — попробуйте ещё раз."
 TICKET_CMD_USAGE = (
     "Использование: <code>/ticket 123</code> — id заявки из карточки или панели."
@@ -402,6 +421,7 @@ TICKET_CMD_NO_APP = "Заявка <code>{app_id}</code> не найдена."
 TICKET_CMD_NOT_APPROVED = (
     "У заявки статус <b>{status}</b> — билет есть только у одобренной заявки."
 )
+TICKET_CMD_STARTED = "⏳ Готовлю и отправляю билет №{number}…"
 TICKET_CMD_SENT = "🎫 Билет отправлен участнику (№{number})."
 TICKET_CMD_FAILED = "⚠️ Билет не ушёл: <code>{error}</code>"
 TICKET_FAILED_ADMIN = (

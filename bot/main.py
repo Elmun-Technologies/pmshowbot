@@ -16,7 +16,7 @@ from .admin.server import create_admin_app
 from .bot_manager import BotManager, publish_commands as _publish_commands
 from .config import Config, load_config
 from .db import DEFAULT_TENANT_SLUG, Database
-from .services import assets, media
+from .services import assets, decisions, media
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +68,10 @@ async def main() -> None:
         await manager.shutdown()
         if web_runner is not None:
             await web_runner.cleanup()
+        # A decision answered a second ago may still be delivering its ticket.
+        # Give those tasks a moment: a redeploy is exactly when "the participant
+        # never got the ticket" would otherwise happen.
+        await decisions.wait_background(timeout=20.0)
         # Photo downloads run as their own tasks (they must not hold an update
         # back): stop the ones that are still in flight before the loop closes.
         await media.ingest.cancel_pending()
