@@ -248,6 +248,7 @@ def applications_page(
     apps: Iterable[Application],
     status_filter: Optional[str],
     search: str,
+    notice: str = "",
 ) -> str:
     lang = i18n.normalize_lang(lang)
     # Keep list filters when switching the interface language.
@@ -292,8 +293,10 @@ def applications_page(
             f'{t(lang, "apps.empty")}</td></tr>'
         )
 
+    notice_html = f'<div class="ok">{escape(notice)}</div>' if notice else ""
     table = (
-        '<div class="section">'
+        notice_html
+        + '<div class="section">'
         + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'
         + f'<h2 style="margin:0">{t(lang, "apps.heading", n=len(apps))}</h2>{switcher}</div>'
         + filters
@@ -382,6 +385,22 @@ def _status_control(
     )
 
 
+def _delete_application_form(lang: str, app: Application) -> str:
+    """Danger zone: remove the application so the person can register again."""
+    number = f'№{app.reg_number}' if app.reg_number is not None else "—"
+    return (
+        '<div class="section" style="border:1px solid #fecaca">'
+        f'<h2>{t(lang, "delete.title")}</h2>'
+        f'<p class="muted">{t(lang, "delete.hint")}</p>'
+        f'<p class="muted">{t(lang, "delete.details", plate=escape(app.plate), number=number, user=escape(app.username))}</p>'
+        f'<form method="post" action="/application/{app.id}/delete">'
+        f'<button class="btn btn-reject" type="submit" '
+        f'onclick="return confirm(\'{_js_confirm(t(lang, "delete.confirm"))}\')">'
+        f'{t(lang, "delete.button")}</button></form>'
+        '</div>'
+    )
+
+
 def application_detail_page(
     lang: str,
     app: Application,
@@ -467,6 +486,7 @@ def application_detail_page(
         f'<div class="section"><h2>{t(lang, "detail.badge_photo")}</h2>{badge_html}</div>'
         + _status_control(lang, app.id, app.status, changed=status_changed, error=status_error)
         + _individual_message_form(lang, app.id, sent=msg_sent, error=msg_error)
+        + _delete_application_form(lang, app)
     )
     return _page(t(lang, "detail.page_title", id=app.id), body, lang, active="apps")
 

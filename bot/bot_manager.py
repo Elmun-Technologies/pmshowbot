@@ -16,13 +16,18 @@ from typing import Any, Callable, Optional
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramConflictError
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 from .config import Config, TenantConfig
 from .db import Database, Tenant
+from .errors import handle_error
 from .handlers.factories import create_tenant_routers
 from .middlewares import RegistrationClosedMiddleware, SerializePerUserMiddleware
+from .security import EncryptionError
+from .services.fsm_storage import SqliteFSMStorage
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,14 @@ _ADMIN_COMMANDS = _PUBLIC_COMMANDS + [
 ]
 
 
+# How long to wait before reviving a tenant whose polling task died, and the
+# ceiling for the exponential backoff.
+REVIVE_DELAY_SECONDS = 15.0
+REVIVE_MAX_DELAY_SECONDS = 300.0
+# A worker that stayed up this long is considered healthy again.
+HEALTHY_AFTER_SECONDS = 300.0
+
+
 @dataclass
 class BotRuntime:
     """Live resources owned by one tenant polling worker."""
@@ -51,6 +64,7 @@ class BotRuntime:
     dispatcher: Any
     task: asyncio.Task
     signature: tuple[Any, ...]
+    started_at: float = 0.0
 
 
 async def publish_commands(bot: Bot, config: TenantConfig) -> None:
@@ -85,12 +99,21 @@ class BotManager:
         *,
         bot_factory: Callable[..., Any] = Bot,
         dispatcher_factory: Callable[..., Any] = Dispatcher,
+        storage: BaseStorage | None = None,
     ) -> None:
         self.db = db
         self.config = config
         self._bot_factory = bot_factory
         self._dispatcher_factory = dispatcher_factory
+        # Registration progress must survive a restart/hot reload, so states
+        # live in the same SQLite file as the applications.  ``storage`` is an
+        # injection point for tests.
+        self._storage = storage
         self._runtimes: dict[int, BotRuntime] = {}
+        # Revival bookkeeping: how often a tenant's worker died and when it was
+        # last restarted (see _revive_dead_workers).
+        self._revive_attempts: dict[int, int] = {}
+        self._last_revive: dict[int, float] = {}
         self._lock = asyncio.Lock()
         self._stopping = False
         self._wake = asyncio.Event()
@@ -190,9 +213,21 @@ class BotManager:
             # Lightweight fake factories in unit tests often only accept token.
             return self._bot_factory(token=token)
 
+    def _storage_for(self) -> BaseStorage:
+        """One shared storage for every tenant (keys carry the bot id)."""
+        if self._storage is not None:
+            return self._storage
+        db_path = getattr(self.db, "path", "")
+        if db_path:
+            self._storage = SqliteFSMStorage(db_path)
+        else:
+            self._storage = MemoryStorage()
+        return self._storage
+
     def _new_dispatcher(self, tenant_config: TenantConfig) -> Any:
+        storage = self._storage_for()
         try:
-            dispatcher = self._dispatcher_factory(storage=MemoryStorage())
+            dispatcher = self._dispatcher_factory(storage=storage)
         except TypeError:
             dispatcher = self._dispatcher_factory()
         # Fake dispatchers used in tests may intentionally only implement the
@@ -205,6 +240,13 @@ class BotManager:
         except (TypeError, AttributeError):
             setattr(dispatcher, "tenant_config", tenant_config)
             setattr(dispatcher, "tenant_db", self.db.for_tenant(tenant_config.tenant_id))
+        # Errors are answered instead of only logged: see bot/errors.py.
+        errors_observer = getattr(dispatcher, "errors", None)
+        if errors_observer is not None and hasattr(errors_observer, "register"):
+            try:
+                errors_observer.register(handle_error)
+            except Exception:  # noqa: BLE001 - fake dispatchers in tests
+                pass
         if hasattr(dispatcher, "include_router"):
             registration_router, moderation_router, badge_router, number_router = create_tenant_routers()
             registration_router.message.outer_middleware(RegistrationClosedMiddleware())
@@ -233,6 +275,13 @@ class BotManager:
         except asyncio.CancelledError:
             logger.info("[%s] Polling task cancelled", slug)
             raise
+        except TelegramConflictError:
+            logger.error(
+                "[%s] Telegram refused getUpdates: another process is polling this "
+                "token. Stop the duplicate deployment (second machine, local run or "
+                "old worker) — the supervisor will keep retrying.",
+                slug,
+            )
         except Exception:  # noqa: BLE001 - one bad tenant must not stop others
             logger.exception("[%s] Polling stopped with an error", slug)
         finally:
@@ -295,6 +344,7 @@ class BotManager:
             dispatcher=dispatcher,
             task=task,
             signature=self._signature(tenant, token),
+            started_at=asyncio.get_running_loop().time(),
         )
         self._wake.set()
         return True
@@ -367,13 +417,22 @@ class BotManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _supervise(self) -> None:
-        """Observe workers while allowing refresh/restart calls to wake it."""
+        """Observe workers, revive the dead ones, allow refresh/restart to wake it."""
         while not self._stopping:
-            tasks = [runtime.task for runtime in self._runtimes.values() if not runtime.task.done()]
             self._wake.clear()
+            # Checked first: a worker may have died while the supervisor slept,
+            # and a throttled revival needs the next pass to be retried.
+            await self._revive_dead_workers()
+            if self._stopping:
+                break
+            tasks = [
+                runtime.task
+                for runtime in self._runtimes.values()
+                if not runtime.task.done()
+            ]
             if not tasks:
                 try:
-                    await asyncio.wait_for(self._wake.wait(), timeout=30)
+                    await asyncio.wait_for(self._wake.wait(), timeout=15)
                 except asyncio.TimeoutError:
                     pass
                 continue
@@ -383,6 +442,48 @@ class BotManager:
             finally:
                 if not wake_task.done():
                     wake_task.cancel()
+
+    async def _revive_dead_workers(self) -> None:
+        """Restart tenants whose polling task died on its own.
+
+        Without this, a worker that hit a network blip, a Telegram conflict
+        (two deployments sharing one token) or any other exception simply stayed
+        dead: the bot "stopped loading" and only a redeploy brought it back.
+        The restart is throttled with an exponential backoff per tenant, and a
+        worker that ran healthily for a while starts with a fresh delay.
+        """
+        if self._stopping:
+            return
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        for tenant_id, runtime in list(self._runtimes.items()):
+            if not runtime.task.done():
+                continue
+            if runtime.started_at and (
+                now - runtime.started_at >= HEALTHY_AFTER_SECONDS
+            ):
+                self._revive_attempts.pop(tenant_id, None)
+            attempts = self._revive_attempts.get(tenant_id, 0)
+            delay = min(REVIVE_DELAY_SECONDS * (2 ** attempts), REVIVE_MAX_DELAY_SECONDS)
+            last = self._last_revive.get(tenant_id, 0.0)
+            if last and now - last < delay:
+                continue
+            logger.warning(
+                "[%s] Polling worker is not running — restarting it (attempt %d)",
+                runtime.tenant.slug,
+                attempts + 1,
+            )
+            async with self._lock:
+                if tenant_id not in self._runtimes:
+                    continue
+                await self._close_runtime(runtime)
+                self._runtimes.pop(tenant_id, None)
+                self._revive_attempts[tenant_id] = attempts + 1
+                self._last_revive[tenant_id] = now
+                try:
+                    await self._start_tenant_locked(runtime.tenant)
+                except Exception:  # noqa: BLE001 - keep the supervisor alive
+                    logger.exception("[%s] Could not revive the worker", runtime.tenant.slug)
 
     async def shutdown(self) -> None:
         """Stop all polling tasks and close their HTTP sessions."""
@@ -399,3 +500,9 @@ class BotManager:
                 await self._supervisor
             except asyncio.CancelledError:
                 pass
+        if self._storage is not None:
+            try:
+                await self._storage.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("FSM storage close failed", exc_info=True)
+            self._storage = None

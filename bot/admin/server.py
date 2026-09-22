@@ -121,6 +121,7 @@ def _register_tenant_routes(app: web.Application, prefix: str) -> None:
     app.router.add_get(f"{prefix}/photo/{{id}}/{{idx}}", _photo)
     app.router.add_get(f"{prefix}/modphoto/{{id}}/{{idx}}", _mod_photo)
     app.router.add_get(f"{prefix}/badgephoto/{{id}}", _badge_photo)
+    app.router.add_post(f"{prefix}/application/{{id}}/delete", _delete_application)
     app.router.add_get(f"{prefix}/export.csv", _export_csv)
     app.router.add_get(f"{prefix}/export.xlsx", _export_excel)
     app.router.add_get(f"{prefix}/broadcast", _broadcast_get)
@@ -150,6 +151,7 @@ def _register_tenant_routes(app: web.Application, prefix: str) -> None:
         app.router.add_get("/photo/{id}/{idx}", _photo)
         app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
         app.router.add_get("/badgephoto/{id}", _badge_photo)
+        app.router.add_post("/application/{id}/delete", _delete_application)
         app.router.add_get("/export.csv", _export_csv)
         app.router.add_get("/export.xlsx", _export_excel)
         app.router.add_get("/broadcast", _broadcast_get)
@@ -489,7 +491,17 @@ async def _applications(request: web.Request) -> web.Response:
         status = None
     search = request.query.get("search", "").strip()
     apps = await db.list_applications(status=status, search=search or None)
-    return _html(request, views.applications_page(_lang(request), apps, status, search))
+    deleted_notice = (
+        t(_lang(request), "apps.deleted_notice")
+        if request.query.get("deleted") == "1"
+        else ""
+    )
+    return _html(
+        request,
+        views.applications_page(
+            _lang(request), apps, status, search, notice=deleted_notice
+        ),
+    )
 
 
 async def _application_detail(request: web.Request) -> web.Response:
@@ -524,7 +536,12 @@ async def _approve(request: web.Request) -> web.Response:
     lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
     await decisions.approve_application(
-        bot, config, db, app_id, moderator=t(lang, "moderation.via_panel")
+        bot,
+        config,
+        db,
+        app_id,
+        moderator=t(lang, "moderation.via_panel"),
+        announce_in_chat=True,
     )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
@@ -536,7 +553,12 @@ async def _reject(request: web.Request) -> web.Response:
     lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
     await decisions.reject_application(
-        bot, config, db, app_id, moderator=t(lang, "moderation.via_panel")
+        bot,
+        config,
+        db,
+        app_id,
+        moderator=t(lang, "moderation.via_panel"),
+        announce_in_chat=True,
     )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
@@ -576,9 +598,42 @@ async def _change_status(request: web.Request) -> web.Response:
     if status not in _VALID_STATUSES or bot is None:
         raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change=error"))
     ok = await decisions.set_status(
-        bot, config, db, app_id, status, moderator=t(lang, "moderation.via_panel")
+        bot,
+        config,
+        db,
+        app_id,
+        status,
+        moderator=t(lang, "moderation.via_panel"),
+        announce_in_chat=True,
     )
     raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if ok else 'error'}"))
+
+
+async def _delete_application(request: web.Request) -> web.Response:
+    """Remove one application permanently from the tenant's database.
+
+    Testers need to run the whole form again and again, which is impossible
+    while an approved application keeps answering ``/start`` with its old
+    status.  This frees the person (and the registration number) right away;
+    the participant photos on the volume are removed with it.
+    """
+    db = _db(request)
+    lang = _lang(request)
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    if app is None:
+        raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
+    removed = await db.delete_application(app_id)
+    if removed is None:
+        raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
+    logger.info(
+        "Application %s (tenant %s) deleted via panel — plate %s, number %s",
+        app_id,
+        getattr(_config(request), "tenant_slug", "?"),
+        removed.plate,
+        removed.reg_number,
+    )
+    raise web.HTTPFound(_url(request, "/applications?deleted=1"))
 
 
 async def _photo(request: web.Request) -> web.StreamResponse:

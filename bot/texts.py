@@ -68,6 +68,19 @@ _RU = dict(
     BTN_MODS_NONE="Изменений нет ➡️",
     ASK_DIRECTION="Выберите направление для участия:",
     ASK_SUB_DIRECTION="Выберите поднаправление для <b>{parent}</b>:",
+    ASK_SUB_DIRECTION_PLAIN="Выберите поднаправление:",
+    PHOTO_DOWNLOAD_FAILED=(
+        "Не удалось сохранить эту фотографию. Пришлите, пожалуйста, её ещё раз."
+    ),
+    STEP_STALE="Эта кнопка уже устарела — продолжаем с текущего шага.",
+    RECOVER_RESTART=(
+        "Что-то пошло не так, и форма сбилась. Нажмите /start, чтобы начать "
+        "регистрацию заново — предыдущие ответы не сохранятся."
+    ),
+    RECOVER_TECHNICAL=(
+        "Произошла техническая ошибка. Попробуйте ещё раз или нажмите /start, "
+        "чтобы начать регистрацию заново."
+    ),
     DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
     BAD_PHONE=(
@@ -94,6 +107,8 @@ _RU = dict(
         "оно пройдёт <b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
     ),
     STATUS_PENDING="Ваша заявка на рассмотрении. В ближайшее время вы получите ответ.",
+    STATUS_APPROVED="Ваш регистрационный номер — <b>№{number}</b>.",
+    STATUS_REJECTED="Ваша заявка отклонена.",
     REGISTRATION_CLOSED=(
         "Регистрация на <b>Promotors Show Samarkand</b> завершена. Спасибо за интерес!\n\n"
         "Приходите на мероприятие в качестве гостя — оно пройдёт "
@@ -166,6 +181,19 @@ _UZ = dict(
     BTN_MODS_NONE="O‘zgarish yo‘q ➡️",
     ASK_DIRECTION="Ishtirok yo‘nalishini tanlang:",
     ASK_SUB_DIRECTION="<b>{parent}</b> uchun yo‘nalish osti turini tanlang:",
+    ASK_SUB_DIRECTION_PLAIN="Yo‘nalish osti turini tanlang:",
+    PHOTO_DOWNLOAD_FAILED=(
+        "Bu suratni saqlab bo‘lmadi. Iltimos, uni yana bir marta yuboring."
+    ),
+    STEP_STALE="Bu tugma eskirgan — joriy qadamdan davom etamiz.",
+    RECOVER_RESTART=(
+        "Nimadir xato ketdi va shakl buzildi. Ro‘yxatdan o‘tishni boshidan "
+        "boshlash uchun /start tugmasini bosing — oldingi javoblar saqlanmaydi."
+    ),
+    RECOVER_TECHNICAL=(
+        "Texnik xatolik yuz berdi. Yana urinib ko‘ring yoki ro‘yxatdan o‘tishni "
+        "boshidan boshlash uchun /start tugmasini bosing."
+    ),
     DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
     BAD_PHONE=(
@@ -192,6 +220,8 @@ _UZ = dict(
         "<b>12 va 13-sentyabr, 10:00 dan</b> <b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
     ),
     STATUS_PENDING="Arizangiz ko‘rib chiqilmoqda. Tez orada javob olasiz.",
+    STATUS_APPROVED="Sizning ro‘yxat raqamingiz — <b>№{number}</b>.",
+    STATUS_REJECTED="Arizangiz rad etildi.",
     REGISTRATION_CLOSED=(
         "<b>Promotors Show Samarkand</b> uchun ro‘yxatdan o‘tish yakunlandi. "
         "Qiziqish bildirganingiz uchun rahmat!\n\n"
@@ -253,6 +283,12 @@ REGISTRATION_CLOSED_BILINGUAL = (
     "парковка SOF EXPO."
 )
 
+# Shown after an unexpected error when the participant's language is unknown.
+RECOVER_TECHNICAL_BILINGUAL = (
+    "Texnik xatolik yuz berdi. Yana urinib ko‘ring yoki /start tugmasini bosing.\n"
+    "Произошла техническая ошибка. Попробуйте ещё раз или нажмите /start."
+)
+
 # Shown when someone asks their number but has no application (language unknown).
 STATUS_NONE = (
     "Sizda hali ariza yo‘q. Ro‘yxatdan o‘tish uchun /start bosing.\n"
@@ -274,6 +310,8 @@ MODERATION_MODS_COUNT = "{n} фото (последние в альбоме)"
 MODERATION_APPROVED = "✅ Принято — №{number} ({moderator})"
 MODERATION_REJECTED = "❌ Отклонено ({moderator})"
 MODERATION_ALREADY = "Эта заявка уже обработана."
+MODERATION_FAILED = "Не удалось обработать заявку — попробуйте ещё раз."
+MODERATION_PANEL_HEADER = "🖥 <b>Решение через админ-панель</b>"
 
 # Sent to the moderation chat when a registered participant sends their badge
 # photo (outside the registration flow, so it never touches its texts/state).

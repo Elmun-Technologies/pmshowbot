@@ -145,6 +145,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "apps.col_user": "Пользователь",
         "apps.col_status": "Статус",
         "apps.empty": "Заявок нет",
+        "apps.deleted_notice": "Заявка удалена — участник может зарегистрироваться заново.",
 
         # --- Application detail ---
         "detail.page_title": "Заявка #{id}",
@@ -171,6 +172,17 @@ _STRINGS: dict[str, dict[str, str]] = {
         "detail.badge_empty": "Участник ещё не прислал фото для бейджа",
         "detail.accept": "✅ Принять",
         "detail.reject": "❌ Отклонить",
+
+        # --- Danger zone: permanent delete ---
+        "delete.title": "🗑 Удаление заявки",
+        "delete.hint": (
+            "Заявка будет удалена из базы вместе с фотографиями. После этого "
+            "участник сможет зарегистрироваться заново (/start), а освободившийся "
+            "регистрационный номер получит следующая одобренная заявка."
+        ),
+        "delete.details": "Гос. номер: <b>{plate}</b> · Номер: {number} · Участник: {user}",
+        "delete.button": "🗑 Удалить заявку навсегда",
+        "delete.confirm": "Удалить заявку без возможности восстановления?",
 
         # --- Status control (detail page) ---
         "statusctl.title": "🔀 Управление статусом",
@@ -689,6 +701,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "apps.col_user": "Foydalanuvchi",
         "apps.col_status": "Holat",
         "apps.empty": "Arizalar yo‘q",
+        "apps.deleted_notice": "Ariza o‘chirildi — ishtirokchi qaytadan ro‘yxatdan o‘tishi mumkin.",
 
         # --- Application detail ---
         "detail.page_title": "Ariza #{id}",
@@ -715,6 +728,17 @@ _STRINGS: dict[str, dict[str, str]] = {
         "detail.badge_empty": "Ishtirokchi hali badge uchun surat yubormagan",
         "detail.accept": "✅ Qabul qilish",
         "detail.reject": "❌ Rad etish",
+
+        # --- Danger zone: permanent delete ---
+        "delete.title": "🗑 Arizani o‘chirish",
+        "delete.hint": (
+            "Ariza suratlar bilan birga bazadan butunlay o‘chiriladi. Shundan so‘ng "
+            "ishtirokchi /start orqali qaytadan ro‘yxatdan o‘tishi mumkin, bo‘shagan "
+            "raqam esa keyingi tasdiqlangan arizaga beriladi."
+        ),
+        "delete.details": "Davlat raqami: <b>{plate}</b> · Raqam: {number} · Ishtirokchi: {user}",
+        "delete.button": "🗑 Arizani butunlay o‘chirish",
+        "delete.confirm": "Ariza qaytarib bo‘lmaydigan tarzda o‘chirilsinmi?",
 
         # --- Status control (detail page) ---
         "statusctl.title": "🔀 Holatni boshqarish",

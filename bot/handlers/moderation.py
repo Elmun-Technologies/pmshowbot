@@ -420,10 +420,15 @@ async def cmd_export(message: Message, config: Config, db: Database) -> None:
 
 @router.callback_query(F.data.startswith(f"{keyboards.CB_APPROVE}:"))
 async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
-    app_id = int(query.data.split(":", 1)[1])
+    app_id = _callback_app_id(query)
     moderator = _moderator_label(query)
 
-    number = await decisions.approve_application(bot, config, db, app_id, moderator)
+    try:
+        number = await decisions.approve_application(bot, config, db, app_id, moderator)
+    except Exception:  # noqa: BLE001 - the moderator must always get an answer
+        logger.exception("Approving application %s failed", app_id)
+        await query.answer(texts.MODERATION_FAILED, show_alert=True)
+        return
     if number is None:
         await query.answer(texts.MODERATION_ALREADY, show_alert=True)
         return
@@ -437,10 +442,15 @@ async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) 
 
 @router.callback_query(F.data.startswith(f"{keyboards.CB_REJECT}:"))
 async def reject(query: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
-    app_id = int(query.data.split(":", 1)[1])
+    app_id = _callback_app_id(query)
     moderator = _moderator_label(query)
 
-    ok = await decisions.reject_application(bot, config, db, app_id, moderator)
+    try:
+        ok = await decisions.reject_application(bot, config, db, app_id, moderator)
+    except Exception:  # noqa: BLE001 - the moderator must always get an answer
+        logger.exception("Rejecting application %s failed", app_id)
+        await query.answer(texts.MODERATION_FAILED, show_alert=True)
+        return
     if not ok:
         await query.answer(texts.MODERATION_ALREADY, show_alert=True)
         return
@@ -449,15 +459,56 @@ async def reject(query: CallbackQuery, bot: Bot, config: Config, db: Database) -
     await query.answer("Отклонено")
 
 
-async def _append_status(query: CallbackQuery, status_line: str) -> None:
-    """Append a decision line under the existing card, keeping all the details,
-    and drop the inline buttons."""
-    base = query.message.html_text or query.message.text or ""
+def _callback_app_id(query: CallbackQuery) -> int:
+    """Application id from ``approve:<id>`` / ``reject:<id>`` callback data."""
     try:
-        await query.message.edit_text(f"{base}\n\n{status_line}")
-    except Exception:  # noqa: BLE001 - fall back to editing just the markup
-        logger.exception("Could not edit moderation card %s", query.message.message_id)
-        await query.message.edit_reply_markup(reply_markup=None)
+        return int(query.data.split(":", 1)[1])
+    except (AttributeError, IndexError, ValueError):
+        return 0
+
+
+async def _append_status(query: CallbackQuery, status_line: str) -> None:
+    """Mark the decision on the card and make sure it is visible in the group.
+
+    The group is where the whole team watches the queue, so a decision has to
+    land there reliably:
+
+    * the decision line is appended under the application details;
+    * the Accept / Reject buttons are removed (a second tap would only answer
+      "already processed" and hide the outcome);
+    * if the card cannot be edited at all — too old, too long, or another
+      moderator already deleted it — the status is posted as a new message
+      instead of vanishing into the log.
+    """
+    message = query.message
+    base = ""
+    if message is not None:
+        base = getattr(message, "html_text", None) or getattr(message, "text", "") or ""
+    text = f"{base}\n\n{status_line}".strip() if base else status_line
+    # Telegram rejects texts longer than 4096 characters.
+    if len(text) > 4000:
+        text = text[-4000:]
+
+    if message is not None:
+        try:
+            await message.edit_text(text, reply_markup=None)
+            return
+        except Exception:  # noqa: BLE001 - fall back to a plain group message
+            logger.warning(
+                "Could not edit moderation card %s — posting the decision instead",
+                getattr(message, "message_id", "?"),
+            )
+            try:
+                await message.edit_reply_markup(reply_markup=None)
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not clear the card buttons", exc_info=True)
+
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    if chat_id is not None:
+        try:
+            await query.bot.send_message(chat_id, status_line)
+        except Exception:  # noqa: BLE001 - nothing else can be done, log it
+            logger.exception("Could not post the moderation decision")
 
 
 def create_router() -> Router:
