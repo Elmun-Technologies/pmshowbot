@@ -511,11 +511,14 @@ async def approve(query: CallbackQuery, bot: Bot, config: Config, db: Database) 
 
     number = app.reg_number if app.reg_number is not None else "—"
     status_line = texts.MODERATION_APPROVED.format(number=number, moderator=moderator)
+    # The tap is acknowledged before anything else goes over the wire: Telegram
+    # keeps the button spinning until this line, and the card edit below is one
+    # more round trip on a phone uplink.
+    await query.answer(texts.MODERATION_APPROVED_TOAST.format(number=number))
     # Keep all the application details visible; append the decision below them.
     card = await _append_status(
         query, f"{status_line} · {texts.MODERATION_TICKET_SENDING}"
     )
-    await query.answer(texts.MODERATION_APPROVED_TOAST.format(number=number))
 
     async def _deliver() -> None:
         try:
@@ -561,8 +564,8 @@ async def reject(query: CallbackQuery, bot: Bot, config: Config, db: Database) -
         return
 
     status_line = texts.MODERATION_REJECTED.format(moderator=moderator)
-    await _append_status(query, status_line)
     await query.answer("Отклонено")
+    await _append_status(query, status_line)
     decisions.spawn(
         decisions.deliver_rejection(bot, config, app, moderator=moderator)
     )

@@ -65,13 +65,15 @@ async def main() -> None:
         # this coroutine alive lets aiohttp and every tenant share one loop.
         await asyncio.Event().wait()
     finally:
+        # A decision answered a second ago may still be delivering its ticket.
+        # Wait for those tasks *before* the bots are closed: shutting the
+        # sessions down first would turn an in-flight ticket into «session is
+        # closed», which is exactly how "the participant never got the ticket"
+        # happens on a redeploy.
+        await decisions.wait_background(timeout=20.0)
         await manager.shutdown()
         if web_runner is not None:
             await web_runner.cleanup()
-        # A decision answered a second ago may still be delivering its ticket.
-        # Give those tasks a moment: a redeploy is exactly when "the participant
-        # never got the ticket" would otherwise happen.
-        await decisions.wait_background(timeout=20.0)
         # Photo downloads run as their own tasks (they must not hold an update
         # back): stop the ones that are still in flight before the loop closes.
         await media.ingest.cancel_pending()
