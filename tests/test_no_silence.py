@@ -331,6 +331,40 @@ def test_closed_registration_never_leaves_a_mid_form_user_silent():
     asyncio.run(run())
 
 
+def test_group_callback_is_acknowledged_without_posting_into_the_group():
+    """A stale button in the moderation chat must not make the bot talk there.
+
+    The callback is still acknowledged — otherwise the moderator's client keeps
+    the spinner — but nothing is sent to the group, which is their workspace.
+    """
+
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            group = harness.admin_chat_id
+            query = CallbackQuery(
+                id="cq-group",
+                from_user=User(id=999, is_bot=False, first_name="Moderator"),
+                chat_instance="ci",
+                message=_message(text="card", chat_type="supergroup", chat_id=group),
+                data="approve:424242",
+            )
+            before = len(harness.session.methods)
+            await harness.feed(Update(update_id=31, callback_query=query))
+            methods = harness.session.methods[before:]
+            names = [type(m).__name__ for m in methods]
+            assert "AnswerCallbackQuery" in names, names
+            sent_to_group = [
+                m for m in methods if getattr(m, "chat_id", None) == group
+            ]
+            assert not sent_to_group, [type(m).__name__ for m in sent_to_group]
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_unknown_command_mid_form_is_answered()
     test_plain_text_without_any_state_is_answered()
@@ -340,4 +374,5 @@ if __name__ == "__main__":
     test_safety_net_never_touches_the_admin_group()
     test_unknown_command_is_answered_in_every_step()
     test_closed_registration_never_leaves_a_mid_form_user_silent()
+    test_group_callback_is_acknowledged_without_posting_into_the_group()
     print("All no-silence tests passed.")

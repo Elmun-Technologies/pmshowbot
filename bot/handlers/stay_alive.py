@@ -59,8 +59,17 @@ async def _fallback(
     state: FSMContext,
     config: Config | TenantConfig,
     db: Database,
+    *,
+    notify: bool = True,
 ) -> None:
-    """Answer the current step, or explain how to start — never return silent."""
+    """Answer the current step, or explain how to start — never return silent.
+
+    ``notify=False`` (a button pressed in the moderation group) still clears the
+    callback's spinner but sends nothing into the group: the group is the
+    moderators' workspace, and the safety net must not add noise there.
+    """
+    if not notify:
+        return
     lang = await _lang(state)
     current = await state.get_state()
     if current is not None:
@@ -125,13 +134,16 @@ async def unmatched_callback(
 ) -> None:
     """Any callback query no handler claimed — answer it, or the spinner stays."""
     await _answer_query(query)
+    chat_type = getattr(getattr(query.message, "chat", None), "type", "")
     logger.info(
         "Unmatched callback %r from %s (state=%s) — answering from the safety net",
         query.data,
         query.from_user.id,
         await state.get_state(),
     )
-    await _fallback(query.message, query, state, config, db)
+    await _fallback(
+        query.message, query, state, config, db, notify=chat_type == "private"
+    )
 
 
 async def _answer_query(query: CallbackQuery) -> None:
