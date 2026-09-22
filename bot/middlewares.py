@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
@@ -9,6 +10,8 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from . import texts
 from .states import Registration
+
+logger = logging.getLogger(__name__)
 
 
 class RegistrationClosedMiddleware(BaseMiddleware):
@@ -57,6 +60,18 @@ class RegistrationClosedMiddleware(BaseMiddleware):
                 return await handler(event, data)
 
         lang = (await state.get_data()).get("lang", "ru")
+        # Loud on purpose.  This middleware is the one place that deliberately
+        # throws away a half-finished form, and before it was silent: a tenant
+        # whose "registration closed" checkbox is on (or was switched on by an
+        # admin) makes every participant mid-form look like a frozen bot.  With
+        # this line the cause is visible in `fly logs` instead of guessed at.
+        logger.warning(
+            "[%s] Registration is closed — dropped state %s of user %s and sent the "
+            "'registration finished' notice (is the admin checkbox meant to be on?)",
+            getattr(config, "tenant_slug", "?"),
+            current,
+            getattr(user, "id", "?"),
+        )
         await state.clear()
 
         text = texts.registration_closed_for_tenant(lang, config)

@@ -273,7 +273,14 @@ class BotManager:
         logger.info("[%s] Starting bot long polling", slug)
         try:
             if hasattr(bot, "delete_webhook"):
-                await bot.delete_webhook(drop_pending_updates=True)
+                # Pending updates are NOT dropped.  This runs on every worker
+                # start, and a worker is restarted on each deploy and on every
+                # tenant edit from the panel — dropping meant that anything a
+                # participant sent in those seconds (a photo, a plate number)
+                # vanished: no answer, no error, exactly like a frozen bot.
+                # Telegram keeps undelivered updates for 24 hours, and the FSM
+                # state lives in SQLite, so redelivery is answered correctly.
+                await bot.delete_webhook(drop_pending_updates=False)
             await publish_commands(bot, tenant_config)
             # Signal handling belongs to the process's main asyncio runner, not
             # to every tenant dispatcher.  Real aiogram supports both kwargs.
@@ -287,6 +294,10 @@ class BotManager:
             logger.info("[%s] Polling task cancelled", slug)
             raise
         except TelegramConflictError:
+            # Kept for completeness, but it normally never fires: aiogram's own
+            # polling loop catches every exception and retries, so the conflict
+            # is swallowed there.  bot/logwatch.py promotes its log line to a
+            # CRITICAL one instead.
             logger.error(
                 "[%s] Telegram refused getUpdates: another process is polling this "
                 "token. Stop the duplicate deployment (second machine, local run or "

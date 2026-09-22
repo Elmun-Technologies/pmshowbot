@@ -11,7 +11,7 @@ import logging
 
 from aiohttp import web
 
-from . import executors
+from . import executors, logwatch
 from .admin.server import create_admin_app
 from .bot_manager import BotManager, publish_commands as _publish_commands
 from .config import Config, load_config
@@ -23,6 +23,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# aiogram swallows the 409 Conflict that a second poller causes, so promote it
+# to an explicit CRITICAL line (see bot/logwatch.py).
+logwatch.install()
 
 
 async def main() -> None:
