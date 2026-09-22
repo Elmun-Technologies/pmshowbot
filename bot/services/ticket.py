@@ -421,6 +421,25 @@ def _resolve_ticket_copy(lang: str, tenant: Any | None, base_copy: dict) -> dict
     }
 
 
+# ---------- delivery helpers ----------
+def ticket_as_jpeg(png: bytes, quality: int = 88) -> Optional[bytes]:
+    """Re-encode a rendered ticket as JPEG.
+
+    Telegram refuses photos it considers too large (and some clients choke on
+    very big PNGs).  The image has no transparency (black stub background), so
+    a JPEG copy is visually identical and 5-10x smaller — this is the fallback
+    used when the PNG upload is rejected.
+    """
+    try:
+        with Image.open(io.BytesIO(png)) as im:
+            out = io.BytesIO()
+            im.convert("RGB").save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+    except Exception:  # noqa: BLE001 - a fallback must never raise
+        logger.exception("Could not re-encode the ticket as JPEG")
+        return None
+
+
 # ---------- main ----------
 def generate_ticket(
     tenant_id: object | None = None,

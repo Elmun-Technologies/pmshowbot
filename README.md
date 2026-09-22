@@ -108,6 +108,14 @@ python -m pytest -q       # full suite (db, admin panel, i18n, tenants, …)
 python tests/test_db.py   # sequential registration numbers, status transitions
 ```
 
+`tests/test_registration_flow.py` runs the **whole form on a real dispatcher**
+(`tests/harness.py` feeds real `Update` objects to the production routers while
+the Telegram API is a recorder). It covers exactly the failures participants
+reported: the tenant's own direction list, the four SPL Avtozvuk categories,
+one tap per category, duplicate/failed photo updates, stale buttons, the
+tenant-branded `/start`, the moderation card after a decision, and deleting an
+application so it can be registered again.
+
 **Manual end-to-end checklist** (needs a real token + channels + Google creds):
 
 1. `/start` while **not** subscribed → prompted to subscribe; after subscribing,
@@ -116,8 +124,10 @@ python tests/test_db.py   # sequential registration numbers, status transitions
    photos → phone) → "Спасибо".
 3. Moderation chat receives the photos (4 sides, then the modification close-ups)
    + a summary with Accept / Reject.
-4. **Accept** → applicant gets "№1 …"; a new row (with the photos inline) appears
-   in the Google Sheet. **Reject** → applicant gets the guest invitation.
+4. **Accept** → applicant gets "№1 …" plus the generated ticket; a new row (with
+   the photos inline) appears in the Google Sheet. **Reject** → the applicant is
+   told they did not pass; if the tenant has a «Дата для гостей» filled in, the
+   text also invites them as a guest (SPL Show has none — participants only).
 5. "Узнать свой номер" re-shows the applicant's status.
 
 ## Admin web panel
@@ -133,6 +143,12 @@ two deliberately separate roles:
   The per-tenant password is PBKDF2-hashed in SQLite. Its signed cookie is
   separate from the super-admin cookie, and every dashboard, application,
   broadcast, export, asset and settings query is server-scoped to that tenant.
+  Opening an application shows a **🗑 Удаление заявки / 🗑 Arizani o‘chirish**
+  button: it deletes the row with its photos for good, so the person can run
+  the form again (`/start`) and the freed registration number goes to the next
+  approved application. This is what makes repeated tester runs possible —
+  a rejected or approved application otherwise keeps answering `/start` with
+  its old status.
 
 Each tenant manages its own ticket assets at `/t/<slug>/ticket-assets`. Runtime
 files live under `media/_tenants/<slug>/_sponsors`, `_brand`, and `_directions`;
@@ -241,19 +257,30 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
    - Leave **Регистрация закрыта** unchecked. Registration is per tenant.
      A process-wide `REGISTRATION_CLOSED=true` secret is ignored, so it cannot
      make this bot answer «регистрация завершена».
-   - Event fields (Tashkent INDEX, 3 October — filled automatically for slug `splshow` if empty):
-     - `event_date_text_ru`: `02 октября 2026 с 17:00 до 22:00`
+   - Event fields (filled automatically for slug `splshow` if empty):
+     - `event_date_text_ru`: `02 октября 2026 с 17:00 до 22:00` (participant entry)
      - `event_date_text_uz`: `02-oktyabr 2026, soat 17:00 dan 22:00 gacha`
      - `event_venue_text_ru/uz`: `Tashkent INDEX`
-     - `event_guest_date_text_ru`: `03 октября 2026 с 12:00`
-     - `event_guest_date_text_uz`: `03-oktyabr 2026, soat 12:00 dan`
      - participant note: 03 октября 2026 с 09:00 рядом с автомобилем / 03-oktyabr 2026 soat 09:00 dan avtomobil yonida
+     - `event_guest_date_text_ru/uz`: **empty** — the show is for registered
+       participants only, so the rejection message carries no date/time at all.
+       Type a guest date here to switch the guest invitation back on; the boot
+       migration clears the old `03 октября 2026 с 12:00` but never a value the
+       team entered on purpose.
    - Save → worker hot-restarts only `splshow`.
 
 2. Directions CRUD: `/super-admin/tenants/splshow/directions`
-   - Add root: `SPL Тюнинг`, label RU `SPL Тюнинг`, UZ `SPL Tyuning`, slug `spl_tuning`, sort 0
-   - Add children under it: `SPL Тюнинг — Show`, `SPL Тюнинг — Street`, etc. (parent = SPL Тюнинг). Max 2 levels.
-   - Repeat for `Adrenaline Drift`, `Retro`, `Moto` or your own.
+   Seeding is automatic for an SPL tenant — no clicking needed:
+   - Roots: `SQ`, `Выставка`, `Тюнинг`, `SPL Автозвук`.
+   - `Тюнинг` → `Т1 Новичок`, `Т2 Профессионал`.
+   - `SPL Автозвук` → the four categories the client confirmed:
+     `SPL Front`, `SPL Тыл` (UZ `SPL Orqa`), `SPL Game (129/139/149)`,
+     `SPL Sport / SPL Show`.
+   Deployment that still holds the first placeholder seed (SPL / SPL Т1 /
+   SPL Т2) is migrated to those four on the next boot; a list an admin edited
+   by hand is never touched.
+   Anything can be renamed/added here (max 2 levels); the bot always reads the
+   tenant's own rows, so the buttons, the DB value and exports stay in sync.
 
 3. Ticket branding: `/t/splshow/ticket-assets`
    - Upload brand logos (generic slots) — transparent PNG ~1200px. If none uploaded, ticket shows wordmark `SPL SHOW`.
@@ -288,7 +315,38 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
 ### Test results
 
 - `py_compile` all edited files: OK
-- `pytest -q`: 78 passed
+- `pytest -q`: 100 passed (includes the end-to-end form on a real dispatcher)
+
+## Reliability on event day
+
+Everything below comes from the incidents of the 2–3 October launch. Each item
+has a regression test.
+
+| Symptom reported | Cause | Fix |
+| --- | --- | --- |
+| «Категории SPL Avtozvuk не актуальные», only 3 of them, wrong labels in Uzbek | `_load_tenant_directions` called `list_directions(tenant_id=…)` on the tenant-scoped facade, which does not accept it. The `TypeError` was swallowed by a broad `except`, so the bot fell back to the **legacy Promotors** list | The loader inspects the facade and asks the right question; a missing list is logged as a setup mistake instead of silently showing another event's categories |
+| The bot froze after choosing a category ("загрузил второе фото — тишина") | `format_final_choice(directions, leaf_id=…)` was called with a signature it does not have → the handler crashed, aiogram only logged it | Helpers accept the leaf-list form; every step answers, stale/unknown buttons repeat the current question |
+| «После одобрения приходят неправильные даты», «после /start письмо от Promotors с сентябрём» | `show_status()` was called without the tenant config, so the legacy Promotors template (September dates + `t.me/promotorsshow`) was used | Status answers always use the tenant config; the no-config fallback is event-neutral |
+| «После принятия заявки в группе не изменился статус» | A panel decision never touched the Telegram card, and a failed `edit_text` was swallowed | The card message id is stored on the application; the decision is appended, buttons removed, and a fallback message is posted if editing fails. Panel decisions clear the card buttons too |
+| «Бот зависает» / «qotyapti» | Any handler exception left the participant without an answer; restarts wiped the FSM | `bot/errors.py` answers callbacks (alert) and private chats (technical-error note); `bot/services/fsm_storage.py` keeps states in SQLite so a restart/hot reload no longer drops a half-finished form |
+| «Удалить зарегистрированного человека из базы нельзя» | There was no delete action | 🗑 delete on the application page removes the row and its photos; the person can register again and the number is reused |
+| «Не пришла сгенерированная картинка после одобрения» | The ticket was rendered and sent in one `try`, and any failure was only logged: no image, no explanation, no way to resend | Delivery is layered — PNG → JPEG (when Telegram refuses the photo) → file → the ticket is posted into the moderation chat with "forward it to the participant"; the render runs in a thread with a timeout and is retried without the hero photo. The team can resend it themselves: `/ticket 123` in the moderation chat, or the 🎫 button on the application page |
+| «При отклонении заявки приходит сообщение с неправильным времени мероприятия» | The rejection invited the person as a guest with a date/time that was wrong (September copy on the deployed build), and a named hall was described as a parking lot | The guest invitation now appears **only** when the tenant has a «Дата для гостей» — SPL has none, so its rejection carries no date, time or venue; Promotors keeps its guest invitation word for word. The venue wording also separates a parking lot from a named venue (RU «на площадке», UZ «manzilida») |
+| Testers tap the status button or `/start` in the middle of the form, get «у вас нет заявки» and fill everything in again | A half-filled form was treated as "no registration": the status answer told them to `/start`, and `/start` silently wiped the collected photos | Mid-form the status button continues the form (current step re-asked); `/start` offers «Продолжить / Начать заново» instead of deleting the answers; when nothing is found the log names the tenants that do hold rows for that person |
+
+Operational notes:
+
+- States live in `fsm_storage` inside the same SQLite file (`DB_PATH`); rows
+  untouched for 30 days are dropped on startup. A broken database degrades to
+  in-memory storage instead of stopping the bot.
+- Every failure is logged with the tenant slug and update id — search the log
+  for `"failed:"` when a participant reports a silent bot.
+- Tickets: Telegram's photo limit is 10 MB, so a poster above ~9 MB is sent as
+  JPEG from the start; if a send fails the moderation chat receives the same
+  image with a "forward this to the participant" caption.
+- Re-registration for testing: delete the application (🗑 on its page) — the
+  person and the number are freed immediately. `/start` then runs the form
+  again from the beginning.
 
 ## Editing wording / dates
 

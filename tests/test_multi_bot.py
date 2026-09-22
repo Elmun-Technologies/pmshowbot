@@ -135,6 +135,58 @@ def test_manager_polls_active_tenants_in_parallel_and_hot_reloads():
         asyncio.run(_exercise_manager(tmp))
 
 
+class _FlakyDispatcher(_FakeDispatcher):
+    """Polling dies once (network blip / Telegram conflict), then stays up."""
+
+    attempts: list[int] = []
+
+    async def start_polling(self, _bot, **_kwargs):
+        self.__class__.attempts.append(1)
+        if len(self.__class__.attempts) == 1:
+            raise RuntimeError("simulated polling failure")
+        await self.stopped.wait()
+
+
+async def _exercise_revival(tmp: str) -> None:
+    """A dead polling worker is restarted by the supervisor, without a redeploy."""
+    import bot.bot_manager as manager_module
+
+    key = Fernet.generate_key().decode("ascii")
+    db = Database(os.path.join(tmp, "revive.db"), encryption_key=key)
+    await db.init()
+    promotors = await db.get_tenant("promotors")
+    await db.update_tenant(promotors.id, bot_token="promotors-token")
+
+    delays = (manager_module.REVIVE_DELAY_SECONDS, manager_module.REVIVE_MAX_DELAY_SECONDS)
+    manager_module.REVIVE_DELAY_SECONDS = 0.05
+    manager_module.REVIVE_MAX_DELAY_SECONDS = 0.05
+    _FlakyDispatcher.attempts.clear()
+    try:
+        manager = BotManager(
+            db,
+            SimpleNamespace(media_dir=tmp, require_subscription=True, registration_closed=False),
+            bot_factory=_FakeBot,
+            dispatcher_factory=_FlakyDispatcher,
+        )
+        await manager.start()
+        revived = False
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if len(_FlakyDispatcher.attempts) >= 2:
+                revived = True
+                break
+        assert revived, "the worker was never restarted after it died"
+        assert manager.get_bot(promotors.id) is not None
+        await manager.shutdown()
+    finally:
+        manager_module.REVIVE_DELAY_SECONDS, manager_module.REVIVE_MAX_DELAY_SECONDS = delays
+
+
+def test_dead_polling_worker_is_revived():
+    with tempfile.TemporaryDirectory() as tmp:
+        asyncio.run(_exercise_revival(tmp))
+
+
 if __name__ == "__main__":
     test_manager_polls_active_tenants_in_parallel_and_hot_reloads()
     print("Multi-bot manager tests passed.")

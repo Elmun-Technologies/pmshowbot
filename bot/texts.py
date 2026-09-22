@@ -68,6 +68,19 @@ _RU = dict(
     BTN_MODS_NONE="Изменений нет ➡️",
     ASK_DIRECTION="Выберите направление для участия:",
     ASK_SUB_DIRECTION="Выберите поднаправление для <b>{parent}</b>:",
+    ASK_SUB_DIRECTION_PLAIN="Выберите поднаправление:",
+    PHOTO_DOWNLOAD_FAILED=(
+        "Не удалось сохранить эту фотографию. Пришлите, пожалуйста, её ещё раз."
+    ),
+    STEP_STALE="Эта кнопка уже устарела — продолжаем с текущего шага.",
+    RECOVER_RESTART=(
+        "Что-то пошло не так, и форма сбилась. Нажмите /start, чтобы начать "
+        "регистрацию заново — предыдущие ответы не сохранятся."
+    ),
+    RECOVER_TECHNICAL=(
+        "Произошла техническая ошибка. Попробуйте ещё раз или нажмите /start, "
+        "чтобы начать регистрацию заново."
+    ),
     DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
     BAD_PHONE=(
@@ -94,6 +107,14 @@ _RU = dict(
         "оно пройдёт <b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
     ),
     STATUS_PENDING="Ваша заявка на рассмотрении. В ближайшее время вы получите ответ.",
+    STATUS_APPROVED="Ваш регистрационный номер — <b>№{number}</b>.",
+    STATUS_REJECTED="Ваша заявка отклонена.",
+    STILL_IN_FORM=(
+        "Вы сейчас в процессе регистрации — продолжим оформление. Вот текущий шаг:"
+    ),
+    FORM_IN_PROGRESS=(
+        "Вы уже начали регистрацию. Продолжим с того же места или начнём заново?"
+    ),
     REGISTRATION_CLOSED=(
         "Регистрация на <b>Promotors Show Samarkand</b> завершена. Спасибо за интерес!\n\n"
         "Приходите на мероприятие в качестве гостя — оно пройдёт "
@@ -105,6 +126,8 @@ _RU = dict(
     BTN_CHECK_SUBSCRIPTION="Я подписался ✅",
     BTN_SEND_PHONE="Отправить номер телефона ☎️",
     BTN_MY_NUMBER="Узнать свой номер",
+    BTN_CONTINUE_FORM="Продолжить",
+    BTN_RESTART_FORM="Начать заново",
     COUNTRY_OTHER="Другая",
     COUNTRIES=["Россия", "Узбекистан", "Таджикистан", "Казахстан", "Киргизия"],
     DIRECTIONS=DIRECTION_LABELS["ru"],
@@ -166,6 +189,19 @@ _UZ = dict(
     BTN_MODS_NONE="O‘zgarish yo‘q ➡️",
     ASK_DIRECTION="Ishtirok yo‘nalishini tanlang:",
     ASK_SUB_DIRECTION="<b>{parent}</b> uchun yo‘nalish osti turini tanlang:",
+    ASK_SUB_DIRECTION_PLAIN="Yo‘nalish osti turini tanlang:",
+    PHOTO_DOWNLOAD_FAILED=(
+        "Bu suratni saqlab bo‘lmadi. Iltimos, uni yana bir marta yuboring."
+    ),
+    STEP_STALE="Bu tugma eskirgan — joriy qadamdan davom etamiz.",
+    RECOVER_RESTART=(
+        "Nimadir xato ketdi va shakl buzildi. Ro‘yxatdan o‘tishni boshidan "
+        "boshlash uchun /start tugmasini bosing — oldingi javoblar saqlanmaydi."
+    ),
+    RECOVER_TECHNICAL=(
+        "Texnik xatolik yuz berdi. Yana urinib ko‘ring yoki ro‘yxatdan o‘tishni "
+        "boshidan boshlash uchun /start tugmasini bosing."
+    ),
     DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
     BAD_PHONE=(
@@ -192,6 +228,15 @@ _UZ = dict(
         "<b>12 va 13-sentyabr, 10:00 dan</b> <b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
     ),
     STATUS_PENDING="Arizangiz ko‘rib chiqilmoqda. Tez orada javob olasiz.",
+    STATUS_APPROVED="Sizning ro‘yxat raqamingiz — <b>№{number}</b>.",
+    STATUS_REJECTED="Arizangiz rad etildi.",
+    STILL_IN_FORM=(
+        "Siz hozir ro‘yxatdan o‘tmoqdasiz — davom etamiz. Mana joriy qadam:"
+    ),
+    FORM_IN_PROGRESS=(
+        "Siz allaqachon ro‘yxatdan o‘tishni boshlagansiz. Davom etamizmi yoki "
+        "boshidan boshlaymizmi?"
+    ),
     REGISTRATION_CLOSED=(
         "<b>Promotors Show Samarkand</b> uchun ro‘yxatdan o‘tish yakunlandi. "
         "Qiziqish bildirganingiz uchun rahmat!\n\n"
@@ -204,6 +249,8 @@ _UZ = dict(
     BTN_CHECK_SUBSCRIPTION="Obuna bo‘ldim ✅",
     BTN_SEND_PHONE="Telefon raqamni yuborish ☎️",
     BTN_MY_NUMBER="Raqamimni bilish",
+    BTN_CONTINUE_FORM="Davom etish",
+    BTN_RESTART_FORM="Boshidan boshlash",
     COUNTRY_OTHER="Boshqa",
     COUNTRIES=["Rossiya", "O‘zbekiston", "Tojikiston", "Qozog‘iston", "Qirg‘iziston"],
     DIRECTIONS=DIRECTION_LABELS["uz"],
@@ -253,6 +300,12 @@ REGISTRATION_CLOSED_BILINGUAL = (
     "парковка SOF EXPO."
 )
 
+# Shown after an unexpected error when the participant's language is unknown.
+RECOVER_TECHNICAL_BILINGUAL = (
+    "Texnik xatolik yuz berdi. Yana urinib ko‘ring yoki /start tugmasini bosing.\n"
+    "Произошла техническая ошибка. Попробуйте ещё раз или нажмите /start."
+)
+
 # Shown when someone asks their number but has no application (language unknown).
 STATUS_NONE = (
     "Sizda hali ariza yo‘q. Ro‘yxatdan o‘tish uchun /start bosing.\n"
@@ -274,6 +327,27 @@ MODERATION_MODS_COUNT = "{n} фото (последние в альбоме)"
 MODERATION_APPROVED = "✅ Принято — №{number} ({moderator})"
 MODERATION_REJECTED = "❌ Отклонено ({moderator})"
 MODERATION_ALREADY = "Эта заявка уже обработана."
+MODERATION_FAILED = "Не удалось обработать заявку — попробуйте ещё раз."
+TICKET_CMD_USAGE = (
+    "Использование: <code>/ticket 123</code> — id заявки из карточки или панели."
+)
+TICKET_CMD_NO_APP = "Заявка <code>{app_id}</code> не найдена."
+TICKET_CMD_NOT_APPROVED = (
+    "У заявки статус <b>{status}</b> — билет есть только у одобренной заявки."
+)
+TICKET_CMD_SENT = "🎫 Билет отправлен участнику (№{number})."
+TICKET_CMD_FAILED = "⚠️ Билет не ушёл: <code>{error}</code>"
+TICKET_FAILED_ADMIN = (
+    "⚠️ <b>Билет не ушёл участнику</b>\n"
+    "Заявка №{number} · {plate} · {user}\n"
+    "<code>{error}</code>\n"
+    "Перешлите билет участнику вручную, если он его не получил."
+)
+TICKET_FALLBACK_ADMIN = (
+    "🎫 Заявка №{number} · {plate} · {user}\n"
+    "Перешлите это фото участнику — автоматическая отправка не прошла."
+)
+MODERATION_PANEL_HEADER = "🖥 <b>Решение через админ-панель</b>"
 
 # Sent to the moderation chat when a registered participant sends their badge
 # photo (outside the registration flow, so it never touches its texts/state).
@@ -422,45 +496,57 @@ def _venue_is_parking(venue: str) -> bool:
 
 
 def rejected_for_tenant(lang: str, tenant: Any) -> str:
-    venue = _venue(tenant, lang)
+    """Rejection message.
+
+    Two flavours, chosen by the tenant's own settings:
+
+    * a tenant that advertises a guest date (Promotors: 12-13 September at the
+      SOF EXPO parking) keeps the historic "come as a guest" invitation;
+    * a tenant with no guest date — SPL Show, where the client's rule is
+      «hozircha faqat uchastniklar uchun» — gets an event-neutral rejection with
+      **no** date, time or venue.  That is what removed the "неправильное время
+      мероприятия" from the rejection: the empty "Дата для гостей" field in the
+      panel is the switch.
+    """
     gdate = _guest_date(tenant, lang)
+    if not gdate:
+        if lang == "uz":
+            return (
+                "Assalomu alaykum! Afsuski, siz ro‘yxatdan o‘tmadingiz.\n\n"
+                "Hozircha tadbir faqat ro‘yxatdan o‘tgan ishtirokchilar uchun. "
+                "Qiziqish bildirganingiz uchun rahmat!"
+            )
+        return (
+            "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
+            "Сейчас мероприятие проходит только для зарегистрированных участников. "
+            "Спасибо за интерес!"
+        )
+
+    venue = _venue(tenant, lang)
     if lang == "uz":
         base = "Assalomu alaykum! Afsuski, siz ro‘yxatdan o‘tmadingiz.\n\n"
         base += "Ammo sizni tadbirimizga mehmon sifatida (avtomobilsiz) taklif qilamiz"
-        if gdate or venue:
-            base += " — u "
-            if gdate:
-                base += f"<b>{gdate}</b>"
-            if venue:
-                if gdate:
-                    base += f" <b>{venue}</b> avtoturargohida bo‘lib o‘tadi."
-                else:
-                    base += f"<b>{venue}</b> da bo‘lib o‘tadi."
+        base += f" — u <b>{gdate}</b>"
+        if venue:
+            if _venue_is_parking(venue):
+                base += f" <b>{venue}</b> avtoturargohida bo‘lib o‘tadi."
             else:
-                base += " bo‘lib o‘tadi."
+                base += f" <b>{venue}</b> manzilida bo‘lib o‘tadi."
         else:
-            base += "."
+            base += " bo‘lib o‘tadi."
         return base
+
+    base = "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
+    base += "Но мы приглашаем вас посетить наше мероприятие как гостя (без автомобиля)"
+    base += f" — оно пройдёт <b>{gdate}</b>"
+    if venue:
+        if _venue_is_parking(venue):
+            base += f" на парковке <b>{venue}</b>."
+        else:
+            base += f" на площадке <b>{venue}</b>."
     else:
-        base = "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
-        base += "Но мы приглашаем вас посетить наше мероприятие как гостя (без автомобиля)"
-        if gdate or venue:
-            base += " — оно пройдёт "
-            if gdate:
-                base += f"<b>{gdate}</b>"
-            if venue:
-                if gdate:
-                    if _venue_is_parking(venue):
-                        base += f" на парковке <b>{venue}</b>."
-                    else:
-                        base += f" на <b>{venue}</b>."
-                else:
-                    base += f" на <b>{venue}</b>."
-            else:
-                base += "."
-        else:
-            base += "."
-        return base
+        base += "."
+    return base
 
 
 def registration_closed_for_tenant(lang: str, tenant: Any) -> str:
@@ -480,9 +566,9 @@ def registration_closed_for_tenant(lang: str, tenant: Any) -> str:
                         if _venue_is_parking(venue):
                             base += f" <b>{venue}</b> avtoturargohida bo‘lib o‘tadi."
                         else:
-                            base += f" <b>{venue}</b> da bo‘lib o‘tadi."
+                            base += f" <b>{venue}</b> manzilida bo‘lib o‘tadi."
                     else:
-                        base += f"<b>{venue}</b> da bo‘lib o‘tadi."
+                        base += f" <b>{venue}</b> manzilida bo‘lib o‘tadi."
                 else:
                     base += " bo‘lib o‘tadi."
             else:
@@ -501,9 +587,13 @@ def registration_closed_for_tenant(lang: str, tenant: Any) -> str:
                         if _venue_is_parking(venue):
                             base += f" на парковке <b>{venue}</b>."
                         else:
-                            base += f" на <b>{venue}</b>."
+                            base += f" на площадке <b>{venue}</b>."
                     else:
-                        base += f" на <b>{venue}</b>."
+                        base += (
+                            f" на парковке <b>{venue}</b>."
+                            if _venue_is_parking(venue)
+                            else f" на площадке <b>{venue}</b>."
+                        )
                 else:
                     base += "."
             else:

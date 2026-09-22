@@ -137,6 +137,8 @@ class Application:
     # Optional FK to the new directions table; ``direction`` string stays canonical
     # for backward compatibility (e.g. "SPL Тюнинг — Show").
     direction_id: Optional[int] = None
+    # Telegram message id of this application's moderation card (admin chat).
+    card_message_id: Optional[int] = None
 
 
 _TENANTS_SCHEMA = """
@@ -171,16 +173,20 @@ _TENANTS_EVENT_MIGRATIONS = [
     ("registration_closed", "ALTER TABLE tenants ADD COLUMN registration_closed INTEGER NOT NULL DEFAULT 0"),
 ]
 
-# SPL Show, Tashkent INDEX, 3 October. Arrival is the day before.
+# SPL Show, Tashkent INDEX. Participant entry 2 October 17:00-22:00, participants
+# next to their cars on 3 October from 09:00 (confirmed by the team).
 # Applied when the splshow tenant exists and a field is still empty or still
 # holds an outdated schedule. A custom value is left alone.
+#
+# There is deliberately **no** guest date for SPL: the client's rule is
+# "hozircha faqat uchastniklar uchun" (only registered participants for now), so
+# the rejection message stays neutral. Filling "Дата для гостей" in the panel
+# switches the guest invitation back on for that tenant.
 SPL_EVENT_COPY = {
     "event_date_text_ru": "02 октября 2026 с 17:00 до 22:00",
     "event_date_text_uz": "02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
     "event_venue_text_ru": "Tashkent INDEX",
     "event_venue_text_uz": "Tashkent INDEX",
-    "event_guest_date_text_ru": "03 октября 2026 с 12:00",
-    "event_guest_date_text_uz": "03-oktyabr 2026, soat 12:00 dan",
     "event_note_text_ru": (
         "Площадка — Tashkent INDEX. "
         "03 октября 2026 с 09:00 участники должны находиться рядом со своими автомобилями."
@@ -201,6 +207,10 @@ _SPL_STALE_EVENT_VALUES = frozenset({
     # First SPL draft, before the client confirmed 17:00–22:00 / guest date.
     "2 октября до 22:00",
     "2-oktyabr soat 22:00 gacha",
+    # Guest invitation of the previous SPL seed — no guests for SPL (the team
+    # confirmed "only participants"), so the field is cleared instead.
+    "03 октября 2026 с 12:00",
+    "03-oktyabr 2026, soat 12:00 dan",
     "3 октября с 12:00",
     "3-oktyabr, soat 12:00 dan",
     (
@@ -213,6 +223,9 @@ _SPL_STALE_EVENT_VALUES = frozenset({
         "avtomobillari yonida bo‘lishlari shart."
     ),
 })
+# Event fields that must be emptied for SPL while they still hold one of the
+# values above (currently: the guest invitation nobody wants yet).
+SPL_CLEARED_EVENT_FIELDS = ("event_guest_date_text_ru", "event_guest_date_text_uz")
 _SPL_SLUGS = frozenset({"splshow", "spl", "spl-show"})
 _SPL_NAMES = frozenset({"spl show", "spl"})
 
@@ -220,6 +233,56 @@ _SPL_NAMES = frozenset({"spl show", "spl"})
 def is_spl_tenant(slug: str, name: str = "") -> bool:
     """True for the SPL Show tenant, whatever slug the panel used."""
     return (slug or "").strip().lower() in _SPL_SLUGS or (name or "").strip().lower() in _SPL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# SPL Show directions, confirmed with the client for the 2–3 October event.
+#
+# ``canonical`` is what lands in ``applications.direction`` (and in every
+# export); ``label_ru`` / ``label_uz`` are the buttons a participant sees.
+# Children store their canonical pre-joined as "Parent — Child" so the old
+# single-level rows and the new ones read the same in the admin panel.
+# ---------------------------------------------------------------------------
+SPL_ROOT_DIRECTIONS = [
+    {"canonical": "SQ", "label_ru": "SQ - Качество звучания", "label_uz": "SQ - Ovoz sifati", "slug": "sq", "sort": 0},
+    {"canonical": "Выставка", "label_ru": "Выставка", "label_uz": "Ko'rgazma", "slug": "vistavka", "sort": 1},
+    {"canonical": "Тюнинг", "label_ru": "Тюнинг", "label_uz": "Tuning", "slug": "tuning", "sort": 2},
+    {"canonical": "SPL Автозвук", "label_ru": "SPL Автозвук", "label_uz": "SPL Avtozvuk", "slug": "spl_avtozvuk", "sort": 3},
+]
+
+SPL_TUNING_CHILDREN = [
+    {"canonical": "Тюнинг — Т1 Новичок", "label_ru": "Т1 Новичок", "label_uz": "T1 Yangi", "slug": "tuning_t1_novichok", "sort": 0},
+    {"canonical": "Тюнинг — Т2 Профессионал", "label_ru": "Т2 Профессионал", "label_uz": "T2 Professional", "slug": "tuning_t2_pro", "sort": 1},
+]
+
+# The four SPL Avtozvuk categories the participant must choose from.
+SPL_AUTOSOUND_CHILDREN = [
+    {"canonical": "SPL Автозвук — SPL Front", "label_ru": "SPL Front", "label_uz": "SPL Front", "slug": "spl_front", "sort": 0},
+    {"canonical": "SPL Автозвук — SPL Тыл", "label_ru": "SPL Тыл", "label_uz": "SPL Orqa", "slug": "spl_rear", "sort": 1},
+    {
+        "canonical": "SPL Автозвук — SPL Game (129/139/149)",
+        "label_ru": "SPL Game (129/139/149)",
+        "label_uz": "SPL Game (129/139/149)",
+        "slug": "spl_game",
+        "sort": 2,
+    },
+    {
+        "canonical": "SPL Автозвук — SPL Sport / SPL Show",
+        "label_ru": "SPL Sport / SPL Show",
+        "label_uz": "SPL Sport / SPL Show",
+        "slug": "spl_sport_show",
+        "sort": 3,
+    },
+]
+
+# Placeholder children shipped before the client confirmed the list above.
+# A deployment whose SPL Avtozvuk children still match this seed exactly is
+# migrated to the confirmed four; hand-edited lists are left untouched.
+SPL_AUTOSOUND_STALE = [
+    {"slug": "spl", "canonical": "SPL Автозвук — SPL"},
+    {"slug": "spl_t1", "canonical": "SPL Автозвук — SPL Т1"},
+    {"slug": "spl_t2", "canonical": "SPL Автозвук — SPL Т2"},
+]
 
 _APPLICATIONS_CREATE = """
 CREATE TABLE applications (
@@ -244,7 +307,10 @@ CREATE TABLE applications (
     mod_paths           TEXT NOT NULL DEFAULT '[]',
     badge_photo_file_id TEXT NOT NULL DEFAULT '',
     badge_photo_path    TEXT NOT NULL DEFAULT '',
-    direction_id        INTEGER REFERENCES directions(id) ON DELETE SET NULL
+    direction_id        INTEGER REFERENCES directions(id) ON DELETE SET NULL,
+    -- Message id of the moderation card in the admin chat, so a decision made
+    -- in the web panel can update that very card (buttons removed + status).
+    card_message_id     INTEGER
 );
 """
 
@@ -289,6 +355,7 @@ _APPLICATION_MIGRATIONS = [
     ("badge_photo_path", "ALTER TABLE applications ADD COLUMN badge_photo_path TEXT NOT NULL DEFAULT ''"),
     ("tenant_id", "ALTER TABLE applications ADD COLUMN tenant_id INTEGER"),
     ("direction_id", "ALTER TABLE applications ADD COLUMN direction_id INTEGER REFERENCES directions(id) ON DELETE SET NULL"),
+    ("card_message_id", "ALTER TABLE applications ADD COLUMN card_message_id INTEGER"),
 ]
 
 _DIRECTION_RENAMES = [("Дрифт", "Adrenaline Drift")]
@@ -348,6 +415,11 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         badge_photo_file_id=row["badge_photo_file_id"] if "badge_photo_file_id" in keys else "",
         badge_photo_path=row["badge_photo_path"] if "badge_photo_path" in keys else "",
         direction_id=int(row["direction_id"]) if "direction_id" in keys and row["direction_id"] is not None else None,
+        card_message_id=(
+            int(row["card_message_id"])
+            if "card_message_id" in keys and row["card_message_id"] is not None
+            else None
+        ),
     )
 
 
@@ -415,6 +487,24 @@ class TenantDatabase:
     async def set_badge_photo(self, user_id: int, file_id: str, path: str) -> Optional[int]:
         return await self._database.set_badge_photo(
             user_id, file_id, path, tenant_id=self.tenant_id
+        )
+
+    async def other_tenants_for_user(self, user_id: int) -> dict[str, int]:
+        """Diagnostics only: other tenants holding applications of this user."""
+        counter = getattr(self._database, "user_tenant_counts", None)
+        if counter is None:  # pragma: no cover - very old facades
+            return {}
+        return await counter(user_id, exclude_tenant_id=int(self.tenant_id))
+
+    async def delete_application(self, app_id: int, *, remove_files: bool = True) -> Optional[Application]:
+        """Remove one of this tenant's applications permanently."""
+        return await self._database.delete_application(
+            app_id, tenant_id=self.tenant_id, remove_files=remove_files
+        )
+
+    async def set_card_message_id(self, app_id: int, message_id: Optional[int]) -> bool:
+        return await self._database.set_card_message_id(
+            app_id, message_id, tenant_id=self.tenant_id
         )
 
     async def get_user_language(self, user_id: int) -> str:
@@ -690,6 +780,15 @@ class Database:
                     current = ""
                 if current in _SPL_STALE_EVENT_VALUES:
                     updates[key] = new_val
+            for key in SPL_CLEARED_EVENT_FIELDS:
+                if key not in cols or key in updates:
+                    continue
+                try:
+                    current = str(row[key] or "").strip()
+                except (KeyError, IndexError):
+                    current = ""
+                if current in _SPL_STALE_EVENT_VALUES:
+                    updates[key] = ""
             if not updates:
                 continue
             set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -829,123 +928,174 @@ class Database:
         )
 
     def _seed_directions(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
-        # Seed promotors (default) from GLOBAL_DIRECTIONS if empty
-        cnt = conn.execute(
-            "SELECT COUNT(*) FROM directions WHERE tenant_id = ?", (default_tenant_id,)
-        ).fetchone()[0]
-        if cnt == 0:
+        """Give every known tenant its direction list (idempotent, boot-safe)."""
+        self._seed_promotors_directions(conn, default_tenant_id)
+        # Any SPL tenant — whatever slug/name the panel used — gets the
+        # confirmed event structure, including the already-existing rows that
+        # still hold the first placeholder seed.
+        for row in conn.execute("SELECT id, slug, name FROM tenants").fetchall():
+            if not is_spl_tenant(str(row["slug"] or ""), str(row["name"] or "")):
+                continue
             try:
-                from .constants import DIRECTIONS as GLOBAL_DIRECTIONS
-            except Exception:
-                GLOBAL_DIRECTIONS = []
-            now = _now()
-            for idx, d in enumerate(GLOBAL_DIRECTIONS):
-                try:
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO directions
-                            (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
-                        VALUES (?, NULL, ?, ?, ?, ?, ?, 1, ?, ?)
-                        """,
-                        (
-                            default_tenant_id,
-                            d["canonical"],
-                            d["ru"],
-                            d["uz"],
-                            d["slug"],
-                            idx,
-                            now,
-                            now,
-                        ),
-                    )
-                except sqlite3.IntegrityError:
-                    continue
+                self._seed_spl_directions(conn, int(row["id"]))
+            except Exception:  # noqa: BLE001 - seeding must never break init
+                continue
 
-        # Seed splshow tenant with SPL-specific structure (if tenant exists and empty)
-        # Structure per user request:
-        # 1. SQ (quality)
-        # 2. Выставка (exhibition hall, no judging)
-        # 3. Тюнинг -> T1 Новичок, T2 Профессионал
-        # 4. SPL Автозвук -> SPL (and extensible)
+    def _seed_promotors_directions(self, conn: sqlite3.Connection, tenant_id: int) -> None:
+        """Seed the default tenant from the global DIRECTIONS table if empty."""
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM directions WHERE tenant_id = ?", (tenant_id,)
+        ).fetchone()[0]
+        if cnt:
+            return
         try:
-            spl_row = conn.execute("SELECT id FROM tenants WHERE slug = ?", ("splshow",)).fetchone()
-            if spl_row:
-                spl_tid = int(spl_row["id"])
-                spl_cnt = conn.execute("SELECT COUNT(*) FROM directions WHERE tenant_id = ?", (spl_tid,)).fetchone()[0]
-                if spl_cnt == 0:
-                    now = _now()
-                    # Roots
-                    roots = [
-                        {"canonical": "SQ", "label_ru": "SQ - Качество звучания", "label_uz": "SQ - Ovoz sifati", "slug": "sq", "sort": 0},
-                        {"canonical": "Выставка", "label_ru": "Выставка", "label_uz": "Ko'rgazma", "slug": "vistavka", "sort": 1},
-                        {"canonical": "Тюнинг", "label_ru": "Тюнинг", "label_uz": "Tuning", "slug": "tuning", "sort": 2},
-                        {"canonical": "SPL Автозвук", "label_ru": "SPL Автозвук", "label_uz": "SPL Avtozvuk", "slug": "spl_avtozvuk", "sort": 3},
-                    ]
-                    root_ids = {}
-                    for r in roots:
-                        try:
-                            cur = conn.execute(
-                                """
-                                INSERT INTO directions
-                                    (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
-                                VALUES (?, NULL, ?, ?, ?, ?, ?, 1, ?, ?)
-                                """,
-                                (spl_tid, r["canonical"], r["label_ru"], r["label_uz"], r["slug"], r["sort"], now, now),
-                            )
-                            root_ids[r["canonical"]] = cur.lastrowid
-                        except sqlite3.IntegrityError:
-                            # fetch existing id
-                            existing = conn.execute(
-                                "SELECT id FROM directions WHERE tenant_id = ? AND slug = ?", (spl_tid, r["slug"])
-                            ).fetchone()
-                            if existing:
-                                root_ids[r["canonical"]] = int(existing["id"])
-                            continue
+            from .constants import DIRECTIONS as GLOBAL_DIRECTIONS
+        except Exception:  # noqa: BLE001
+            GLOBAL_DIRECTIONS = []
+        self._insert_directions(conn, tenant_id, None, list(GLOBAL_DIRECTIONS))
 
-                    # Children for Тюнинг
-                    tuning_id = root_ids.get("Тюнинг")
-                    if tuning_id:
-                        children_tuning = [
-                            {"canonical": "Тюнинг — Т1 Новичок", "label_ru": "Т1 Новичок", "label_uz": "T1 Yangi", "slug": "tuning_t1_novichok", "sort": 0},
-                            {"canonical": "Тюнинг — Т2 Профессионал", "label_ru": "Т2 Профессионал", "label_uz": "T2 Professional", "slug": "tuning_t2_pro", "sort": 1},
-                        ]
-                        for ch in children_tuning:
-                            try:
-                                conn.execute(
-                                    """
-                                    INSERT OR IGNORE INTO directions
-                                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                                    """,
-                                    (spl_tid, tuning_id, ch["canonical"], ch["label_ru"], ch["label_uz"], ch["slug"], ch["sort"], now, now),
-                                )
-                            except sqlite3.IntegrityError:
-                                continue
+    def _seed_spl_directions(self, conn: sqlite3.Connection, tenant_id: int) -> None:
+        """Seed/refresh the SPL Show structure for one tenant.
 
-                    # Children for SPL Автозвук
-                    spl_id = root_ids.get("SPL Автозвук")
-                    if spl_id:
-                        children_spl = [
-                            {"canonical": "SPL Автозвук — SPL", "label_ru": "SPL", "label_uz": "SPL", "slug": "spl", "sort": 0},
-                            # Placeholders for future SPL subcategories, can be extended via admin CRUD
-                            {"canonical": "SPL Автозвук — SPL Т1", "label_ru": "SPL Т1", "label_uz": "SPL T1", "slug": "spl_t1", "sort": 1},
-                            {"canonical": "SPL Автозвук — SPL Т2", "label_ru": "SPL Т2", "label_uz": "SPL T2", "slug": "spl_t2", "sort": 2},
-                        ]
-                        for ch in children_spl:
-                            try:
-                                conn.execute(
-                                    """
-                                    INSERT OR IGNORE INTO directions
-                                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                                    """,
-                                    (spl_tid, spl_id, ch["canonical"], ch["label_ru"], ch["label_uz"], ch["slug"], ch["sort"], now, now),
-                                )
-                            except sqlite3.IntegrityError:
-                                continue
-        except Exception:
-            # Seeding SPL must never break init
-            pass
+        Roots are only created when missing, so an admin's rename or reorder is
+        kept.  Children are synced by :meth:`_sync_direction_children` directly
+        below, which also migrates the placeholder SPL Avtozvuk list that was
+        shipped before the client confirmed the four categories.
+        """
+        root_ids: dict[str, int] = {}
+        for root in SPL_ROOT_DIRECTIONS:
+            root_ids[root["canonical"]] = self._ensure_direction(
+                conn, tenant_id, parent_id=None, spec=root
+            )
+        self._sync_direction_children(
+            conn, tenant_id, root_ids.get("Тюнинг"), SPL_TUNING_CHILDREN
+        )
+        self._sync_direction_children(
+            conn,
+            tenant_id,
+            root_ids.get("SPL Автозвук"),
+            SPL_AUTOSOUND_CHILDREN,
+            stale=SPL_AUTOSOUND_STALE,
+        )
+
+    def _ensure_direction(
+        self,
+        conn: sqlite3.Connection,
+        tenant_id: int,
+        *,
+        parent_id: Optional[int],
+        spec: Mapping[str, Any],
+    ) -> int:
+        """Return the id of a direction, inserting it only when it is missing."""
+        row = conn.execute(
+            "SELECT id FROM directions WHERE tenant_id = ? AND slug = ?",
+            (tenant_id, spec["slug"]),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT id FROM directions WHERE tenant_id = ? AND canonical = ?",
+                (tenant_id, spec["canonical"]),
+            ).fetchone()
+        if row is not None:
+            return int(row["id"])
+        now = _now()
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO directions
+                    (tenant_id, parent_id, canonical, label_ru, label_uz, slug,
+                     sort_order, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    tenant_id,
+                    parent_id,
+                    spec["canonical"],
+                    spec.get("label_ru") or spec["canonical"],
+                    spec.get("label_uz") or spec["canonical"],
+                    spec["slug"],
+                    int(spec.get("sort", 0)),
+                    now,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            row = conn.execute(
+                "SELECT id FROM directions WHERE tenant_id = ? AND slug = ?",
+                (tenant_id, spec["slug"]),
+            ).fetchone()
+            return int(row["id"]) if row is not None else 0
+
+    @staticmethod
+    def _insert_directions(
+        conn: sqlite3.Connection,
+        tenant_id: int,
+        parent_id: Optional[int],
+        specs: list[Mapping[str, Any]],
+    ) -> None:
+        """Insert a batch of direction specs, skipping anything already present."""
+        now = _now()
+        for spec in specs:
+            spec = dict(spec)
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO directions
+                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug,
+                         sort_order, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        tenant_id,
+                        parent_id,
+                        spec["canonical"],
+                        spec.get("label_ru") or spec.get("ru") or spec["canonical"],
+                        spec.get("label_uz") or spec.get("uz") or spec["canonical"],
+                        spec["slug"],
+                        int(spec.get("sort", spec.get("sort_order", 0))),
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                continue
+
+    @staticmethod
+    def _sync_direction_children(
+        conn: sqlite3.Connection,
+        tenant_id: int,
+        parent_id: Optional[int],
+        wanted: list[Mapping[str, Any]],
+        *,
+        stale: list[Mapping[str, Any]] | tuple = (),
+    ) -> None:
+        """Keep the confirmed child list of one parent in place.
+
+        Rules — all idempotent, so this is safe to run on every boot:
+
+        * no parent (or no ``wanted`` list) -> nothing to do;
+        * parent has no children -> insert ``wanted``;
+        * every existing child still matches a previously shipped seed
+          (``stale``) -> delete them and insert ``wanted``.  This is how the
+          confirmed four SPL Avtozvuk categories reach a database that was
+          seeded with the earlier placeholder list;
+        * anything else -> an admin edited the list by hand, leave it alone.
+        """
+        if not parent_id or not wanted:
+            return
+        rows = conn.execute(
+            "SELECT id, slug, canonical FROM directions WHERE tenant_id = ? AND parent_id = ?",
+            (tenant_id, parent_id),
+        ).fetchall()
+        if rows:
+            existing = {(str(r["slug"]), str(r["canonical"])) for r in rows}
+            seeded = {(str(s["slug"]), str(s["canonical"])) for s in stale}
+            if not seeded or existing != seeded:
+                return
+            for row in rows:
+                conn.execute("DELETE FROM directions WHERE id = ?", (int(row["id"]),))
+        Database._insert_directions(conn, tenant_id, parent_id, wanted)
 
     def _init(self) -> None:
         with self._connect() as conn:
@@ -1041,21 +1191,21 @@ class Database:
         if is_spl_tenant(slug, name):
             defaults = SPL_EVENT_COPY
             if not (event_date_text_ru or "").strip():
-                event_date_text_ru = defaults["event_date_text_ru"]
+                event_date_text_ru = defaults.get("event_date_text_ru", event_date_text_ru)
             if not (event_date_text_uz or "").strip():
-                event_date_text_uz = defaults["event_date_text_uz"]
+                event_date_text_uz = defaults.get("event_date_text_uz", event_date_text_uz)
             if not (event_venue_text_ru or "").strip():
-                event_venue_text_ru = defaults["event_venue_text_ru"]
+                event_venue_text_ru = defaults.get("event_venue_text_ru", event_venue_text_ru)
             if not (event_venue_text_uz or "").strip():
-                event_venue_text_uz = defaults["event_venue_text_uz"]
+                event_venue_text_uz = defaults.get("event_venue_text_uz", event_venue_text_uz)
             if not (event_guest_date_text_ru or "").strip():
-                event_guest_date_text_ru = defaults["event_guest_date_text_ru"]
+                event_guest_date_text_ru = defaults.get("event_guest_date_text_ru", "")
             if not (event_guest_date_text_uz or "").strip():
-                event_guest_date_text_uz = defaults["event_guest_date_text_uz"]
+                event_guest_date_text_uz = defaults.get("event_guest_date_text_uz", "")
             if not (event_note_text_ru or "").strip():
-                event_note_text_ru = defaults["event_note_text_ru"]
+                event_note_text_ru = defaults.get("event_note_text_ru", event_note_text_ru)
             if not (event_note_text_uz or "").strip():
-                event_note_text_uz = defaults["event_note_text_uz"]
+                event_note_text_uz = defaults.get("event_note_text_uz", event_note_text_uz)
         now = _now()
         password = (admin_password or "").strip()
         if password and not is_password_hash(password):
@@ -1419,6 +1569,34 @@ class Database:
             ).fetchone()
             return _row_to_application(row) if row else None
 
+    def _user_tenant_counts(
+        self, user_id: int, exclude_tenant_id: int | None = None
+    ) -> dict[str, int]:
+        """How many applications a Telegram user has per tenant (diagnostics).
+
+        Used when someone is answered "you have no application" although they
+        just finished the form: if rows exist under another tenant, the log
+        says so instead of leaving the team guessing why the record vanished.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.slug AS slug, t.id AS tid, COUNT(a.id) AS n
+                FROM applications a
+                JOIN tenants t ON t.id = a.tenant_id
+                WHERE a.user_id = ?
+                GROUP BY t.id
+                ORDER BY t.slug
+                """,
+                (user_id,),
+            ).fetchall()
+        counts: dict[str, int] = {}
+        for row in rows:
+            if exclude_tenant_id is not None and int(row["tid"]) == int(exclude_tenant_id):
+                continue
+            counts[str(row["slug"])] = int(row["n"])
+        return counts
+
     def _set_badge_photo(
         self, user_id: int, file_id: str, path: str, tenant_id: int | str | None = None
     ) -> Optional[int]:
@@ -1455,6 +1633,75 @@ class Database:
                 (tid, user_id),
             ).fetchone()
             return (row["language"] if row else None) or "ru"
+
+    def _set_card_message_id(
+        self, app_id: int, message_id: Optional[int], tenant_id: int | str | None = None
+    ) -> bool:
+        """Remember which admin-chat message is this application's card."""
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            cur = conn.execute(
+                "UPDATE applications SET card_message_id = ? WHERE id = ? AND tenant_id = ?",
+                (message_id, app_id, tid),
+            )
+            return bool(cur.rowcount)
+
+    def _delete_application(
+        self,
+        app_id: int,
+        tenant_id: int | str | None = None,
+        *,
+        remove_files: bool = True,
+    ) -> Optional[Application]:
+        """Permanently remove one application, freeing the person to register again.
+
+        Testers and participants who must be able to run the form from scratch
+        need a real delete: an archived row would still answer ``/start`` with
+        its old status.  Deleted rows also stop reserving a registration number,
+        because numbers are assigned as ``MAX(reg_number) + 1``.
+
+        Returns the removed row (so a caller can report or log it) or ``None``
+        when the id does not belong to this tenant.
+        """
+        with self._connect() as conn:
+            tid = self._resolve_tenant_id(conn, tenant_id)
+            row = conn.execute(
+                "SELECT * FROM applications WHERE id = ? AND tenant_id = ?", (app_id, tid)
+            ).fetchone()
+            if row is None:
+                return None
+            application = _row_to_application(row)
+            conn.execute(
+                "DELETE FROM applications WHERE id = ? AND tenant_id = ?", (app_id, tid)
+            )
+        if remove_files:
+            self.remove_application_files(application)
+        return application
+
+    @staticmethod
+    def remove_application_files(application: Application) -> list[str]:
+        """Delete the photos belonging to a removed application (best effort).
+
+        Telegram keeps the ``file_id`` copies, but the runtime volume copies are
+        participant data we no longer need — and the participant may register
+        again, which would otherwise leave orphaned files behind.
+        """
+        removed: list[str] = []
+        paths = [
+            *(application.photo_paths or []),
+            *(application.mod_paths or []),
+            application.badge_photo_path or "",
+        ]
+        for path in paths:
+            if not path:
+                continue
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed.append(path)
+            except OSError:
+                continue
+        return removed
 
     def _approve(
         self, app_id: int, moderator: str, tenant_id: int | str | None = None
@@ -1825,6 +2072,11 @@ class Database:
     ) -> Optional[Application]:
         return await asyncio.to_thread(self._has_active_application, user_id, tenant_id)
 
+    async def user_tenant_counts(
+        self, user_id: int, *, exclude_tenant_id: int | None = None
+    ) -> dict[str, int]:
+        return await asyncio.to_thread(self._user_tenant_counts, user_id, exclude_tenant_id)
+
     async def set_badge_photo(
         self, user_id: int, file_id: str, path: str, *, tenant_id: int | str | None = None
     ) -> Optional[int]:
@@ -1834,6 +2086,28 @@ class Database:
         self, user_id: int, *, tenant_id: int | str | None = None
     ) -> str:
         return await asyncio.to_thread(self._get_user_language, user_id, tenant_id)
+
+    async def delete_application(
+        self,
+        app_id: int,
+        *,
+        tenant_id: int | str | None = None,
+        remove_files: bool = True,
+    ) -> Optional[Application]:
+        return await asyncio.to_thread(
+            lambda: self._delete_application(
+                app_id, tenant_id, remove_files=remove_files
+            )
+        )
+
+    async def set_card_message_id(
+        self,
+        app_id: int,
+        message_id: Optional[int],
+        *,
+        tenant_id: int | str | None = None,
+    ) -> bool:
+        return await asyncio.to_thread(self._set_card_message_id, app_id, message_id, tenant_id)
 
     async def approve(
         self, app_id: int, moderator: str, *, tenant_id: int | str | None = None

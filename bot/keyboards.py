@@ -23,6 +23,8 @@ CB_MODS_DONE = "modsdone"
 CB_APPROVE = "approve"
 CB_REJECT = "reject"
 CB_CHECK_SUB = "checksub"
+CB_FLOW_CONTINUE = "flow:continue"
+CB_FLOW_RESTART = "flow:restart"
 
 
 def language_keyboard() -> InlineKeyboardMarkup:
@@ -115,6 +117,16 @@ def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text=texts.T(lang).BTN_MY_NUMBER))
     return builder.as_markup(resize_keyboard=True)
+
+
+def continue_or_restart_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Offer the choice instead of silently wiping a half-filled form."""
+    t = texts.T(lang)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=t.BTN_CONTINUE_FORM, callback_data=CB_FLOW_CONTINUE)
+    builder.button(text=t.BTN_RESTART_FORM, callback_data=CB_FLOW_RESTART)
+    builder.adjust(2)
+    return builder.as_markup()
 
 
 def moderation_keyboard(app_id: int) -> InlineKeyboardMarkup:
