@@ -131,11 +131,26 @@ class FakeSession(BaseSession):
     def _echo(self, method: Any, name: str) -> Message:
         self._message_id += 1
         chat_id = getattr(method, "chat_id", 1)
+        photo = None
+        if name == "SendPhoto":
+            # Telegram answers a photo with the file it stored, and the bot may
+            # reuse that file_id instead of uploading the same image again — so
+            # the stand-in has to carry one, or the caching path is never tested.
+            file_id = getattr(method, "photo", "photo")
+            photo = [
+                PhotoSize(
+                    file_id=file_id if isinstance(file_id, str) else f"uploaded-{self._message_id}",
+                    file_unique_id=f"unique-{self._message_id}",
+                    width=800,
+                    height=400,
+                )
+            ]
         message = Message(
             message_id=self._message_id,
             date=dt.datetime.now(dt.timezone.utc),
             chat=Chat(id=chat_id if isinstance(chat_id, int) else 1, type="private"),
             text=str(getattr(method, "text", "") or getattr(method, "caption", "") or ""),
+            photo=photo,
         )
         return message
 

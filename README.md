@@ -315,7 +315,7 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
 ### Test results
 
 - `py_compile` all edited files: OK
-- `pytest -q`: 100 passed (includes the end-to-end form on a real dispatcher)
+- `pytest -q`: 166 passed (includes the end-to-end form on a real dispatcher)
 
 ## Reliability on event day
 
@@ -332,6 +332,7 @@ has a regression test.
 | «Удалить зарегистрированного человека из базы нельзя» | There was no delete action | 🗑 delete on the application page removes the row and its photos; the person can register again and the number is reused |
 | «Не пришла сгенерированная картинка после одобрения» | The ticket was rendered and sent in one `try`, and any failure was only logged: no image, no explanation, no way to resend | Delivery is layered — PNG → JPEG (when Telegram refuses the photo) → file → the ticket is posted into the moderation chat with "forward it to the participant"; the render runs in a thread with a timeout and is retried without the hero photo. The team can resend it themselves: `/ticket 123` in the moderation chat, or the 🎫 button on the application page |
 | «При отклонении заявки приходит сообщение с неправильным времени мероприятия» | The rejection invited the person as a guest with a date/time that was wrong (September copy on the deployed build), and a named hall was described as a parking lot | The guest invitation now appears **only** when the tenant has a «Дата для гостей» — SPL has none, so its rejection carries no date, time or venue; Promotors keeps its guest invitation word for word. The venue wording also separates a parking lot from a named venue (RU «на площадке», UZ «manzilida») |
+| «Bot sekin rasm yuklash qismida birinchi rasmni yuklagandan keyin osilib qolyapti» / «бот очень медленно»: the photo step hung after the first photo | The photo step saved the bytes **before** answering: the download ran inside the update, the update ran inside the per-user lock, so a slow Telegram CDN held back the participant's next message (0.78 s per photo, 3.2 s for an album, and nothing at all behind a stalled stream). The direction banner was re-uploaded from the volume on every registration | Each photo is answered first and downloaded behind the answer (`bot/services/media.py::PhotoIngest`, one task per photo, 15 s cap, atomic write): 0.78 s → 0.28 s per photo, 3.2 s → 1.1 s for a four-photo album, and nothing the participant sends waits for a stalled download. A failed side stays reserved — the announced resend refills that exact slot — and a side missing from the volume is re-fetched from its `file_id` before the form is accepted; the banner is uploaded once per tenant and re-sent as `file_id` after that |
 | Testers tap the status button or `/start` in the middle of the form, get «у вас нет заявки» and fill everything in again | A half-filled form was treated as "no registration": the status answer told them to `/start`, and `/start` silently wiped the collected photos | Mid-form the status button continues the form (current step re-asked); `/start` offers «Продолжить / Начать заново» instead of deleting the answers; when nothing is found the log names the tenants that do hold rows for that person |
 
 Operational notes:
@@ -341,6 +342,12 @@ Operational notes:
   in-memory storage instead of stopping the bot.
 - Every failure is logged with the tenant slug and update id — search the log
   for `"failed:"` when a participant reports a silent bot.
+- Photos: an update is answered before its photo is on disk; the resend asks
+  («⚠️ Не удалось сохранить фото (…). Пришлите его, пожалуйста») name the side
+  once the download really fails, and the form refuses to be accepted while a
+  photo is unaccounted for — it waits for a fetch in flight, silently re-fetches
+  a side that is missing from the volume, and only then asks the participant
+  again (`PHOTO_RESEND_BEFORE_FINISH`).
 - Tickets: Telegram's photo limit is 10 MB, so a poster above ~9 MB is sent as
   JPEG from the start; if a send fails the moderation chat receives the same
   image with a "forward this to the participant" caption.

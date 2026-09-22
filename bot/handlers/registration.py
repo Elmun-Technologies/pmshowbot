@@ -12,14 +12,20 @@ Robustness rules (learned from production incidents):
   global list;
 * every step answers the participant — a button whose data no longer matches
   anything re-asks the current question instead of doing nothing;
+* photo updates are answered *before* the bytes are fetched (the download runs
+  as its own task, see ``bot.services.media.PhotoIngest``), so a slow or stalled
+  photo delays nothing else — not the next prompt, not the next message, and not
+  the other three photos of an album, which are now fetched at the same time;
 * photo updates are de-duplicated and download failures are reported, so a
   single bad upload can neither desynchronise the four sides nor drop a photo
-  without a word;
+  without a word, and the side a participant is asked to send again lands back
+  in its own slot instead of shifting the car's sides;
 * ``/start`` in the middle of the form asks whether to continue or restart
   instead of silently deleting the collected answers.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import os
@@ -29,7 +35,7 @@ from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, Message
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from .. import keyboards, texts
@@ -370,6 +376,7 @@ def _direction_banner(direction: Direction, config: Config | TenantConfig) -> Op
 async def _accept_direction(
     message: Message,
     state: FSMContext,
+    bot: Bot,
     lang: str,
     config: Config | TenantConfig,
     directions: list,
@@ -390,10 +397,10 @@ async def _accept_direction(
     )
     banner = _direction_banner(leaf, config)
     if banner:
-        try:
-            await message.answer_photo(FSInputFile(banner), caption=picked)
-        except Exception:
-            logger.exception("Could not send direction banner for %s", leaf.canonical)
+        # Sent through the file_id cache: the banner is uploaded once per bot,
+        # not once per registration (it is a big image and the participant is
+        # waiting for the first photo question).
+        if not await media.send_cached_photo(bot, message.chat.id, banner, picked):
             await message.answer(picked)
     else:
         await message.answer(picked)
@@ -404,7 +411,11 @@ async def _accept_direction(
 # --- Direction (right after the plate, before photos) — DB-aware, 2 levels ---
 @router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
 async def choose_direction(
-    query: CallbackQuery, state: FSMContext, config: Config | TenantConfig, db: Database
+    query: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
 ) -> None:
     lang = await _lang(state)
     raw = query.data.split(":", 1)[1]
@@ -432,7 +443,7 @@ async def choose_direction(
                 )
                 return
             if await _accept_direction(
-                query.message, state, lang, config, db_directions, leaf_id=selected.id
+                query.message, state, bot, lang, config, db_directions, leaf_id=selected.id
             ):
                 return
         # The direction was deleted (or the keyboard is stale) — ask again
@@ -455,13 +466,9 @@ async def choose_direction(
     picked = texts.T(lang).DIRECTION_PICKED.format(
         direction=texts.localize_direction(canonical, lang)
     )
-    if banner:
-        try:
-            await query.message.answer_photo(FSInputFile(banner), caption=picked)
-        except Exception:
-            logger.exception("Could not send direction banner for %s", canonical)
-            await query.message.answer(picked)
-    else:
+    if banner and not await media.send_cached_photo(
+        bot, query.message.chat.id, banner, picked
+    ):
         await query.message.answer(picked)
 
     await query.message.answer(texts.T(lang).PHOTO_PROMPTS[0])
@@ -469,7 +476,11 @@ async def choose_direction(
 
 @router.callback_query(Registration.sub_direction, F.data.startswith(f"{keyboards.CB_SUB_DIRECTION}:"))
 async def choose_sub_direction(
-    query: CallbackQuery, state: FSMContext, config: Config | TenantConfig, db: Database
+    query: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
 ) -> None:
     """Second level: podnapravleniya. Callback format ``subdirection:parent:child``."""
     lang = await _lang(state)
@@ -502,7 +513,7 @@ async def choose_sub_direction(
         return
 
     if not await _accept_direction(
-        query.message, state, lang, config, db_directions, leaf_id=child_id
+        query.message, state, bot, lang, config, db_directions, leaf_id=child_id
     ):
         await query.message.answer(texts.T(lang).STEP_STALE)
         await _ask_direction(
@@ -510,74 +521,341 @@ async def choose_sub_direction(
         )
 
 
-# --- Photos (4, one by one) ---
-def _photo_path(config: Config | TenantConfig, user_id: int, name: str) -> Optional[str]:
-    """Destination for one upload, or ``None`` when the volume is not writable.
+# --- Photos (the four required sides) ---------------------------------------
+#
+# The update records the photo and answers the participant **first**; the bytes
+# travel to the volume in the background (``bot.services.media.PhotoIngest``).
+# That is what stops "send the second side" from waiting for the first one's
+# download, and it is why four photos posted as an album are fetched at the same
+# time instead of one after another — the reported "the bot hangs after the
+# first photo" was exactly this wait, made of one download per photo plus every
+# later message queued behind it.
+#
+# Everything below exists to keep that record honest:
+#
+# * a slot belongs to the *side* it was sent for, so a photo that failed to save
+#   leaves its slot reserved: the side the participant is asked to send again
+#   lands where it belongs instead of on the next free side, which would swap
+#   left and right without anybody noticing;
+# * a photo recorded by a process that died mid-download is fetched again from
+#   the id still in the state, because Telegram keeps a photo downloadable;
+# * the end of the form waits for whatever is still in flight and refuses to
+#   create the application while a required side is missing from the volume.
 
-    A full/read-only media volume would otherwise raise inside the handler and
-    leave the participant without any answer at all.
+# How long the end of the form waits for photos that are still being fetched.
+# Each one is bounded by the download ceiling (15 s) plus the write (10 s), and
+# they were submitted when the participant was still answering questions about
+# modifications and the phone number — so this is a ceiling, not a delay.
+PENDING_WAIT_SECONDS = 20.0
+
+# How long a participant is left in silence before being told that their photos
+# are still being saved ("⏳ …"), when the wait turns out to be visible.
+SAVING_NOTICE_AFTER_SECONDS = 1.5
+
+# At the end of the form, a side whose file the volume lost is fetched once more
+# from the id in the state.  Short on purpose: it is a repair, not the main path.
+REFETCH_WAIT_SECONDS = 8.0
+
+
+def _photo_path(config: Config | TenantConfig, user_id: int, name: str) -> Optional[str]:
+    """Destination for one upload, or ``None`` when there is no media volume.
+
+    The directory itself is created by the writer (:func:`media.write_bytes`,
+    which runs on the slow-work pool).  ``os.makedirs`` used to run here, on the
+    event loop, for every photo — a blocking syscall against the network volume
+    that holds the photos, i.e. a stall for *every* participant, not just this
+    one.
     """
-    try:
-        user_dir = os.path.join(config.media_dir, str(user_id))
-        os.makedirs(user_dir, exist_ok=True)
-        return os.path.join(user_dir, name)
-    except OSError:
-        logger.exception(
-            "Media directory %s is not writable", getattr(config, "media_dir", "?")
+    media_dir = getattr(config, "media_dir", "")
+    if not media_dir:
+        logger.error(
+            "Tenant %s has no media directory — photos cannot be stored",
+            getattr(config, "tenant_slug", "?"),
         )
         return None
+    return os.path.join(str(media_dir), str(user_id), name)
 
 
-async def _download_photo(bot: Bot, file_id: str, path: str) -> bool:
-    """Download one Telegram photo, reporting success instead of raising.
+def _records(data: dict, id_key: str, path_key: str) -> tuple[list[str], list[str]]:
+    """(file_ids, paths) recorded so far, kept side by side.
 
-    Bounded (see :mod:`bot.services.media`) because this runs inside the
-    per-user lock: an unbounded download is a silent freeze for that
-    participant, and the write happens on the slow-work pool so the disk volume
-    cannot take the database's threads with it.
+    A pair that is out of step can only come from an older or damaged state;
+    trimming to the shorter one keeps every index meaningful.
     """
-    return await media.save_telegram_photo(bot, file_id, path)
+    ids = list(data.get(id_key) or [])
+    paths = list(data.get(path_key) or [])
+    length = min(len(ids), len(paths))
+    return ids[:length], paths[:length]
 
 
-async def _next_photo_prompt(message: Message, state: FSMContext, lang: str) -> None:
-    data = await state.get_data()
-    collected = len(data.get("photo_file_ids", []))
-    if collected < len(SIDES):
-        await message.answer(texts.T(lang).PHOTO_PROMPTS[collected])
+def _failure_notice(bot: Bot, chat_id: int, lang: str):
+    """Ask for one photo again, by name, when its download failed.
+
+    The download runs on its own task, so this is the only place that can tell
+    the participant *which* photo did not make it — and it must say so, or their
+    next photo would quietly fill the wrong slot.
+    """
+
+    async def notify(upload: media.Upload) -> None:
+        await bot.send_message(
+            chat_id,
+            texts.T(lang).PHOTO_SAVE_FAILED.format(
+                what=upload.label or texts.side_name(lang, SIDES[min(upload.index, len(SIDES) - 1)])
+            ),
+        )
+
+    return notify
+
+
+def _start_download(
+    bot: Bot,
+    chat_id: int,
+    lang: str,
+    *,
+    user_id: int,
+    file_id: str,
+    path: str,
+    kind: str,
+    index: int,
+    label: str,
+) -> None:
+    """Hand one photo to the ingest; the caller answers the participant now."""
+    media.ingest.submit(
+        bot,
+        user_id=user_id,
+        chat_id=chat_id,
+        file_id=file_id,
+        path=path,
+        kind=kind,
+        index=index,
+        label=label,
+        notify=_failure_notice(bot, chat_id, lang),
+    )
+
+
+async def _photo_states(bot: Bot, user_id: int, paths: list[str]) -> list[str]:
+    """Where each recorded photo is: ``pending``, ``done`` or ``missing``.
+
+    The ledger knows everything that happened in this process; for anything it
+    has never seen (a restart in the middle of a download, an entry pruned after
+    an hour) the volume itself is asked.
+    """
+    statuses = media.ingest.statuses(bot, user_id)
+    unknown = [i for i, path in enumerate(paths) if path and path not in statuses]
+    present = await media.files_exist([paths[i] for i in unknown]) if unknown else []
+    states: list[str] = []
+    for index, path in enumerate(paths):
+        if not path:
+            states.append("missing")
+        elif path in statuses:
+            states.append({"pending": "pending", "done": "done", "failed": "missing"}[statuses[path]])
+        else:
+            position = unknown.index(index)
+            states.append("done" if present[position] else "missing")
+    return states
+
+
+async def _unresolved_photos(
+    bot: Bot,
+    user_id: int,
+    chat_id: int,
+    lang: str,
+    ids: list[str],
+    paths: list[str],
+    *,
+    kind: str,
+    label_of,
+) -> list[int]:
+    """Indexes of photos the participant still owes the bot, oldest first.
+
+    Two situations end up here, and confusing them would put the wrong photo in
+    the wrong slot:
+
+    * **the download failed and the participant was told to send that photo
+      again** — the notice names the side, so their next photo belongs in *this*
+      slot; the index is returned and the slot is not re-fetched behind their
+      back;
+    * **the file is missing and nobody was ever asked** — the state says "sent"
+      while the volume disagrees, which is what a redeploy in the middle of a
+      download leaves behind.  Telegram still serves the photo by id, so it is
+      fetched again here and the participant never learns about it.  Only if
+      *that* download fails do they get the "send it again" notice — from the
+      download itself, which is also what then puts the side on this list.
+
+    A photo that is still being fetched is not owed either: its file is about to
+    appear, and asking for it again would put two photos in one slot.
+    """
+    statuses = media.ingest.statuses(bot, user_id)
+    owed = [index for index, path in enumerate(paths) if statuses.get(path) == "failed"]
+    unknown = [index for index, path in enumerate(paths) if path and path not in statuses]
+    if not unknown:
+        return owed
+    present = await media.files_exist([paths[index] for index in unknown])
+    for index, exists in zip(unknown, present):
+        if exists or index >= len(ids) or not ids[index]:
+            continue
+        logger.info(
+            "Re-fetching photo %s for user %s — the state has it, the volume does not",
+            index,
+            user_id,
+        )
+        _start_download(
+            bot,
+            chat_id,
+            lang,
+            user_id=user_id,
+            file_id=ids[index],
+            path=paths[index],
+            kind=kind,
+            index=index,
+            label=label_of(index),
+        )
+    return owed
+
+
+def _side_label_of(lang: str):
+    return lambda index: texts.side_name(lang, SIDES[index])
+
+
+def _mod_label_of(lang: str):
+    return lambda index: texts.mod_photo_name(lang, index + 1)
+
+
+def _labels(lang: str, indexes: list[int]) -> str:
+    return ", ".join(texts.side_name(lang, SIDES[i]) for i in indexes)
+
+
+async def _save_side_photo(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    lang: str,
+    *,
+    index: int,
+    file_id: str,
+    ids: list[str],
+    paths: list[str],
+) -> bool:
+    """Reserve side ``index`` for ``file_id`` and start fetching it.
+
+    The slot is written to the state *before* the download, so it is reserved:
+    the next photo appends after it, and a failure can ask for exactly this side
+    again without shifting the other three.
+    """
+    path = _photo_path(config, message.from_user.id, f"{SIDES[index]}.jpg")
+    if path is None:
+        await message.answer(texts.T(lang).PHOTO_DOWNLOAD_FAILED)
+        return False
+    if index < len(ids):
+        ids[index] = file_id
+        paths[index] = path
     else:
-        await _ask_mods(message, state, lang)
+        ids.append(file_id)
+        paths.append(path)
+    await state.update_data(photo_file_ids=ids, photo_paths=paths)
+    _start_download(
+        bot,
+        message.chat.id,
+        lang,
+        user_id=message.from_user.id,
+        file_id=file_id,
+        path=path,
+        kind="side",
+        index=index,
+        label=texts.side_name(lang, SIDES[index]),
+    )
+    return True
+
+
+async def _after_side_photo(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
+    lang: str,
+) -> None:
+    """Answer a saved side: the next question, or the sides still missing."""
+    # Read the state again: the slot was written a moment ago, and the prompt
+    # has to be based on the photos that are really recorded.
+    current = await state.get_state()
+    data = await state.get_data()
+    ids, paths = _records(data, "photo_file_ids", "photo_paths")
+    again = await _unresolved_photos(
+        bot, message.from_user.id, message.chat.id, lang, ids, paths,
+        kind="side", label_of=_side_label_of(lang),
+    )
+    t = texts.T(lang)
+    if again:
+        # A different side is still missing: ask for that one by name instead of
+        # moving on, or the participant would walk into a form with a hole in it.
+        await message.answer(t.PHOTO_RESEND_ASK.format(what=_labels(lang, again)))
+        return
+    if len(ids) < len(SIDES):
+        await message.answer(t.PHOTO_PROMPTS[len(ids)])
+        return
+    phone = data.get("phone")
+    if phone:
+        # The form was already finished once and was sent back for one missing
+        # photo; now that it is here, finish the registration without asking the
+        # participant to repeat the questions they already answered.
+        await _finalize(message, state, bot, config, db, phone=phone)
+        return
+    if len(ids) < len(SIDES):
+        return  # the next side was asked for above
+    if current == Registration.phone.state:
+        # The photo was sent while the form was already asking for the phone
+        # number (the side's download had failed on the way): ask that again.
+        await _ask_phone(message, state, lang)
+        return
+    await _ask_mods(message, state, lang)
 
 
 @router.message(Registration.photos, F.photo)
-async def collect_photo(message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig) -> None:
+async def collect_photo(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
+) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
-    file_ids: list[str] = list(data.get("photo_file_ids", []))
-    paths: list[str] = list(data.get("photo_paths", []))
+    t = texts.T(lang)
+    ids, paths = _records(data, "photo_file_ids", "photo_paths")
 
-    photo = message.photo[-1]
-    # Telegram may deliver the same update twice (retry after a slow handler or
-    # a redeploy). Counting it twice would overflow the four sides and crash on
-    # SIDES[4], which left the participant without any answer.
-    if photo.file_id in file_ids:
-        logger.debug("Ignoring duplicate photo %s", photo.file_id)
-        return
-    if len(file_ids) >= len(SIDES):
-        await _ask_mods(message, state, lang)
-        return
+    again = await _unresolved_photos(
+        bot, message.from_user.id, message.chat.id, lang, ids, paths,
+        kind="side", label_of=_side_label_of(lang),
+    )
+    file_id = message.photo[-1].file_id
 
-    index = len(file_ids)
-    side = SIDES[index]
-    path = _photo_path(config, message.from_user.id, f"{side}.jpg")
-
-    if path is None or not await _download_photo(bot, photo.file_id, path):
-        await message.answer(texts.T(lang).PHOTO_DOWNLOAD_FAILED)
+    if file_id in ids:
+        # Telegram re-delivers an update whose handler died before answering,
+        # and participants do tap "send" twice.  Both used to be answered with
+        # silence — indistinguishable from a frozen bot; now the current
+        # question is repeated and no fifth side is ever created.
+        logger.debug("Duplicate photo %s — repeating the current question", file_id)
+        await _after_side_photo(message, state, bot, config, db, lang)
         return
 
-    file_ids.append(photo.file_id)
-    paths.append(path)
-    await state.update_data(photo_file_ids=file_ids, photo_paths=paths)
-    await _next_photo_prompt(message, state, lang)
+    if again:
+        index = again[0]
+    elif len(ids) < len(SIDES):
+        index = len(ids)
+    else:
+        # Four sides recorded and none of them missing: a redelivery, or a
+        # photo the participant sent twice.  Repeat the question rather than
+        # swallowing the update.
+        await _after_side_photo(message, state, bot, config, db, lang)
+        return
+
+    if not await _save_side_photo(
+        message, state, bot, config, lang, index=index, file_id=file_id, ids=ids, paths=paths
+    ):
+        return
+    await _after_side_photo(message, state, bot, config, db, lang)
 
 
 @router.message(Registration.photos)
@@ -597,36 +875,151 @@ async def _ask_mods(message: Message, state: FSMContext, lang: str) -> None:
     )
 
 
+async def _save_mod_photo(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    lang: str,
+    *,
+    index: int,
+    file_id: str,
+    ids: list[str],
+    paths: list[str],
+) -> bool:
+    """Reserve close-up slot ``index`` for ``file_id`` and start fetching it."""
+    path = _photo_path(config, message.from_user.id, f"mod_{index + 1}.jpg")
+    if path is None:
+        await message.answer(texts.T(lang).PHOTO_DOWNLOAD_FAILED)
+        return False
+    if index < len(ids):
+        ids[index] = file_id
+        paths[index] = path
+    else:
+        ids.append(file_id)
+        paths.append(path)
+    await state.update_data(mod_file_ids=ids, mod_paths=paths)
+    _start_download(
+        bot,
+        message.chat.id,
+        lang,
+        user_id=message.from_user.id,
+        file_id=file_id,
+        path=path,
+        kind="mod",
+        index=index,
+        label=texts.mod_photo_name(lang, index + 1),
+    )
+    return True
+
+
+async def _fill_failed_side(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    lang: str,
+) -> bool:
+    """Use this photo for a required side whose download failed earlier.
+
+    The participant was told "send the left side again", and their next photo can
+    arrive while the form has already moved on (the modifications step, or the
+    phone question).  The reserved slot is where it belongs; without this it
+    would be filed as a modification photo and the side would stay missing.
+    """
+    user_id = message.from_user.id
+    failures = [
+        upload
+        for upload in media.ingest.failed(bot, user_id, kind="side")
+        if upload.index < len(SIDES)
+    ]
+    if not failures:
+        return False
+    data = await state.get_data()
+    ids, paths = _records(data, "photo_file_ids", "photo_paths")
+    for upload in failures:
+        if upload.index > len(ids):
+            # The form was restarted since that failure — the slot does not
+            # exist any more, so this photo is not the answer to it.
+            logger.info("Dropping a stale side retry for user %s (%s)", user_id, upload.path)
+            media.ingest.forget(bot, user_id, upload.path)
+            continue
+        if not await _save_side_photo(
+            message,
+            state,
+            bot,
+            config,
+            lang,
+            index=upload.index,
+            file_id=message.photo[-1].file_id,
+            ids=ids,
+            paths=paths,
+        ):
+            return True  # answered with "could not save, send it again"
+        logger.info(
+            "Photo from user %s filled side %s, as asked after the failed download",
+            user_id,
+            SIDES[upload.index],
+        )
+        return True
+    return False
+
+
 @router.message(Registration.mods, F.photo)
-async def collect_mod_photo(message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig) -> None:
+async def collect_mod_photo(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
+) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
-    file_ids: list[str] = list(data.get("mod_file_ids", []))
-    paths: list[str] = list(data.get("mod_paths", []))
     t = texts.T(lang)
+    user_id = message.from_user.id
+    file_id = message.photo[-1].file_id
 
-    photo = message.photo[-1]
-    if photo.file_id in file_ids:
-        logger.debug("Ignoring duplicate modification photo %s", photo.file_id)
+    # A required side may still be owed (see _fill_failed_side): put it there
+    # first, then continue the flow — which repeats this step's question, or
+    # names the next side that still has to be sent again.
+    if await _fill_failed_side(message, state, bot, config, lang):
+        await _after_side_photo(message, state, bot, config, db, lang)
         return
 
-    path = _photo_path(config, message.from_user.id, f"mod_{len(file_ids) + 1}.jpg")
+    ids, paths = _records(data, "mod_file_ids", "mod_paths")
+    again = await _unresolved_photos(
+        bot, user_id, message.chat.id, lang, ids, paths,
+        kind="mod", label_of=_mod_label_of(lang),
+    )
 
-    if path is None or not await _download_photo(bot, photo.file_id, path):
-        await message.answer(t.PHOTO_DOWNLOAD_FAILED)
+    if file_id in ids:
+        logger.debug("Duplicate modification photo %s — repeating the question", file_id)
+        await _ask_mods(message, state, lang)
         return
 
-    file_ids.append(photo.file_id)
-    paths.append(path)
-    await state.update_data(mod_file_ids=file_ids, mod_paths=paths)
+    if again:
+        index = again[0]
+    elif len(ids) < MAX_MOD_PHOTOS:
+        index = len(ids)
+    else:
+        await message.answer(t.MODS_LIMIT.format(max=MAX_MOD_PHOTOS))
+        await _ask_phone(message, state, lang)
+        return
 
-    if len(file_ids) >= MAX_MOD_PHOTOS:
+    if not await _save_mod_photo(
+        message, state, bot, config, lang, index=index, file_id=file_id, ids=ids, paths=paths
+    ):
+        return
+
+    data = await state.get_data()
+    ids, _ = _records(data, "mod_file_ids", "mod_paths")
+    if len(ids) >= MAX_MOD_PHOTOS:
         await message.answer(t.MODS_LIMIT.format(max=MAX_MOD_PHOTOS))
         await _ask_phone(message, state, lang)
         return
 
     await message.answer(
-        t.MODS_ADDED.format(n=len(file_ids), max=MAX_MOD_PHOTOS),
+        t.MODS_ADDED.format(n=len(ids), max=MAX_MOD_PHOTOS),
         reply_markup=keyboards.mods_keyboard(lang, has_photos=True),
     )
 
@@ -665,6 +1058,9 @@ async def set_phone_contact(
     message: Message, state: FSMContext, bot: Bot, config: Config | TenantConfig, db: Database
 ) -> None:
     phone = clean_phone(message.contact.phone_number) or message.contact.phone_number
+    # Remember it in the state: if a photo turns out to be missing, the form
+    # finishes by itself once it arrives instead of asking for the phone again.
+    await state.update_data(phone=phone)
     await _finalize(message, state, bot, config, db, phone=phone)
 
 
@@ -679,7 +1075,86 @@ async def set_phone_text(
             texts.T(lang).BAD_PHONE, reply_markup=keyboards.phone_keyboard(lang)
         )
         return
+    await state.update_data(phone=phone)
     await _finalize(message, state, bot, config, db, phone=phone)
+
+
+async def _confirmed_photos(
+    bot: Bot, user_id: int, ids: list[str], paths: list[str]
+) -> tuple[list[str], list[str]]:
+    """Recorded photos minus the ones the volume never accepted.
+
+    Used for the optional close-ups: a photo that is still being fetched is kept
+    (it was submitted long before the phone question), but one whose file is not
+    there is dropped rather than left in the record as a path that 404s in the
+    admin panel and in the Drive export.
+    """
+    states = await _photo_states(bot, user_id, paths)
+    keep = [index for index, state in enumerate(states) if state != "missing"]
+    return [ids[index] for index in keep], [paths[index] for index in keep]
+
+
+async def _sides_missing_at_finish(
+    bot: Bot, user_id: int, chat_id: int, lang: str, ids: list[str], paths: list[str]
+) -> list[int]:
+    """Required sides that are not on the volume when the form is finished.
+
+    Stricter than the mid-form check: here a photo that is *still* in flight
+    after the wait counts as missing, because the application row must not point
+    at a file that does not exist.  Anything Telegram can still serve is fetched
+    once more (a network blip must not send the participant back for a photo
+    they already sent), and only what is left is asked for by name.
+    """
+    again = await _unresolved_photos(
+        bot, user_id, chat_id, lang, ids, paths, kind="side", label_of=_side_label_of(lang)
+    )
+    if again:
+        return again
+    if media.ingest.is_pending(bot, user_id):
+        # A download is still running: give it a moment before deciding.
+        await media.ingest.wait(bot, user_id, timeout=REFETCH_WAIT_SECONDS)
+
+    missing = await _missing_side_indexes(paths)
+    if not missing:
+        return []
+    # The id of every side is still in the state and Telegram serves a photo by
+    # id, so fetch what is gone before asking the participant to look for those
+    # photos in their gallery again.
+    for index in missing:
+        if index >= len(ids) or not ids[index]:
+            continue
+        logger.warning(
+            "Side %s of user %s is not on the volume — fetching it again from Telegram",
+            SIDES[index],
+            user_id,
+        )
+        _start_download(
+            bot,
+            chat_id,
+            lang,
+            user_id=user_id,
+            file_id=ids[index],
+            path=paths[index],
+            kind="side",
+            index=index,
+            label=_side_label_of(lang)(index),
+        )
+    if media.ingest.is_pending(bot, user_id):
+        await media.ingest.wait(bot, user_id, timeout=REFETCH_WAIT_SECONDS)
+    return await _missing_side_indexes(paths)
+
+
+async def _missing_side_indexes(paths: list[str]) -> list[int]:
+    """Sides of the four that are not on the volume right now.
+
+    The volume has the last word here: an application row must never claim four
+    sides while the disk holds three (the moderator's export and the ticket
+    would both quietly come out without the car on them).
+    """
+    present = await media.files_exist(paths)
+    return [
+        index for index in range(len(SIDES)) if index >= len(paths) or not present[index]
+    ]
 
 
 async def _finalize(
@@ -693,9 +1168,42 @@ async def _finalize(
 ) -> None:
     data = await state.get_data()
     lang = data.get("lang", "ru")
+    t = texts.T(lang)
+    user_id = message.from_user.id
     direction_id = data.get("direction_id")
+    ids, paths = _records(data, "photo_file_ids", "photo_paths")
+    mod_ids, mod_paths = _records(data, "mod_file_ids", "mod_paths")
+
+    # The photos are fetched in the background, so one of them can still be on
+    # its way right now — the participant answered the last questions while
+    # their photos were being saved, which is exactly the point.  Give what is
+    # in flight a bounded moment to land, and say so if that takes a visible
+    # moment, instead of going quiet right before the confirmation.
+    if media.ingest.is_pending(bot, user_id):
+        waiter = asyncio.ensure_future(
+            media.ingest.wait(bot, user_id, timeout=PENDING_WAIT_SECONDS)
+        )
+        done, _ = await asyncio.wait({waiter}, timeout=SAVING_NOTICE_AFTER_SECONDS)
+        if not done:
+            await message.answer(t.PHOTOS_SAVING)
+            await waiter
+
+    again = await _sides_missing_at_finish(bot, user_id, message.chat.id, lang, ids, paths)
+    if again:
+        # Never say "thanks, your application is accepted" and then ask for a
+        # photo: keep the form open, remember the phone number, and come back
+        # here by itself as soon as the missing side arrives.
+        await state.update_data(phone=phone)
+        await state.set_state(Registration.photos)
+        await message.answer(
+            t.PHOTO_RESEND_BEFORE_FINISH.format(what=_labels(lang, again))
+        )
+        return
+
+    mod_ids, mod_paths = await _confirmed_photos(bot, user_id, mod_ids, mod_paths)
+
     app_id = await db.create_application(
-        user_id=message.from_user.id,
+        user_id=user_id,
         username=_user_label(message),
         full_name=message.from_user.full_name or "",
         country=data.get("country", ""),
@@ -703,14 +1211,14 @@ async def _finalize(
         direction=data.get("direction", ""),
         direction_id=direction_id,
         phone=phone,
-        photo_file_ids=data.get("photo_file_ids", []),
-        photo_paths=data.get("photo_paths", []),
-        mod_file_ids=data.get("mod_file_ids", []),
-        mod_paths=data.get("mod_paths", []),
+        photo_file_ids=ids,
+        photo_paths=paths,
+        mod_file_ids=mod_ids,
+        mod_paths=mod_paths,
         language=lang,
     )
     await state.clear()
-    await message.answer(texts.T(lang).THANKS, reply_markup=keyboards.main_menu_keyboard(lang))
+    await message.answer(t.THANKS, reply_markup=keyboards.main_menu_keyboard(lang))
 
     await _send_moderation_card(
         bot,
@@ -722,8 +1230,8 @@ async def _finalize(
         direction=data.get("direction", ""),
         phone=phone,
         user_label=_user_label(message),
-        photo_file_ids=data.get("photo_file_ids", []),
-        mod_file_ids=data.get("mod_file_ids", []),
+        photo_file_ids=ids,
+        mod_file_ids=mod_ids,
     )
 
 
@@ -852,7 +1360,11 @@ async def _repeat_step(
 
 @router.message(StateFilter(*Registration.__all_states__))
 async def unexpected_message(
-    message: Message, state: FSMContext, config: Config | TenantConfig, db: Database
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
 ) -> None:
     """Input that no step expected — repeat the step rather than stay silent.
 
@@ -862,6 +1374,16 @@ async def unexpected_message(
     """
     if not _is_form_message(message):
         raise SkipHandler
+    if message.photo:
+        # A photo can arrive while the form is on another question: the bot asked
+        # for a side whose download failed after the participant had already
+        # moved on to the phone number.  That photo is the answer to that
+        # request — repeating "send your phone number" would lose it, and the
+        # end-of-form check would send them back for it a second time.
+        lang = (await state.get_data()).get("lang", "ru")
+        if await _fill_failed_side(message, state, bot, config, lang):
+            await _after_side_photo(message, state, bot, config, db, lang)
+            return
     data = await state.get_data()
     lang = data.get("lang", "ru")
     if await _repeat_step(message, state, lang, config, db):

@@ -252,6 +252,13 @@ def test_panel_decision_clears_buttons_and_posts_to_the_group():
 
 
 def test_duplicate_photo_update_cannot_break_the_sequence():
+    """The same photo twice: no fifth side, and an answer either way.
+
+    Telegram re-delivers an update whose handler died, and participants do send
+    the same photo twice.  The duplicate is still filed once — but it is no
+    longer answered with silence, which was indistinguishable from a frozen bot.
+    """
+
     async def run():
         harness = BotHarness()
         await harness.start()
@@ -263,8 +270,8 @@ def test_duplicate_photo_update_cannot_break_the_sequence():
             assert "2 из 4" in harness.private_texts(USER)[-1]
             answered = len(harness.private_texts(USER))
             await harness.send_photo(USER, "left-photo")
-            # The duplicate is ignored: no extra prompt, no fifth "side".
-            assert len(harness.private_texts(USER)) == answered
+            # Answered (never silent), the same question repeated, no fifth side.
+            assert len(harness.private_texts(USER)) == answered + 1
             assert "2 из 4" in harness.private_texts(USER)[-1]
 
             for index in range(1, 4):
@@ -481,12 +488,12 @@ def test_a_crashing_message_handler_answers_the_participant():
             async def boom(*args, **kwargs):
                 raise RuntimeError("simulated photo failure")
 
-            original = registration._next_photo_prompt
-            registration._next_photo_prompt = boom
+            original = registration._after_side_photo
+            registration._after_side_photo = boom
             try:
                 await harness.send_photo(USER, "photo-1")
             finally:
-                registration._next_photo_prompt = original
+                registration._after_side_photo = original
 
             assert any("ошибк" in t for t in harness.private_texts(USER)), "no answer at all"
 
