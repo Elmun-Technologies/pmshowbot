@@ -1,5 +1,5 @@
 [Unit]
-Description=Promotors Show Samarkand registration bot
+Description=Promotors Show multi-tenant Telegram registration platform
 After=network-online.target
 Wants=network-online.target
 

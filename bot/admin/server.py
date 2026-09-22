@@ -1,7 +1,9 @@
-"""aiohttp web app for the admin panel.
+"""aiohttp control plane for super admins and isolated tenant admins.
 
-Runs in the same process/event loop as the bot, so it shares the SQLite
-Database instance and the Bot instance (to notify applicants on decisions).
+The HTTP process is shared with every polling bot, but request middleware turns
+each tenant URL into a tenant-scoped database/config/bot context before a
+handler runs.  That boundary is deliberately server-side: changing an id in a
+URL can never expose another tenant's applications or assets.
 """
 from __future__ import annotations
 
@@ -11,29 +13,27 @@ import io
 import logging
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from aiohttp import web
 
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
 
 from ..config import Config
 from ..constants import DIRECTIONS, DIRECTIONS_CANON
-from ..db import Database, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
-from ..services import assets, decisions
+from ..db import Database, Tenant, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
+from ..services import assets, decisions, subscription
+from ..security import EncryptionError
 from . import auth, views
 
 logger = logging.getLogger(__name__)
 
 _VALID_STATUSES = {STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED}
-_PUBLIC_PATHS = {"/login", "/health"}
 _AUDIENCES = {
-    "approved",
-    "pending",
-    "rejected",
-    "incomplete",
-    "all_apps",
-    "starters",
+    "approved", "pending", "rejected", "incomplete", "all_apps", "starters",
 }
 _AUDIENCE_LABELS = {
     "approved": "Одобрено",
@@ -43,63 +43,242 @@ _AUDIENCE_LABELS = {
     "all_apps": "Все заявки",
     "starters": "Все, кого бот знает",
 }
+_MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
-_MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # Telegram photos can run a few MB.
+def create_admin_app(
+    bot=None,
+    config: Config | Any = None,
+    db: Database | None = None,
+    bot_manager=None,
+) -> web.Application:
+    """Create the multi-tenant aiohttp application.
 
-
-def create_admin_app(bot, config: Config, db: Database) -> web.Application:
-    app = web.Application(
-        middlewares=[_auth_middleware], client_max_size=_MAX_UPLOAD_SIZE
-    )
+    ``bot`` remains an optional compatibility injection for the historic root
+    panel and focused tests.  Production routes resolve a bot from
+    ``bot_manager`` by tenant id.
+    """
+    if config is None or db is None:
+        raise ValueError("config and db are required")
+    app = web.Application(middlewares=[_auth_middleware], client_max_size=_MAX_UPLOAD_SIZE)
     app["bot"] = bot
+    app["bot_manager"] = bot_manager
     app["config"] = config
     app["db"] = db
 
     app.router.add_get("/health", _health)
+
+    # Tenant selector/login and scoped tenant panel.
     app.router.add_get("/login", _login_get)
     app.router.add_post("/login", _login_post)
     app.router.add_get("/logout", _logout)
-    app.router.add_get("/", _dashboard)
-    app.router.add_get("/applications", _applications)
-    app.router.add_get("/application/{id}", _application_detail)
-    app.router.add_post("/application/{id}/approve", _approve)
-    app.router.add_post("/application/{id}/reject", _reject)
-    app.router.add_post("/application/{id}/message", _send_individual_message)
-    app.router.add_post("/application/{id}/status", _change_status)
-    app.router.add_get("/photo/{id}/{idx}", _photo)
-    app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
-    app.router.add_get("/badgephoto/{id}", _badge_photo)
-    app.router.add_get("/export.csv", _export_csv)
-    app.router.add_get("/export.xlsx", _export_excel)
-    app.router.add_get("/broadcast", _broadcast_get)
-    app.router.add_post("/broadcast", _broadcast_post)
-    # --- ticket / sponsor management ---
-    app.router.add_get("/ticket-assets", _ticket_assets)
-    app.router.add_get("/ticket-assets/preview.png", _ticket_preview)
-    app.router.add_get("/assets/file/{kind}/{filename}", _asset_file)
-    app.router.add_post("/ticket-assets/brand/upload", _brand_upload)
-    app.router.add_post("/ticket-assets/brand/delete", _brand_delete)
-    app.router.add_post("/ticket-assets/sponsor/upload", _sponsor_upload)
-    app.router.add_post("/ticket-assets/sponsor/delete", _sponsor_delete)
-    app.router.add_post("/ticket-assets/direction/upload", _direction_upload)
-    app.router.add_post("/ticket-assets/direction/delete", _direction_delete)
+    _register_tenant_routes(app, "/t/{slug}")
+
+    # Super-admin control plane.
+    app.router.add_get("/super-admin/login", _super_login_get)
+    app.router.add_post("/super-admin/login", _super_login_post)
+    app.router.add_get("/super-admin/logout", _super_logout)
+    app.router.add_get("/super-admin", _super_dashboard)
+    app.router.add_get("/super-admin/", _super_dashboard)
+    app.router.add_get("/super-admin/tenants/new", _super_tenant_new_get)
+    app.router.add_post("/super-admin/tenants/new", _super_tenant_new_post)
+    app.router.add_get("/super-admin/tenants/{slug}/edit", _super_tenant_edit_get)
+    app.router.add_post("/super-admin/tenants/{slug}/edit", _super_tenant_edit_post)
+    app.router.add_post("/super-admin/tenants/{slug}/toggle", _super_tenant_toggle)
+    app.router.add_post("/super-admin/tenants/{slug}/archive", _super_tenant_archive)
+    # `/delete` is a data-safe archive alias: application history is retained.
+    app.router.add_post("/super-admin/tenants/{slug}/delete", _super_tenant_archive)
+    app.router.add_post("/super-admin/tenants/{slug}/restart", _super_tenant_restart)
+    app.router.add_get("/super-admin/tenants/{slug}/diag", _super_tenant_diag)
     return app
+
+
+def _register_tenant_routes(app: web.Application, prefix: str) -> None:
+    """Register a complete tenant panel underneath ``/t/{slug}``."""
+    app.router.add_get(f"{prefix}/login", _tenant_login_get)
+    app.router.add_post(f"{prefix}/login", _tenant_login_post)
+    app.router.add_get(f"{prefix}/logout", _tenant_logout)
+    app.router.add_get(prefix, _dashboard)
+    app.router.add_get(f"{prefix}/", _dashboard)
+    app.router.add_get(f"{prefix}/applications", _applications)
+    app.router.add_get(f"{prefix}/application/{{id}}", _application_detail)
+    app.router.add_post(f"{prefix}/application/{{id}}/approve", _approve)
+    app.router.add_post(f"{prefix}/application/{{id}}/reject", _reject)
+    app.router.add_post(f"{prefix}/application/{{id}}/message", _send_individual_message)
+    app.router.add_post(f"{prefix}/application/{{id}}/status", _change_status)
+    app.router.add_get(f"{prefix}/photo/{{id}}/{{idx}}", _photo)
+    app.router.add_get(f"{prefix}/modphoto/{{id}}/{{idx}}", _mod_photo)
+    app.router.add_get(f"{prefix}/badgephoto/{{id}}", _badge_photo)
+    app.router.add_get(f"{prefix}/export.csv", _export_csv)
+    app.router.add_get(f"{prefix}/export.xlsx", _export_excel)
+    app.router.add_get(f"{prefix}/broadcast", _broadcast_get)
+    app.router.add_post(f"{prefix}/broadcast", _broadcast_post)
+    app.router.add_get(f"{prefix}/settings", _tenant_settings_get)
+    app.router.add_post(f"{prefix}/settings", _tenant_settings_post)
+    app.router.add_get(f"{prefix}/ticket-assets", _ticket_assets)
+    app.router.add_get(f"{prefix}/ticket-assets/preview.png", _ticket_preview)
+    app.router.add_get(f"{prefix}/assets/file/{{kind}}/{{filename}}", _asset_file)
+    app.router.add_post(f"{prefix}/ticket-assets/brand/upload", _brand_upload)
+    app.router.add_post(f"{prefix}/ticket-assets/brand/delete", _brand_delete)
+    app.router.add_post(f"{prefix}/ticket-assets/sponsor/upload", _sponsor_upload)
+    app.router.add_post(f"{prefix}/ticket-assets/sponsor/delete", _sponsor_delete)
+    app.router.add_post(f"{prefix}/ticket-assets/direction/upload", _direction_upload)
+    app.router.add_post(f"{prefix}/ticket-assets/direction/delete", _direction_delete)
+
+    # Historic single-tenant routes stay live for installations/tests that use
+    # a SimpleNamespace with ADMIN_PASSWORD. New Config disables this branch.
+    if prefix == "/t/{slug}":
+        app.router.add_get("/", _dashboard)
+        app.router.add_get("/applications", _applications)
+        app.router.add_get("/application/{id}", _application_detail)
+        app.router.add_post("/application/{id}/approve", _approve)
+        app.router.add_post("/application/{id}/reject", _reject)
+        app.router.add_post("/application/{id}/message", _send_individual_message)
+        app.router.add_post("/application/{id}/status", _change_status)
+        app.router.add_get("/photo/{id}/{idx}", _photo)
+        app.router.add_get("/modphoto/{id}/{idx}", _mod_photo)
+        app.router.add_get("/badgephoto/{id}", _badge_photo)
+        app.router.add_get("/export.csv", _export_csv)
+        app.router.add_get("/export.xlsx", _export_excel)
+        app.router.add_get("/broadcast", _broadcast_get)
+        app.router.add_post("/broadcast", _broadcast_post)
+        app.router.add_get("/settings", _tenant_settings_get)
+        app.router.add_post("/settings", _tenant_settings_post)
+        app.router.add_get("/ticket-assets", _ticket_assets)
+        app.router.add_get("/ticket-assets/preview.png", _ticket_preview)
+        app.router.add_get("/assets/file/{kind}/{filename}", _asset_file)
+        app.router.add_post("/ticket-assets/brand/upload", _brand_upload)
+        app.router.add_post("/ticket-assets/brand/delete", _brand_delete)
+        app.router.add_post("/ticket-assets/sponsor/upload", _sponsor_upload)
+        app.router.add_post("/ticket-assets/sponsor/delete", _sponsor_delete)
+        app.router.add_post("/ticket-assets/direction/upload", _direction_upload)
+        app.router.add_post("/ticket-assets/direction/delete", _direction_delete)
+
+
+def _legacy_panel_enabled(config: Any) -> bool:
+    return bool(getattr(config, "legacy_panel_enabled", True))
+
+
+def _super_secret(config: Any) -> str:
+    return str(getattr(config, "super_admin_password", "") or "")
+
+
+def _is_super_request(request: web.Request) -> bool:
+    secret = _super_secret(request.app["config"])
+    return bool(secret and auth.valid_cookie(secret, request.cookies.get(auth.SUPER_COOKIE_NAME)))
+
+
+def _set_cookie(response: web.StreamResponse, name: str, secret: str, *, path: str = "/") -> None:
+    response.set_cookie(
+        name,
+        auth.make_cookie(secret),
+        max_age=auth.MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=True,
+        path=path,
+    )
 
 
 @web.middleware
 async def _auth_middleware(request: web.Request, handler):
-    config: Config = request.app["config"]
-    if request.path in _PUBLIC_PATHS:
+    """Attach an authenticated tenant context before dispatching a route."""
+    path = request.path
+    config = request.app["config"]
+    db = _db(request)
+    if path == "/health" or path == "/login":
         return await handler(request)
-    if not config.admin_password:
-        return web.Response(
-            text=views.panel_disabled_page(), content_type="text/html", status=503
-        )
-    cookie = request.cookies.get(auth.COOKIE_NAME)
-    if not auth.valid_cookie(config.admin_password, cookie):
+
+    if path.startswith("/super-admin"):
+        if path == "/super-admin/login":
+            return await handler(request)
+        secret = _super_secret(config)
+        if not secret:
+            return web.Response(text=views.super_panel_disabled_page(), content_type="text/html", status=503)
+        if not _is_super_request(request):
+            raise web.HTTPFound("/super-admin/login")
+        request["is_super"] = True
+        return await handler(request)
+
+    if path.startswith("/t/"):
+        slug = request.match_info.get("slug", "")
+        tenant = await db.get_tenant(slug)
+        if tenant is None:
+            raise web.HTTPNotFound(text="Tenant not found")
+        request["tenant"] = tenant
+        request["tenant_db"] = db.for_tenant(tenant.id)
+        request["tenant_prefix"] = f"/t/{tenant.slug}"
+        if hasattr(config, "tenant_config"):
+            request["tenant_config"] = config.tenant_config(tenant)
+        else:
+            request["tenant_config"] = config
+        manager = request.app.get("bot_manager")
+        request["tenant_bot"] = manager.get_bot(tenant.id) if manager is not None else request.app.get("bot")
+        if path == f"/t/{slug}/login":
+            if not tenant.is_active and not _is_super_request(request):
+                return web.Response(text=views.tenant_inactive_page(), content_type="text/html", status=403)
+            return await handler(request)
+        if _is_super_request(request):
+            request["is_super"] = True
+            return await handler(request)
+        if not tenant.is_active or not tenant.admin_password:
+            return web.Response(text=views.panel_disabled_page(), content_type="text/html", status=503)
+        cookie = request.cookies.get(auth.tenant_cookie_name(tenant.slug))
+        if not auth.valid_cookie(tenant.admin_password, cookie):
+            raise web.HTTPFound(f"/t/{tenant.slug}/login")
+        return await handler(request)
+
+    # Legacy root panel only. Production Config deliberately turns it off.
+    if not _legacy_panel_enabled(config):
+        raise web.HTTPFound("/login")
+    password = str(getattr(config, "admin_password", "") or "")
+    if not password:
+        return web.Response(text=views.panel_disabled_page(), content_type="text/html", status=503)
+    if not auth.valid_cookie(password, request.cookies.get(auth.COOKIE_NAME)):
         raise web.HTTPFound("/login")
     return await handler(request)
+
+
+def _db(request: web.Request):
+    return request.get("tenant_db", request.app["db"])
+
+
+def _config(request: web.Request):
+    return request.get("tenant_config", request.app["config"])
+
+
+def _bot(request: web.Request):
+    return request.get("tenant_bot", request.app.get("bot"))
+
+
+def _asset_scope(request: web.Request):
+    config = _config(request)
+    return getattr(config, "asset_scope", None)
+
+
+def _url(request: web.Request, path: str) -> str:
+    """Build a tenant-scoped URL from a root-relative panel path."""
+    prefix = request.get("tenant_prefix", "")
+    if prefix and path.startswith("/"):
+        return prefix + path
+    return path
+
+
+def _html(request: web.Request, html: str, *, status: int = 200) -> web.Response:
+    """Prefix legacy server-rendered links/actions for scoped tenant pages."""
+    prefix = request.get("tenant_prefix", "")
+    if prefix:
+        html = html.replace('href="/', f'href="{prefix}/')
+        html = html.replace('action="/', f'action="{prefix}/')
+        html = html.replace('src="/', f'src="{prefix}/')
+        tenant = request.get("tenant")
+        if tenant is not None:
+            from html import escape
+
+            html = html.replace(
+                "🚗 Promotors Show — Admin", f"🚗 {escape(tenant.name)} — Admin"
+            )
+    return web.Response(text=html, content_type="text/html", status=status)
 
 
 async def _health(request: web.Request) -> web.Response:
@@ -107,67 +286,119 @@ async def _health(request: web.Request) -> web.Response:
 
 
 async def _login_get(request: web.Request) -> web.Response:
-    config: Config = request.app["config"]
-    if not config.admin_password:
-        return web.Response(
-            text=views.panel_disabled_page(), content_type="text/html", status=503
-        )
-    error = request.query.get("error") == "1"
-    return web.Response(text=views.login_page(error), content_type="text/html")
+    config = request.app["config"]
+    if _legacy_panel_enabled(config):
+        password = str(getattr(config, "admin_password", "") or "")
+        if not password:
+            return _html(request, views.panel_disabled_page(), status=503)
+        return _html(request, views.login_page(request.query.get("error") == "1"))
+    tenants = await request.app["db"].list_tenants(active_only=True)
+    return _html(request, views.tenant_selector_login_page(tenants, request.query.get("error") == "1"))
 
 
 async def _login_post(request: web.Request) -> web.Response:
-    config: Config = request.app["config"]
+    config = request.app["config"]
     data = await request.post()
     submitted = str(data.get("password", ""))
-    if config.admin_password and auth.password_matches(config.admin_password, submitted):
-        resp = web.HTTPFound("/")
-        resp.set_cookie(
-            auth.COOKIE_NAME,
-            auth.make_cookie(config.admin_password),
-            max_age=auth.MAX_AGE,
-            httponly=True,
-            samesite="Lax",
-            secure=True,
-        )
-        raise resp
+    if _legacy_panel_enabled(config):
+        password = str(getattr(config, "admin_password", "") or "")
+        if password and auth.password_matches(password, submitted):
+            response = web.HTTPFound("/")
+            _set_cookie(response, auth.COOKIE_NAME, password)
+            raise response
+        raise web.HTTPFound("/login?error=1")
+
+    slug = str(data.get("slug", "")).strip()
+    tenant = await request.app["db"].get_tenant(slug)
+    if tenant and tenant.is_active and auth.password_matches(tenant.admin_password, submitted):
+        response = web.HTTPFound(f"/t/{tenant.slug}/")
+        _set_cookie(response, auth.tenant_cookie_name(tenant.slug), tenant.admin_password, path=f"/t/{tenant.slug}")
+        raise response
     raise web.HTTPFound("/login?error=1")
 
 
 async def _logout(request: web.Request) -> web.Response:
-    resp = web.HTTPFound("/login")
-    resp.del_cookie(auth.COOKIE_NAME)
-    raise resp
+    response = web.HTTPFound("/login")
+    response.del_cookie(auth.COOKIE_NAME)
+    raise response
+
+
+async def _tenant_login_get(request: web.Request) -> web.Response:
+    tenant: Tenant = request["tenant"]
+    # This view contains an explicit /t/<slug>/login action and a global
+    # /login chooser link, so it deliberately bypasses generic link prefixing.
+    return web.Response(
+        text=views.tenant_login_page(tenant, request.query.get("error") == "1"),
+        content_type="text/html",
+    )
+
+
+async def _tenant_login_post(request: web.Request) -> web.Response:
+    tenant: Tenant = request["tenant"]
+    data = await request.post()
+    if tenant.is_active and auth.password_matches(tenant.admin_password, str(data.get("password", ""))):
+        response = web.HTTPFound(_url(request, "/"))
+        _set_cookie(response, auth.tenant_cookie_name(tenant.slug), tenant.admin_password, path=f"/t/{tenant.slug}")
+        raise response
+    raise web.HTTPFound(_url(request, "/login?error=1"))
+
+
+async def _tenant_logout(request: web.Request) -> web.Response:
+    tenant: Tenant = request["tenant"]
+    response = web.HTTPFound(_url(request, "/login"))
+    response.del_cookie(auth.tenant_cookie_name(tenant.slug), path=f"/t/{tenant.slug}")
+    raise response
+
+
+async def _super_login_get(request: web.Request) -> web.Response:
+    if not _super_secret(request.app["config"]):
+        return _html(request, views.super_panel_disabled_page(), status=503)
+    return _html(request, views.super_login_page(request.query.get("error") == "1"))
+
+
+async def _super_login_post(request: web.Request) -> web.Response:
+    secret = _super_secret(request.app["config"])
+    data = await request.post()
+    if secret and auth.password_matches(secret, str(data.get("password", ""))):
+        response = web.HTTPFound("/super-admin/")
+        _set_cookie(response, auth.SUPER_COOKIE_NAME, secret)
+        raise response
+    raise web.HTTPFound("/super-admin/login?error=1")
+
+
+async def _super_logout(request: web.Request) -> web.Response:
+    response = web.HTTPFound("/super-admin/login")
+    response.del_cookie(auth.SUPER_COOKIE_NAME)
+    raise response
 
 
 async def _dashboard(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
+    db = _db(request)
     stats = await db.stats()
-    return web.Response(text=views.dashboard_page(stats), content_type="text/html")
+    return _html(request, views.dashboard_page(stats))
 
 
 async def _applications(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
+    db = _db(request)
     status = request.query.get("status")
     if status not in _VALID_STATUSES:
         status = None
     search = request.query.get("search", "").strip()
     apps = await db.list_applications(status=status, search=search or None)
-    return web.Response(
-        text=views.applications_page(apps, status, search), content_type="text/html"
-    )
+    return _html(request, views.applications_page(apps, status, search))
 
 
 async def _application_detail(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
+    db = _db(request)
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     if app is None:
         raise web.HTTPNotFound(text="Заявка не найдена")
     msg = request.query.get("msg")
     status_flag = request.query.get("status_change")
-    return web.Response(
-        text=views.application_detail_page(
+    return _html(
+        request,
+        views.application_detail_page(
             app,
             msg_sent=msg == "sent",
             msg_error="Не удалось отправить — пользователь заблокировал бота" if msg == "blocked" else (
@@ -176,31 +407,30 @@ async def _application_detail(request: web.Request) -> web.Response:
             status_changed=status_flag == "ok",
             status_error="Не удалось изменить статус" if status_flag == "error" else "",
         ),
-        content_type="text/html",
     )
 
 
 async def _approve(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
-    bot = request.app["bot"]
-    config: Config = request.app["config"]
+    db = _db(request)
+    bot = _bot(request)
+    config = _config(request)
     app_id = _int_or_404(request.match_info["id"])
     await decisions.approve_application(bot, config, db, app_id, moderator="админ-панель")
-    raise web.HTTPFound(f"/application/{app_id}")
+    raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
 
 async def _reject(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
-    bot = request.app["bot"]
-    config: Config = request.app["config"]
+    db = _db(request)
+    bot = _bot(request)
+    config = _config(request)
     app_id = _int_or_404(request.match_info["id"])
     await decisions.reject_application(bot, config, db, app_id, moderator="админ-панель")
-    raise web.HTTPFound(f"/application/{app_id}")
+    raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
 
 async def _send_individual_message(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
-    bot = request.app["bot"]
+    db = _db(request)
+    bot = _bot(request)
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     if app is None:
@@ -208,21 +438,21 @@ async def _send_individual_message(request: web.Request) -> web.Response:
     data = await request.post()
     text = str(data.get("text", "")).strip()
     if not text:
-        raise web.HTTPFound(f"/application/{app_id}?msg=empty")
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?msg=empty"))
     if bot is None:
-        raise web.HTTPFound(f"/application/{app_id}?msg=blocked")
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?msg=blocked"))
     try:
         await bot.send_message(chat_id=app.user_id, text=text)
     except Exception as exc:  # noqa: BLE001 — Telegram blocks, deleted chats, etc.
         logger.warning("individual message to %s (app %s) failed: %s", app.user_id, app_id, exc)
-        raise web.HTTPFound(f"/application/{app_id}?msg=blocked")
-    raise web.HTTPFound(f"/application/{app_id}?msg=sent")
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?msg=blocked"))
+    raise web.HTTPFound(_url(request, f"/application/{app_id}?msg=sent"))
 
 
 async def _change_status(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
-    bot = request.app["bot"]
-    config: Config = request.app["config"]
+    db = _db(request)
+    bot = _bot(request)
+    config = _config(request)
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     if app is None:
@@ -230,9 +460,9 @@ async def _change_status(request: web.Request) -> web.Response:
     data = await request.post()
     status = str(data.get("status", ""))
     if status not in _VALID_STATUSES or bot is None:
-        raise web.HTTPFound(f"/application/{app_id}?status_change=error")
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change=error"))
     ok = await decisions.set_status(bot, config, db, app_id, status, moderator="админ-панель")
-    raise web.HTTPFound(f"/application/{app_id}?status_change={'ok' if ok else 'error'}")
+    raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if ok else 'error'}"))
 
 
 async def _photo(request: web.Request) -> web.StreamResponse:
@@ -245,7 +475,7 @@ async def _mod_photo(request: web.Request) -> web.StreamResponse:
 
 
 async def _badge_photo(request: web.Request) -> web.StreamResponse:
-    db: Database = request.app["db"]
+    db = _db(request)
     app_id = _int_or_404(request.match_info["id"])
     app = await db.get_application(app_id)
     path = getattr(app, "badge_photo_path", "") if app is not None else ""
@@ -257,7 +487,7 @@ async def _badge_photo(request: web.Request) -> web.StreamResponse:
 
 
 async def _serve_photo(request: web.Request, attr: str) -> web.StreamResponse:
-    db: Database = request.app["db"]
+    db = _db(request)
     app_id = _int_or_404(request.match_info["id"])
     idx = _int_or_404(request.match_info["idx"])
     app = await db.get_application(app_id)
@@ -271,7 +501,7 @@ async def _serve_photo(request: web.Request, attr: str) -> web.StreamResponse:
 
 
 async def _export_csv(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
+    db = _db(request)
     apps = await db.list_applications(limit=100000)
     buf = io.StringIO()
     buf.write("﻿")  # BOM so Excel opens UTF-8 (Cyrillic) correctly
@@ -285,41 +515,41 @@ async def _export_csv(request: web.Request) -> web.Response:
             [a.id, a.reg_number or "", a.status, a.country, a.plate, a.direction,
              a.phone, a.username, a.language, a.created_at, a.processed_at or "", a.processed_by or ""]
         )
+    slug = getattr(_config(request), "tenant_slug", "applications")
     return web.Response(
         body=buf.getvalue().encode("utf-8"),
         headers={
             "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": 'attachment; filename="applications.csv"',
+            "Content-Disposition": f'attachment; filename="{slug}_applications.csv"',
         },
     )
 
 
 async def _export_excel(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
+    db = _db(request)
     apps = await db.list_applications(limit=100000)
     from ..services.excel import generate_excel
 
     xlsx_bytes = generate_excel(apps)
+    slug = getattr(_config(request), "tenant_slug", "promotors")
     return web.Response(
         body=xlsx_bytes,
         headers={
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "Content-Disposition": 'attachment; filename="promotors_applications.xlsx"',
+            "Content-Disposition": f'attachment; filename="{slug}_applications.xlsx"',
         },
     )
 
 
 async def _broadcast_get(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
+    db = _db(request)
     counts = await db.audience_counts()
-    return web.Response(
-        text=views.broadcast_page(counts), content_type="text/html"
-    )
+    return _html(request, views.broadcast_page(counts))
 
 
 async def _broadcast_post(request: web.Request) -> web.Response:
-    db: Database = request.app["db"]
-    bot = request.app["bot"]
+    db = _db(request)
+    bot = _bot(request)
     data = await request.post()
     text_uz = str(data.get("text_uz", "")).strip()
     text_ru = str(data.get("text_ru", "")).strip()
@@ -357,24 +587,14 @@ async def _broadcast_post(request: web.Request) -> web.Response:
 
     if action == "preview":
         n = len(await db.recipients(audience, languages=langs, directions=directions))
-        return web.Response(text=page(preview=n), content_type="text/html")
+        return _html(request, page(preview=n))
 
     if not text_uz and not text_ru:
-        return web.Response(
-            text=page(error="Введите текст хотя бы на одном языке"),
-            content_type="text/html",
-        )
+        return _html(request, page(error="Введите текст хотя бы на одном языке"))
     if not confirm:
-        return web.Response(
-            text=page(error="Подтвердите отправку галочкой"),
-            content_type="text/html",
-        )
+        return _html(request, page(error="Подтвердите отправку галочкой"))
     if bot is None:
-        return web.Response(
-            text=page(error="Бот недоступен — рассылка невозможна"),
-            content_type="text/html",
-            status=503,
-        )
+        return _html(request, page(error="Бот недоступен — рассылка невозможна"), status=503)
     # Only one language filled in → everyone gets that text.
     body_uz = text_uz or text_ru
     body_ru = text_ru or text_uz
@@ -395,28 +615,25 @@ async def _broadcast_post(request: web.Request) -> web.Response:
     has_any_photo = bool(photo_sources)
 
     if lang_photo_source["uz"] and len(body_uz) > 1024:
-        return web.Response(
-            text=page(
+        return _html(
+            request,
+            page(
                 error="Текст на узбекском слишком длинный для сообщения с фото — "
                 "у Telegram лимит подписи 1024 символа"
             ),
-            content_type="text/html",
         )
     if lang_photo_source["ru"] and len(body_ru) > 1024:
-        return web.Response(
-            text=page(
+        return _html(
+            request,
+            page(
                 error="Текст на русском слишком длинный для сообщения с фото — "
                 "у Telegram лимит подписи 1024 символа"
             ),
-            content_type="text/html",
         )
 
     recipients = await db.recipients(audience, languages=langs, directions=directions)
     if not recipients:
-        return web.Response(
-            text=page(error="По выбранным фильтрам получателей не найдено"),
-            content_type="text/html",
-        )
+        return _html(request, page(error="По выбранным фильтрам получателей не найдено"))
 
     # Each source photo is uploaded to Telegram once (on its first send) and
     # then reused by the returned file_id for every other recipient.
@@ -455,8 +672,9 @@ async def _broadcast_post(request: web.Request) -> web.Response:
         "broadcast audience=%s langs=%s directions=%s ok=%s (uz=%s ru=%s) fail=%s total=%s",
         audience, langs, directions, ok, ok_uz, ok_ru, fail, len(recipients),
     )
-    return web.Response(
-        text=page(
+    return _html(
+        request,
+        page(
             result={
                 "ok": ok,
                 "fail": fail,
@@ -467,7 +685,6 @@ async def _broadcast_post(request: web.Request) -> web.Response:
                 "with_photo": has_any_photo,
             },
         ),
-        content_type="text/html",
     )
 
 
@@ -480,8 +697,9 @@ def _direction_slugs() -> list[str]:
 
 
 async def _ticket_assets(request: web.Request) -> web.Response:
-    inv = assets.inventory()
-    sponsor_paths = assets.sponsor_files()
+    scope = _asset_scope(request)
+    inv = assets.inventory(scope)
+    sponsor_paths = assets.sponsor_files(scope)
 
     # Build detailed lists for the template
     sponsors_info = []
@@ -495,17 +713,17 @@ async def _ticket_assets(request: web.Request) -> web.Response:
                 "filename": fname,
                 "name": name_no_ext,
                 "size": stat.st_size,
-                "is_runtime": bool(assets._runtime_dir("sponsors") and p.startswith(assets._runtime_dir("sponsors"))),
+                "is_runtime": bool(assets._runtime_dir("sponsors", scope) and p.startswith(assets._runtime_dir("sponsors", scope))),
             })
         except Exception:
             continue
 
     brand_info = {}
     for key in assets.BRAND_LOGOS:
-        bpath = assets.brand_logo(key)
+        bpath = assets.brand_logo(key, scope)
         is_runtime = False
         if bpath:
-            runtime_dir = assets._runtime_dir("brand")
+            runtime_dir = assets._runtime_dir("brand", scope)
             is_runtime = bool(runtime_dir and bpath.startswith(runtime_dir))
         brand_info[key] = {
             "path": bpath,
@@ -516,10 +734,10 @@ async def _ticket_assets(request: web.Request) -> web.Response:
     direction_info = []
     for d in DIRECTIONS:
         slug = d["slug"]
-        bpath = assets.direction_banner(slug)
+        bpath = assets.direction_banner(slug, scope)
         is_runtime = False
         if bpath:
-            runtime_dir = assets._runtime_dir("directions")
+            runtime_dir = assets._runtime_dir("directions", scope)
             is_runtime = bool(runtime_dir and bpath.startswith(runtime_dir))
         direction_info.append({
             "slug": slug,
@@ -531,8 +749,9 @@ async def _ticket_assets(request: web.Request) -> web.Response:
 
     msg = request.query.get("msg", "")
     err = request.query.get("error", "")
-    return web.Response(
-        text=views.ticket_assets_page(
+    return _html(
+        request,
+        views.ticket_assets_page(
             inventory=inv,
             sponsors=sponsors_info,
             brand=brand_info,
@@ -540,7 +759,6 @@ async def _ticket_assets(request: web.Request) -> web.Response:
             message=msg,
             error=err,
         ),
-        content_type="text/html",
     )
 
 
@@ -551,10 +769,12 @@ async def _ticket_preview(request: web.Request) -> web.Response:
         # Use a dummy hero-less ticket so logos are clearly visible
         png = await asyncio.to_thread(
             generate_ticket,
+            _asset_scope(request),
             number=1,
             plate="01A777AA",
             direction="Adrenaline Drift",
             name="Test User",
+            tenant_name=getattr(_config(request), "tenant_name", ""),
             lang="ru",
             hero_image_path=None,
         )
@@ -571,6 +791,7 @@ async def _ticket_preview(request: web.Request) -> web.Response:
 
 
 async def _asset_file(request: web.Request) -> web.StreamResponse:
+    scope = _asset_scope(request)
     kind = request.match_info["kind"]
     filename = request.match_info["filename"]
     # Basic sanitization: no path traversal
@@ -593,10 +814,10 @@ async def _asset_file(request: web.Request) -> web.StreamResponse:
             if os.path.exists(candidate):
                 path = candidate
         if path is None:
-            path = assets.brand_logo(name)
+            path = assets.brand_logo(name, scope)
     elif kind == "sponsors":
         # Look for exact filename in sponsors dirs
-        for d in assets.sponsors_dirs():
+        for d in assets.sponsors_dirs(scope):
             cand = os.path.join(d, filename)
             if os.path.exists(cand):
                 path = cand
@@ -605,7 +826,7 @@ async def _asset_file(request: web.Request) -> web.StreamResponse:
         if path is None:
             name_no_ext = os.path.splitext(filename)[0]
             if assets.is_safe_name(name_no_ext):
-                for d in assets.sponsors_dirs():
+                for d in assets.sponsors_dirs(scope):
                     for ext in assets._IMAGE_EXTS:
                         cand = os.path.join(d, name_no_ext + ext)
                         if os.path.exists(cand):
@@ -615,7 +836,7 @@ async def _asset_file(request: web.Request) -> web.StreamResponse:
                         break
     else:  # directions
         slug = os.path.splitext(filename)[0]
-        path = assets.direction_banner(slug)
+        path = assets.direction_banner(slug, scope)
 
     if not path or not os.path.exists(path):
         raise web.HTTPNotFound()
@@ -640,24 +861,24 @@ async def _brand_upload(request: web.Request) -> web.Response:
     file_bytes = _read_upload_file(file_field)
 
     if brand_name not in assets.BRAND_LOGOS:
-        raise web.HTTPFound("/ticket-assets?error=unknown_brand")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=unknown_brand"))
     if not file_bytes:
-        raise web.HTTPFound("/ticket-assets?error=no_file")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=no_file"))
 
     try:
-        assets.save_brand(brand_name, file_bytes)
+        assets.save_brand(brand_name, file_bytes, _asset_scope(request))
     except Exception as exc:
         logger.exception("brand upload failed")
-        raise web.HTTPFound(f"/ticket-assets?error={exc}")
-    raise web.HTTPFound("/ticket-assets?msg=brand_uploaded")
+        raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    raise web.HTTPFound(_url(request, "/ticket-assets?msg=brand_uploaded"))
 
 
 async def _brand_delete(request: web.Request) -> web.Response:
     data = await request.post()
     brand_name = str(data.get("brand_name", "")).strip()
     if brand_name in assets.BRAND_LOGOS:
-        assets.delete_asset("brand", brand_name)
-    raise web.HTTPFound("/ticket-assets?msg=brand_deleted")
+        assets.delete_asset("brand", brand_name, _asset_scope(request))
+    raise web.HTTPFound(_url(request, "/ticket-assets?msg=brand_deleted"))
 
 
 async def _sponsor_upload(request: web.Request) -> web.Response:
@@ -667,18 +888,18 @@ async def _sponsor_upload(request: web.Request) -> web.Response:
     file_bytes = _read_upload_file(file_field)
 
     if not name:
-        raise web.HTTPFound("/ticket-assets?error=name_required")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=name_required"))
     if not assets.is_safe_name(name):
-        raise web.HTTPFound("/ticket-assets?error=invalid_name")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=invalid_name"))
     if not file_bytes:
-        raise web.HTTPFound("/ticket-assets?error=no_file")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=no_file"))
 
     try:
-        assets.save_sponsor(name, file_bytes)
+        assets.save_sponsor(name, file_bytes, _asset_scope(request))
     except Exception as exc:
         logger.exception("sponsor upload failed")
-        raise web.HTTPFound(f"/ticket-assets?error={exc}")
-    raise web.HTTPFound("/ticket-assets?msg=sponsor_uploaded")
+        raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    raise web.HTTPFound(_url(request, "/ticket-assets?msg=sponsor_uploaded"))
 
 
 async def _sponsor_delete(request: web.Request) -> web.Response:
@@ -687,8 +908,8 @@ async def _sponsor_delete(request: web.Request) -> web.Response:
     # Allow passing filename with extension: strip it
     name = os.path.splitext(name)[0]
     if assets.is_safe_name(name):
-        assets.delete_asset("sponsors", name)
-    raise web.HTTPFound("/ticket-assets?msg=sponsor_deleted")
+        assets.delete_asset("sponsors", name, _asset_scope(request))
+    raise web.HTTPFound(_url(request, "/ticket-assets?msg=sponsor_deleted"))
 
 
 async def _direction_upload(request: web.Request) -> web.Response:
@@ -698,25 +919,230 @@ async def _direction_upload(request: web.Request) -> web.Response:
     file_bytes = _read_upload_file(file_field)
 
     if slug not in _direction_slugs():
-        raise web.HTTPFound("/ticket-assets?error=unknown_direction")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=unknown_direction"))
     if not file_bytes:
-        raise web.HTTPFound("/ticket-assets?error=no_file")
+        raise web.HTTPFound(_url(request, "/ticket-assets?error=no_file"))
 
     try:
-        assets.save_direction(slug, file_bytes)
+        assets.save_direction(slug, file_bytes, _asset_scope(request))
     except Exception as exc:
         logger.exception("direction upload failed")
-        raise web.HTTPFound(f"/ticket-assets?error={exc}")
-    raise web.HTTPFound("/ticket-assets?msg=direction_uploaded")
+        raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    raise web.HTTPFound(_url(request, "/ticket-assets?msg=direction_uploaded"))
 
 
 async def _direction_delete(request: web.Request) -> web.Response:
     data = await request.post()
     slug = str(data.get("slug", "")).strip()
     if slug in _direction_slugs():
-        assets.delete_asset("directions", slug)
-    raise web.HTTPFound("/ticket-assets?msg=direction_deleted")
+        assets.delete_asset("directions", slug, _asset_scope(request))
+    raise web.HTTPFound(_url(request, "/ticket-assets?msg=direction_deleted"))
 
+
+# ---------------------------------------------------------------------------
+# Super-admin control plane and tenant settings
+# ---------------------------------------------------------------------------
+
+
+def _tenant_form_values(data, *, editing: bool = False) -> dict[str, Any]:
+    """Convert multipart/form values into the database's explicit field set."""
+    raw_chat = str(data.get("admin_chat_id", "")).strip()
+    try:
+        admin_chat_id = int(raw_chat or 0)
+    except ValueError as exc:
+        raise ValueError("Admin chat ID must be an integer") from exc
+    values: dict[str, Any] = {
+        "name": str(data.get("name", "")).strip(),
+        "admin_chat_id": admin_chat_id,
+        "required_channel": str(data.get("required_channel", "")).strip(),
+        "channel_url": str(data.get("channel_url", "")).strip(),
+        "instagram_handle": str(data.get("instagram_handle", "")).strip(),
+        "instagram_url": str(data.get("instagram_url", "")).strip(),
+        "spreadsheet_id": str(data.get("spreadsheet_id", "")).strip(),
+        "drive_folder_id": str(data.get("drive_folder_id", "")).strip(),
+        "is_active": str(data.get("is_active", "")) in {"1", "true", "on"},
+    }
+    token = str(data.get("bot_token", "")).strip()
+    password = str(data.get("admin_password", "")).strip()
+    if editing:
+        # Blank fields on edit intentionally retain secrets; tokens must never
+        # be echoed back into a form and passwords need not be re-entered.
+        values["bot_token"] = token if token else None
+        values["admin_password"] = password if password else None
+    else:
+        values["bot_token"] = token
+        values["admin_password"] = password
+    return values
+
+
+async def _maybe_restart_tenant(request: web.Request, tenant: Tenant) -> None:
+    manager = request.app.get("bot_manager")
+    if manager is not None:
+        await manager.restart_tenant(tenant.id)
+
+
+async def _super_dashboard(request: web.Request) -> web.Response:
+    db: Database = request.app["db"]
+    tenants = await db.list_tenants()
+    counts = await db.tenant_application_counts()
+    return _html(request, views.super_dashboard_page(tenants, counts))
+
+
+async def _super_tenant_new_get(request: web.Request) -> web.Response:
+    return _html(request, views.super_tenant_form_page())
+
+
+async def _super_tenant_new_post(request: web.Request) -> web.Response:
+    data = await request.post()
+    try:
+        values = _tenant_form_values(data)
+        tenant = await request.app["db"].create_tenant(
+            slug=str(data.get("slug", "")).strip(), **values
+        )
+        await _maybe_restart_tenant(request, tenant)
+    except (ValueError, EncryptionError) as exc:
+        return _html(
+            request,
+            views.super_tenant_form_page(values=dict(data), error=str(exc)),
+            status=400,
+        )
+    raise web.HTTPFound("/super-admin/")
+
+
+async def _super_tenant_edit_get(request: web.Request) -> web.Response:
+    tenant = await request.app["db"].get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text="Tenant not found")
+    return _html(request, views.super_tenant_form_page(tenant=tenant))
+
+
+async def _super_tenant_edit_post(request: web.Request) -> web.Response:
+    slug = request.match_info["slug"]
+    data = await request.post()
+    try:
+        values = _tenant_form_values(data, editing=True)
+        tenant = await request.app["db"].update_tenant(slug, **values)
+        if tenant is None:
+            raise web.HTTPNotFound(text="Tenant not found")
+        await _maybe_restart_tenant(request, tenant)
+    except (ValueError, EncryptionError) as exc:
+        existing = await request.app["db"].get_tenant(slug)
+        return _html(
+            request,
+            views.super_tenant_form_page(tenant=existing, values=dict(data), error=str(exc)),
+            status=400,
+        )
+    raise web.HTTPFound("/super-admin/")
+
+
+async def _super_tenant_toggle(request: web.Request) -> web.Response:
+    slug = request.match_info["slug"]
+    tenant = await request.app["db"].get_tenant(slug)
+    if tenant is None:
+        raise web.HTTPNotFound(text="Tenant not found")
+    updated = await request.app["db"].update_tenant(tenant.id, is_active=not tenant.is_active)
+    if updated:
+        await _maybe_restart_tenant(request, updated)
+    raise web.HTTPFound("/super-admin/")
+
+
+async def _super_tenant_archive(request: web.Request) -> web.Response:
+    slug = request.match_info["slug"]
+    archived = await request.app["db"].archive_tenant(slug)
+    if archived:
+        tenant = await request.app["db"].get_tenant(slug)
+        if tenant:
+            await _maybe_restart_tenant(request, tenant)
+    raise web.HTTPFound("/super-admin/")
+
+
+async def _super_tenant_restart(request: web.Request) -> web.Response:
+    slug = request.match_info["slug"]
+    tenant = await request.app["db"].get_tenant(slug)
+    if tenant is None:
+        raise web.HTTPNotFound(text="Tenant not found")
+    await _maybe_restart_tenant(request, tenant)
+    raise web.HTTPFound(f"/super-admin/tenants/{tenant.slug}/edit")
+
+
+async def _super_tenant_diag(request: web.Request) -> web.Response:
+    """Run non-destructive Telegram diagnostics for one tenant configuration."""
+    tenant = await request.app["db"].get_tenant(request.match_info["slug"])
+    if tenant is None:
+        raise web.HTTPNotFound(text="Tenant not found")
+    checks: list[tuple[str, bool, str]] = []
+    bot = None
+    me = None
+    try:
+        token = await request.app["db"].get_tenant_token(tenant.id)
+        if not token:
+            checks.append(("Bot token", False, "Token is not configured"))
+        else:
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                me = await bot.get_me()
+                checks.append(("Bot token", True, f"@{me.username or me.id}"))
+            except Exception as exc:  # noqa: BLE001
+                checks.append(("Bot token", False, f"{type(exc).__name__}: {exc}"))
+
+            if tenant.required_channel and me is not None:
+                try:
+                    channel = subscription.normalize_channel(tenant.required_channel)
+                    chat = await bot.get_chat(channel)
+                    checks.append(("Required channel", True, f"{chat.title or chat.id}"))
+                    member = await bot.get_chat_member(channel, me.id)
+                    status = getattr(member.status, "value", member.status)
+                    is_admin = str(status) in {"administrator", "creator", "owner"}
+                    checks.append(("Channel admin", is_admin, f"status: {status}"))
+                except Exception as exc:  # noqa: BLE001
+                    checks.append(("Required channel", False, f"{type(exc).__name__}: {exc}"))
+            elif not tenant.required_channel:
+                checks.append(("Required channel", False, "Not configured"))
+
+            if tenant.admin_chat_id and bot is not None:
+                try:
+                    chat = await bot.get_chat(tenant.admin_chat_id)
+                    checks.append(("Moderation chat", True, f"{chat.title or chat.id}"))
+                except Exception as exc:  # noqa: BLE001
+                    checks.append(("Moderation chat", False, f"{type(exc).__name__}: {exc}"))
+            elif not tenant.admin_chat_id:
+                checks.append(("Moderation chat", False, "Not configured"))
+    except Exception as exc:  # noqa: BLE001 - encrypted-token failures are reportable too
+        checks.append(("Diagnostics", False, f"{type(exc).__name__}: {exc}"))
+    finally:
+        session = getattr(bot, "session", None)
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return _html(request, views.tenant_diag_page(tenant, checks))
+
+
+async def _tenant_settings_get(request: web.Request) -> web.Response:
+    tenant = request.get("tenant") or await request.app["db"].get_tenant("promotors")
+    if tenant is None:
+        raise web.HTTPNotFound(text="Tenant not found")
+    return _html(request, views.tenant_settings_page(tenant, message=request.query.get("msg", "")))
+
+
+async def _tenant_settings_post(request: web.Request) -> web.Response:
+    tenant = request.get("tenant") or await request.app["db"].get_tenant("promotors")
+    if tenant is None:
+        raise web.HTTPNotFound(text="Tenant not found")
+    data = await request.post()
+    try:
+        values = _tenant_form_values(data, editing=True)
+        # A tenant admin can manage presentation/integration settings, but not
+        # its Telegram token or activation state. Those are super-admin only.
+        values.pop("bot_token", None)
+        values.pop("is_active", None)
+        updated = await request.app["db"].update_tenant(tenant.id, **values)
+        if updated is not None:
+            await _maybe_restart_tenant(request, updated)
+    except ValueError as exc:
+        return _html(request, views.tenant_settings_page(tenant, error=str(exc)), status=400)
+    raise web.HTTPFound(_url(request, "/settings?msg=saved"))
 
 def _int_or_404(value: str) -> int:
     try:

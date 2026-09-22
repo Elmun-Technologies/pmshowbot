@@ -1,22 +1,21 @@
-"""Bot entrypoint: wires up the dispatcher and starts long polling."""
+"""Multi-tenant process entrypoint.
+
+One Fly machine hosts the aiohttp control panel and a :class:`BotManager` that
+runs one long-polling task per active tenant.  No Telegram token is read from
+the process environment after the legacy ``promotors`` migration bootstrap.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiohttp import web
 
 from .admin.server import create_admin_app
+from .bot_manager import BotManager, publish_commands as _publish_commands
 from .config import Config, load_config
-from .db import Database
+from .db import DEFAULT_TENANT_SLUG, Database
 from .services import assets
-from .handlers import badge_photo, moderation, mynumber, registration
-from .middlewares import RegistrationClosedMiddleware, SerializePerUserMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,98 +25,42 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    """Initialise migrations, admin HTTP, and all database-configured bots."""
     config = load_config()
-
-    db = Database(config.db_path)
+    db = Database(
+        config.db_path,
+        encryption_key=config.encryption_key,
+        bootstrap=config,
+    )
     await db.init()
 
-    # Brand assets uploaded by admins land next to the participant photos, so
-    # they live on the persistent volume and survive restarts/redeploys.
+    # Move old global uploads exactly once into the migration tenant. New
+    # requests always pass an explicit tenant scope to assets.py.
     assets.configure(config.media_dir)
+    default_tenant = await db.get_tenant(DEFAULT_TENANT_SLUG)
+    if default_tenant is not None:
+        moved = assets.migrate_legacy_assets(config.media_dir, default_tenant.slug)
+        if any(moved.values()):
+            logger.info("[promotors] Migrated legacy ticket assets: %s", moved)
 
-    bot = Bot(
-        token=config.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    dp = Dispatcher(storage=MemoryStorage())
+    manager = BotManager(db, config)
+    web_runner = await _start_admin_panel(config, db, manager)
+    await manager.start()
+    logger.info("Tenant bot manager started; waiting for shutdown.")
 
-    # One update at a time per participant: an album of photos would otherwise
-    # be processed concurrently and overwrite itself (see middlewares.py).
-    dp.update.outer_middleware(SerializePerUserMiddleware())
-
-    # Contextual data injected into handlers by parameter name.
-    dp["config"] = config
-    dp["db"] = db
-
-    dp.include_router(registration.router)
-    dp.include_router(moderation.router)
-    dp.include_router(badge_photo.router)
-    dp.include_router(mynumber.router)
-
-    # When registration is closed, stop anyone mid-form from continuing.
-    # (The other routers — moderation, my number, badge photo, broadcasts —
-    # are unaffected, so admins can still reach everyone.)
-    registration.router.message.outer_middleware(RegistrationClosedMiddleware())
-    registration.router.callback_query.outer_middleware(RegistrationClosedMiddleware())
-
-    # Start the admin web panel (same process → shares the DB and bot).
-    web_runner = await _start_admin_panel(bot, config, db)
-
-    await _publish_commands(bot, config)
-
-    logger.info("Starting bot (long polling)...")
-    await bot.delete_webhook(drop_pending_updates=True)
     try:
-        await dp.start_polling(bot)
+        # Polling workers are background tasks managed by BotManager. Keeping
+        # this coroutine alive lets aiohttp and every tenant share one loop.
+        await asyncio.Event().wait()
     finally:
+        await manager.shutdown()
         if web_runner is not None:
             await web_runner.cleanup()
 
 
-# Shown to participants in the "/" menu.
-_PUBLIC_COMMANDS = [
-    ("start", "Начать регистрацию / Ro‘yxatdan o‘tish"),
-    ("mynumber", "Узнать свой номер / Raqamimni bilish"),
-]
-
-# Additionally shown inside the moderation chat, so admins can discover the
-# tools instead of having to remember them.
-_ADMIN_COMMANDS = _PUBLIC_COMMANDS + [
-    ("assets", "Логотипы и баннеры: что загружено"),
-    ("help_assets", "Как загрузить логотип / баннер"),
-    ("delasset", "Удалить логотип или баннер"),
-    ("stats", "Статистика заявок"),
-    ("export", "Выгрузить заявки в Excel"),
-    ("diag", "Диагностика: канал, подписка, билет"),
-    ("whoami", "Мои id и права доступа"),
-]
-
-
-async def _publish_commands(bot: Bot, config: Config) -> None:
-    """Register the "/" menu with Telegram: public commands everywhere, plus
-    the admin tools inside the moderation chat."""
-    try:
-        await bot.set_my_commands(
-            [BotCommand(command=c, description=d) for c, d in _PUBLIC_COMMANDS],
-            scope=BotCommandScopeDefault(),
-        )
-        await bot.set_my_commands(
-            [BotCommand(command=c, description=d) for c, d in _ADMIN_COMMANDS],
-            scope=BotCommandScopeChat(chat_id=config.admin_chat_id),
-        )
-        logger.info("Command menu published (public + admin chat).")
-    except Exception:  # noqa: BLE001 - a menu failure must not stop the bot
-        logger.exception("Could not publish the command menu")
-
-
-async def _start_admin_panel(bot: Bot, config: Config, db: Database):
-    """Launch the aiohttp admin panel on the same event loop. Returns the
-    AppRunner (for cleanup), or None if it could not start.
-
-    The server always listens (serving /health and the login page) so the Fly
-    http_service healthcheck passes; admin routes require ADMIN_PASSWORD.
-    """
-    admin_app = create_admin_app(bot, config, db)
+async def _start_admin_panel(config: Config, db: Database, manager: BotManager):
+    """Launch the tenant/super-admin panel and the Fly health endpoint."""
+    admin_app = create_admin_app(bot=None, config=config, db=db, bot_manager=manager)
     runner = web.AppRunner(admin_app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=config.panel_port)
@@ -126,7 +69,7 @@ async def _start_admin_panel(bot: Bot, config: Config, db: Database):
         logger.info("Admin panel listening on port %s", config.panel_port)
     else:
         logger.info(
-            "Admin panel port %s is up but LOCKED — set ADMIN_PASSWORD to enable it",
+            "Admin panel port %s is up but super admin login is locked — set SUPER_ADMIN_PASSWORD",
             config.panel_port,
         )
     return runner

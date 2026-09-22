@@ -1,11 +1,12 @@
-# Fly.io deployment config for the Promotors Show registration bot.
+# Fly.io deployment config for the multi-tenant registration platform.
 #
-# The process runs BOTH the Telegram long-polling bot AND the admin web panel
-# in one machine. The http_service below exposes the panel; auto-stop is OFF and
-# min_machines_running = 1 so the bot's polling loop is never stopped.
+# One process runs the aiohttp admin panel plus one independent long-polling
+# worker for every active tenant in SQLite. The http_service below exposes the
+# panel; auto-stop is OFF and min_machines_running = 1 so polling is never
+# suspended.
 #
-# IMPORTANT: run exactly ONE machine. Two instances would both call Telegram
-# getUpdates and conflict. After the first deploy: `fly scale count 1`.
+# IMPORTANT: run exactly ONE machine. A second machine would duplicate every
+# active tenant's getUpdates stream. After the first deploy: `fly scale count 1`.
 #
 # The persistent volume below MUST exist before the first deploy with this
 # config, otherwise the deploy fails. Create it once:

@@ -33,3 +33,11 @@ async def my_number(message: Message, db: Database) -> None:
         await message.answer(texts.STATUS_NONE)
         return
     await show_status(message, app)
+
+
+def create_router() -> Router:
+    """Build a fresh ``/mynumber`` router for a tenant dispatcher."""
+    fresh = Router(name="mynumber")
+    fresh.message.register(my_number, F.text.in_(texts.MY_NUMBER_LABELS))
+    fresh.message.register(my_number, Command("mynumber"))
+    return fresh

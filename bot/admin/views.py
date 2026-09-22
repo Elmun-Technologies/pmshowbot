@@ -105,6 +105,7 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
             f'{link("/applications", "Заявки", "apps")} '
             f'{link("/ticket-assets", "🎫 Билеты", "ticket")} '
             f'{link("/broadcast", "📢 Рассылка", "broadcast")} '
+            f'{link("/settings", "⚙️ Настройки", "settings")} '
             f'{link("/export.xlsx", "📊 Excel", "export")} '
             f'{link("/export.csv", "CSV", "export_csv")}</nav>'
             '<span class="spacer"></span>'
@@ -847,3 +848,245 @@ def ticket_assets_page(
         '</ul></div>'
     )
     return _page("Билеты и логотипы", body, active="ticket")
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant control-plane pages
+# ---------------------------------------------------------------------------
+
+def tenant_selector_login_page(tenants, error: bool = False) -> str:
+    """Render the public tenant chooser followed by that tenant's password."""
+    err = '<div class="err">Неверный tenant или пароль</div>' if error else ""
+    options = ''.join(
+        f'<option value="{escape(t.slug)}">{escape(t.name)} ({escape(t.slug)})</option>'
+        for t in tenants
+    )
+    disabled = " disabled" if not options else ""
+    no_tenants = (
+        '<p class="muted">Активных tenants пока нет. Войдите как super admin и создайте первый.</p>'
+        if not options else ""
+    )
+    body = (
+        '<div class="login-wrap"><div class="section">'
+        '<h2>Вход в tenant админ-панель</h2>' + err + no_tenants +
+        '<form method="post" action="/login">'
+        '<div style="margin-bottom:12px"><label class="muted">Проект</label>'
+        f'<select name="slug" required style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:8px">{options}</select></div>'
+        '<div style="margin-bottom:12px"><input type="password" name="password" '
+        'placeholder="Пароль tenant" style="width:100%" autofocus></div>'
+        f'<button class="btn btn-primary" type="submit" style="width:100%"{disabled}>Войти</button>'
+        '</form><p class="muted" style="font-size:13px;margin-top:16px">'
+        '<a href="/super-admin/login">Super admin</a></p></div></div>'
+    )
+    return _page("Вход в tenant", body, nav=False)
+
+
+def tenant_login_page(tenant, error: bool = False) -> str:
+    """Render a password login constrained to one tenant slug."""
+    err = '<div class="err">Неверный пароль</div>' if error else ""
+    slug = escape(tenant.slug)
+    body = (
+        '<div class="login-wrap"><div class="section">'
+        f'<h2>{escape(tenant.name)} — админ-панель</h2><p class="muted">Tenant: <code>{slug}</code></p>'
+        + err + f'<form method="post" action="/t/{slug}/login">'
+        '<div style="margin-bottom:12px"><input type="password" name="password" '
+        'placeholder="Пароль" style="width:100%" autofocus></div>'
+        '<button class="btn btn-primary" type="submit" style="width:100%">Войти</button>'
+        '</form><p class="muted" style="font-size:13px;margin-top:16px"><a href="/login">← Другой tenant</a></p>'
+        '</div></div>'
+    )
+    return _page("Вход", body, nav=False)
+
+
+def tenant_inactive_page() -> str:
+    """Explain why an archived tenant cannot issue a tenant-admin session."""
+    body = (
+        '<div class="login-wrap"><div class="section"><h2>Tenant неактивен</h2>'
+        '<p class="muted">Доступ приостановлен super admin. Обратитесь к владельцу платформы.</p>'
+        '</div></div>'
+    )
+    return _page("Tenant неактивен", body, nav=False)
+
+
+def super_panel_disabled_page() -> str:
+    """Page shown when no process-level super-admin secret is configured."""
+    body = (
+        '<div class="login-wrap"><div class="section"><h2>Super admin отключён</h2>'
+        '<p class="muted">Задайте секрет <code>SUPER_ADMIN_PASSWORD</code> для доступа к управлению tenants.</p>'
+        '</div></div>'
+    )
+    return _page("Super admin", body, nav=False)
+
+
+def super_login_page(error: bool = False) -> str:
+    """Render the process-level super-admin login form."""
+    err = '<div class="err">Неверный пароль</div>' if error else ""
+    body = (
+        '<div class="login-wrap"><div class="section"><h2>Super admin</h2>' + err +
+        '<form method="post" action="/super-admin/login">'
+        '<div style="margin-bottom:12px"><input type="password" name="password" '
+        'placeholder="SUPER_ADMIN_PASSWORD" style="width:100%" autofocus></div>'
+        '<button class="btn btn-primary" type="submit" style="width:100%">Войти</button>'
+        '</form><p class="muted" style="font-size:13px;margin-top:16px"><a href="/login">Tenant login</a></p>'
+        '</div></div>'
+    )
+    return _page("Super admin", body, nav=False)
+
+
+def _super_page(title: str, body: str) -> str:
+    header = (
+        '<header><span class="brand">🛡 Multi-tenant Control Plane</span>'
+        '<nav><a href="/super-admin/">Tenants</a> '
+        '<a href="/super-admin/tenants/new">➕ Новый tenant</a></nav>'
+        '<span class="spacer"></span><a href="/super-admin/logout" style="color:#ddd6fe">Выйти</a></header>'
+    )
+    return (
+        "<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>{escape(title)}</title><style>{_CSS}</style></head>"
+        f"<body>{header}<main>{body}</main></body></html>"
+    )
+
+
+def super_dashboard_page(tenants, application_counts: dict[int, int]) -> str:
+    """Render all tenants with aggregate application counts and safe token status."""
+    rows = ""
+    for tenant in tenants:
+        active = "✅ active" if tenant.is_active else "⏸ inactive"
+        token = "*** configured" if tenant.token_configured else "— missing"
+        password = "configured" if tenant.password_configured else "— missing"
+        slug = escape(tenant.slug)
+        rows += (
+            '<tr>'
+            f'<td><b>{escape(tenant.name)}</b><br><code>{slug}</code></td>'
+            f'<td>{active}</td><td>{token}</td><td>{password}</td>'
+            f'<td>{application_counts.get(tenant.id, 0)}</td>'
+            '<td style="white-space:nowrap">'
+            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/edit">Изменить</a> '
+            f'<a class="btn btn-ghost btn-small" href="/super-admin/tenants/{slug}/diag">Диагностика</a> '
+            f'<a class="btn btn-ghost btn-small" href="/t/{slug}/">Открыть</a>'
+            f'<form method="post" action="/super-admin/tenants/{slug}/toggle" style="display:inline">'
+            f'<button class="btn btn-small" type="submit">{"Пауза" if tenant.is_active else "Включить"}</button></form> '
+            f'<form method="post" action="/super-admin/tenants/{slug}/archive" style="display:inline">'
+            '<button class="btn btn-reject btn-small" type="submit" '
+            'onclick="return confirm(\'Архивировать tenant? Данные сохранятся, polling остановится.\')">Архив</button></form>'
+            '</td></tr>'
+        )
+    if not rows:
+        rows = '<tr><td colspan="6" class="muted">Tenants не найдены</td></tr>'
+    body = (
+        '<div class="cards">' + _stat_card(len(tenants), "Всего tenants") +
+        _stat_card(sum(application_counts.values()), "Всего заявок") + '</div>'
+        '<div class="section"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center">'
+        '<h2>Tenants</h2><a class="btn btn-primary" href="/super-admin/tenants/new">➕ Создать tenant</a></div>'
+        '<p class="muted">Токены никогда не выводятся в браузер: только статус <code>***</code>. '
+        'Изменение tenant автоматически перезапускает только его polling worker.</p>'
+        '<div style="overflow-x:auto"><table><thead><tr><th>Tenant</th><th>Статус</th><th>Bot token</th>'
+        '<th>Admin пароль</th><th>Заявки</th><th></th></tr></thead><tbody>' + rows +
+        '</tbody></table></div></div>'
+    )
+    return _super_page("Tenants", body)
+
+
+def _form_value(values: dict | None, tenant, field: str, default: str = "") -> str:
+    if values is not None and field in values:
+        value = values[field]
+    elif tenant is not None:
+        value = getattr(tenant, field, default)
+    else:
+        value = default
+    return escape(str(value if value is not None else ""))
+
+
+def super_tenant_form_page(tenant=None, values: dict | None = None, error: str = "") -> str:
+    """Render create/edit form without ever including an actual bot token."""
+    editing = tenant is not None
+    slug = _form_value(values, tenant, "slug")
+    action = f'/super-admin/tenants/{escape(tenant.slug)}/edit' if editing else '/super-admin/tenants/new'
+    error_html = f'<div class="err">{escape(error)}</div>' if error else ""
+    checked = False
+    if values is not None:
+        checked = str(values.get("is_active", "")) in {"1", "true", "on", "True"}
+    elif tenant is not None:
+        checked = bool(tenant.is_active)
+    else:
+        checked = True
+    active = " checked" if checked else ""
+    slug_field = (
+        f'<input type="text" name="slug" value="{slug}" required pattern="[a-z0-9-]{{2,64}}" '
+        'placeholder="adrenaline" style="width:100%">'
+        if not editing else
+        f'<input type="text" value="{slug}" disabled style="width:100%"><input type="hidden" name="slug" value="{slug}">'
+    )
+    token_hint = "Новый token оставьте пустым, чтобы сохранить текущий ***" if editing else "Token @BotFather; хранится encrypted"
+    password_hint = "Новый пароль оставьте пустым, чтобы сохранить текущий" if editing else "Пароль tenant admin"
+    restart_form = (
+        f'<form method="post" action="/super-admin/tenants/{escape(tenant.slug)}/restart" style="display:inline">'
+        '<button class="btn btn-ghost" type="submit">Перезапустить tenant</button></form>'
+        if editing else ""
+    )
+    body = (
+        f'<p><a href="/super-admin/">← К tenants</a></p><div class="section"><h2>{"Изменить" if editing else "Создать"} tenant</h2>'
+        + error_html + f'<form method="post" action="{action}">'
+        '<div class="kv" style="grid-template-columns:190px minmax(0,1fr)">'
+        f'<div class="k">Slug</div><div>{slug_field}<small class="muted">Slug нельзя менять после создания: он является ключом media-изоляции.</small></div>'
+        f'<div class="k">Название</div><div><input type="text" name="name" required value="{_form_value(values, tenant, "name")}" style="width:100%"></div>'
+        f'<div class="k">Bot token</div><div><input type="password" name="bot_token" placeholder="{escape(token_hint)}" style="width:100%"><small class="muted">{"*** configured" if editing and tenant.token_configured else token_hint}</small></div>'
+        f'<div class="k">Admin chat ID</div><div><input type="text" name="admin_chat_id" value="{_form_value(values, tenant, "admin_chat_id", "0")}" style="width:100%"></div>'
+        f'<div class="k">Required channel</div><div><input type="text" name="required_channel" value="{_form_value(values, tenant, "required_channel")}" placeholder="@channel" style="width:100%"></div>'
+        f'<div class="k">Channel URL</div><div><input type="text" name="channel_url" value="{_form_value(values, tenant, "channel_url")}" style="width:100%"></div>'
+        f'<div class="k">Instagram handle</div><div><input type="text" name="instagram_handle" value="{_form_value(values, tenant, "instagram_handle")}" style="width:100%"></div>'
+        f'<div class="k">Instagram URL</div><div><input type="text" name="instagram_url" value="{_form_value(values, tenant, "instagram_url")}" style="width:100%"></div>'
+        f'<div class="k">Spreadsheet ID</div><div><input type="text" name="spreadsheet_id" value="{_form_value(values, tenant, "spreadsheet_id")}" style="width:100%"></div>'
+        f'<div class="k">Drive folder ID</div><div><input type="text" name="drive_folder_id" value="{_form_value(values, tenant, "drive_folder_id")}" style="width:100%"></div>'
+        f'<div class="k">Tenant admin password</div><div><input type="password" name="admin_password" placeholder="{escape(password_hint)}" style="width:100%"><small class="muted">Хранится только PBKDF2 hash.</small></div>'
+        f'<div class="k">Активен</div><div><label><input type="checkbox" name="is_active" value="1"{active}> Запускать polling этого tenant</label></div>'
+        '</div><div class="actions"><button class="btn btn-primary" type="submit">Сохранить</button></div></form>'
+        + (f'<div class="actions">{restart_form}</div>' if restart_form else "")
+        + '</div>'
+    )
+    return _super_page("Tenant form", body)
+
+
+def tenant_settings_page(tenant, message: str = "", error: str = "") -> str:
+    """Render settings tenant admins may change without seeing their bot token."""
+    notice = '<div class="ok">Настройки сохранены</div>' if message == "saved" else ""
+    notice += f'<div class="err">{escape(error)}</div>' if error else ""
+    def field(name: str, label: str, value: str, placeholder: str = "") -> str:
+        return (
+            f'<div class="k">{escape(label)}</div><div><input type="text" name="{name}" '
+            f'value="{escape(str(value or ""))}" placeholder="{escape(placeholder)}" style="width:100%"></div>'
+        )
+    body = (
+        '<div class="section"><h2>⚙️ Настройки tenant</h2>' + notice +
+        '<p class="muted">Bot token управляется только super admin и здесь не отображается.</p>'
+        '<form method="post" action="/settings"><div class="kv" style="grid-template-columns:190px minmax(0,1fr)">'
+        + field("name", "Название", tenant.name)
+        + field("admin_chat_id", "Admin chat ID", tenant.admin_chat_id)
+        + field("required_channel", "Required channel", tenant.required_channel, "@channel")
+        + field("channel_url", "Channel URL", tenant.channel_url)
+        + field("instagram_handle", "Instagram handle", tenant.instagram_handle)
+        + field("instagram_url", "Instagram URL", tenant.instagram_url)
+        + field("spreadsheet_id", "Spreadsheet ID", tenant.spreadsheet_id)
+        + field("drive_folder_id", "Drive folder ID", tenant.drive_folder_id)
+        + '<div class="k">Новый пароль</div><div><input type="password" name="admin_password" '
+        'placeholder="Оставьте пустым, чтобы не менять" style="width:100%"></div>'
+        + '</div><div class="actions"><button class="btn btn-primary" type="submit">Сохранить</button></div></form></div>'
+    )
+    return _page("Настройки", body, active="settings")
+
+
+def tenant_diag_page(tenant, checks: list[tuple[str, bool, str]]) -> str:
+    """Render a per-tenant Telegram configuration diagnostic result."""
+    rows = ''.join(
+        f'<tr><td>{"✅" if ok else "❌"} {escape(label)}</td><td>{escape(detail)}</td></tr>'
+        for label, ok, detail in checks
+    ) or '<tr><td colspan="2" class="muted">Нет результатов</td></tr>'
+    body = (
+        f'<p><a href="/super-admin/tenants/{escape(tenant.slug)}/edit">← {escape(tenant.name)}</a></p>'
+        f'<div class="section"><h2>Диагностика: {escape(tenant.name)}</h2>'
+        '<p class="muted">Проверка выполняется с token tenant в памяти; token не выводится.</p>'
+        '<table><thead><tr><th>Проверка</th><th>Результат</th></tr></thead><tbody>' + rows +
+        '</tbody></table></div>'
+    )
+    return _super_page("Tenant diagnostics", body)

@@ -192,7 +192,9 @@ def _plate_dark_mark(im: Image.Image, pad: int = 12, radius: int = 10) -> Image.
     return plate
 
 
-def _load_brand_logo(name: str, target_h: int, max_w: int):
+def _load_brand_logo(
+    name: str, target_h: int, max_w: int, tenant_id: object | None = None
+):
     """Load a main brand logo (runtime upload wins), cleaned up for dark use.
 
     Sized by height so the two marks share a baseline regardless of their
@@ -200,7 +202,7 @@ def _load_brand_logo(name: str, target_h: int, max_w: int):
     card. A dark mark gets a white plate, which is measured as part of the
     final size rather than inflating it.
     """
-    path = assets.brand_logo(name)
+    path = assets.brand_logo(name, tenant_id)
     if not path:
         return None
     try:
@@ -220,10 +222,17 @@ def _load_brand_logo(name: str, target_h: int, max_w: int):
         return None
 
 
-def _logo_or_wordmark(content, draw, cx, top):
+def _logo_or_wordmark(
+    content,
+    draw,
+    cx,
+    top,
+    tenant_id: object | None = None,
+    tenant_name: str = "",
+):
     # Sized by height so both marks share a baseline.
-    sof_logo = _load_brand_logo("logo", target_h=108, max_w=430)
-    adr_logo = _load_brand_logo("adrenaline", target_h=96, max_w=330)
+    sof_logo = _load_brand_logo("logo", target_h=108, max_w=430, tenant_id=tenant_id)
+    adr_logo = _load_brand_logo("adrenaline", target_h=96, max_w=330, tenant_id=tenant_id)
 
     if sof_logo and adr_logo:
         total_w = sof_logo.width + 40 + adr_logo.width
@@ -237,11 +246,15 @@ def _logo_or_wordmark(content, draw, cx, top):
     elif adr_logo:
         content.paste(adr_logo, (cx - adr_logo.width // 2, top), adr_logo)
     else:
-        _center(draw, cx, top, "PROMOTORS SHOW", _font("bold", 72), WHITE)
-        _center(draw, cx, top + 88, "Samarkand", _font("serif_bold", 60), RED)
+        # A tenant without uploaded artwork still gets its own recognisable
+        # ticket rather than another event's Promotors wordmark.
+        title = (tenant_name or "PROMOTORS SHOW").strip().upper()
+        title_font = _fit(draw, title, "bold", 72, 760, min_size=32)
+        _center(draw, cx, top, title, title_font, WHITE)
+        _center(draw, cx, top + max(72, title_font.size + 16), "Samarkand", _font("serif_bold", 60), RED)
 
 
-def _load_sponsor_logos(max_n: int = 10) -> list:
+def _load_sponsor_logos(max_n: int = 10, tenant_id: object | None = None) -> list:
     """Load partner/sponsor logos in filename order.
 
     Sources, highest priority first: logos uploaded by an admin through the
@@ -249,7 +262,7 @@ def _load_sponsor_logos(max_n: int = 10) -> list:
     Unreadable files are skipped rather than breaking ticket generation.
     """
     logos = []
-    for path in assets.sponsor_files():
+    for path in assets.sponsor_files(tenant_id):
         try:
             im = _strip_flat_background(Image.open(path))
             bbox = im.getbbox()
@@ -429,14 +442,21 @@ def _draw_sponsor_strip(content, draw, cx, y, logos, max_bar_w=None):
 
 # ---------- main ----------
 def generate_ticket(
+    tenant_id: object | None = None,
     *,
     number: int,
     plate: str,
     direction: str,
     name: str = "",
+    tenant_name: str = "",
     lang: str = "ru",
     hero_image_path: Optional[str] = None,
 ) -> bytes:
+    """Render one tenant's ticket using only that tenant's uploaded artwork.
+
+    ``tenant_id`` is optional solely for compatibility with the original
+    single-bot API; multi-tenant callers must pass the tenant asset scope.
+    """
     copy = _COPY.get(lang, _COPY["ru"])
     cw, ch = X1 - X0, TEAR_Y - Y0
 
@@ -445,14 +465,18 @@ def generate_ticket(
     draw = ImageDraw.Draw(content)
 
     # --- partner logo strip across the very top, then the event branding ---
-    strip_bottom = _draw_sponsor_strip(content, draw, W // 2, Y0, _load_sponsor_logos())
+    strip_bottom = _draw_sponsor_strip(
+        content, draw, W // 2, Y0, _load_sponsor_logos(tenant_id=tenant_id)
+    )
     has_strip = strip_bottom > Y0
     logo_top = (strip_bottom + 46) if has_strip else (Y0 + 96)
 
     # The event branding sits over the car photo, which can be bright and busy.
     # Fade the band it occupies to near-black so the marks always read.
     _darken_band(content, Y0 if not has_strip else strip_bottom, logo_top + 190)
-    _logo_or_wordmark(content, draw, W // 2, logo_top)
+    _logo_or_wordmark(
+        content, draw, W // 2, logo_top, tenant_id=tenant_id, tenant_name=tenant_name
+    )
 
     # --- participant label + big number (over the poster) ---
     num = f"№{number}"
