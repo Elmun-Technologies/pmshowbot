@@ -291,3 +291,68 @@ def test_panel_has_a_resend_button_for_approved_applications():
 
         asyncio.run(run())
         asyncio.run(bot.session.close())
+
+
+def test_resend_button_explains_itself_when_the_bot_worker_is_down():
+    """A panel click must never fail silently (the worker may be restarting)."""
+    import tempfile
+    from types import SimpleNamespace
+    from urllib.parse import quote
+
+    from aiohttp.test_utils import TestClient, TestServer
+    from cryptography.fernet import Fernet
+
+    from bot.admin import auth
+    from bot.admin.server import create_admin_app
+    from bot.db import Database
+
+    password = "panel-pass"
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(
+            os.path.join(tmp, "down.db"), encryption_key=Fernet.generate_key().decode()
+        )
+        asyncio.run(db.init())
+
+        async def seed() -> int:
+            app_id = await db.create_application(
+                user_id=9,
+                username="@tester",
+                country="Узбекистан",
+                plate="01A999AA",
+                direction="SQ",
+                phone="+998901112255",
+                photo_file_ids=[],
+                photo_paths=[],
+            )
+            await db.approve(app_id, "@mod")
+            return app_id
+
+        app_id = asyncio.run(seed())
+        # bot is None: this is what the panel sees while a tenant worker restarts.
+        admin_app = create_admin_app(
+            bot=None,
+            config=SimpleNamespace(
+                admin_password=password,
+                panel_port=8080,
+                db_path=os.path.join(tmp, "down.db"),
+                media_dir=tmp,
+            ),
+            db=db,
+        )
+        headers = {"Cookie": f"{auth.COOKIE_NAME}={auth.make_cookie(password)}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                response = await client.post(
+                    f"/application/{app_id}/ticket", headers=headers, allow_redirects=False
+                )
+                assert response.status == 302
+                location = response.headers["Location"]
+                assert "ticket=failed" in location, location
+
+                page = await client.get(location, headers=headers)
+                body = await page.text()
+                assert page.status == 200
+                assert "Не удалось отправить билет" in body, body[-500:]
+
+        asyncio.run(run())
