@@ -173,21 +173,21 @@ _TENANTS_EVENT_MIGRATIONS = [
 
 # SPL Show, Tashkent INDEX, 3 October. Arrival is the day before.
 # Applied when the splshow tenant exists and a field is still empty or still
-# holds the old September / SOF EXPO copy. A custom value is left alone.
+# holds an outdated schedule. A custom value is left alone.
 SPL_EVENT_COPY = {
-    "event_date_text_ru": "2 октября до 22:00",
-    "event_date_text_uz": "2-oktyabr soat 22:00 gacha",
+    "event_date_text_ru": "02 октября 2026 с 17:00 до 22:00",
+    "event_date_text_uz": "02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
     "event_venue_text_ru": "Tashkent INDEX",
     "event_venue_text_uz": "Tashkent INDEX",
-    "event_guest_date_text_ru": "3 октября с 12:00",
-    "event_guest_date_text_uz": "3-oktyabr, soat 12:00 dan",
+    "event_guest_date_text_ru": "03 октября 2026 с 12:00",
+    "event_guest_date_text_uz": "03-oktyabr 2026, soat 12:00 dan",
     "event_note_text_ru": (
-        "Начало шоу — 3 октября в 12:00, Tashkent INDEX. "
-        "3 октября с 09:00 участники должны находиться рядом со своими автомобилями."
+        "Площадка — Tashkent INDEX. "
+        "03 октября 2026 с 09:00 участники должны находиться рядом со своими автомобилями."
     ),
     "event_note_text_uz": (
-        "Shou boshlanishi — 3-oktyabr soat 12:00, Tashkent INDEX. "
-        "Tadbir ishtirokchilari 3-oktyabr kuni soat 09:00 dan boshlab "
+        "Maydon — Tashkent INDEX. "
+        "Tadbir ishtirokchilari 03-oktyabr 2026 kuni soat 09:00 dan boshlab "
         "avtomobillari yonida bo‘lishlari shart."
     ),
 }
@@ -198,6 +198,20 @@ _SPL_STALE_EVENT_VALUES = frozenset({
     "SOF EXPO",
     "12 и 13 сентября с 10:00",
     "12 va 13-sentyabr, 10:00 dan",
+    # First SPL draft, before the client confirmed 17:00–22:00 / guest date.
+    "2 октября до 22:00",
+    "2-oktyabr soat 22:00 gacha",
+    "3 октября с 12:00",
+    "3-oktyabr, soat 12:00 dan",
+    (
+        "Начало шоу — 3 октября в 12:00, Tashkent INDEX. "
+        "3 октября с 09:00 участники должны находиться рядом со своими автомобилями."
+    ),
+    (
+        "Shou boshlanishi — 3-oktyabr soat 12:00, Tashkent INDEX. "
+        "Tadbir ishtirokchilari 3-oktyabr kuni soat 09:00 dan boshlab "
+        "avtomobillari yonida bo‘lishlari shart."
+    ),
 })
 _SPL_SLUGS = frozenset({"splshow", "spl", "spl-show"})
 _SPL_NAMES = frozenset({"spl show", "spl"})

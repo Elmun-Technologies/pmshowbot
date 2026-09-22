@@ -64,8 +64,8 @@ def test_spl_schedule_is_seeded_and_stale_september_copy_is_replaced():
             await db.init()
             created = await db.create_tenant(slug="splshow", name="SPL Show")
             assert created.event_venue_text_ru == "Tashkent INDEX"
-            assert created.event_date_text_ru == "2 октября до 22:00"
-            assert created.event_guest_date_text_ru == "3 октября с 12:00"
+            assert created.event_date_text_ru == "02 октября 2026 с 17:00 до 22:00"
+            assert created.event_guest_date_text_ru == "03 октября 2026 с 12:00"
             assert "09:00" in created.event_note_text_ru
             assert "09:00" in created.event_note_text_uz
             assert "Tashkent INDEX" in created.event_note_text_ru
@@ -113,12 +113,11 @@ def test_approved_message_includes_arrival_show_start_and_car_rule():
     uz = approved_for_tenant("uz", tenant, 7)
     assert "№7" in ru
     assert "Заезд авто участников" in ru
-    assert "2 октября до 22:00" in ru
-    assert "3 октября в 12:00" in ru
+    assert "02 октября 2026 с 17:00 до 22:00" in ru
     assert "Tashkent INDEX" in ru
     assert "09:00" in ru
     assert "рядом со своими автомобилями" in ru
-    assert "2-oktyabr" in uz
+    assert "02-oktyabr 2026" in uz
     assert "09:00" in uz
     assert "avtomobillari yonida" in uz
     # Empty note must not add a blank operational paragraph for other tenants.

@@ -242,12 +242,12 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
      A process-wide `REGISTRATION_CLOSED=true` secret is ignored, so it cannot
      make this bot answer «регистрация завершена».
    - Event fields (Tashkent INDEX, 3 October — filled automatically for slug `splshow` if empty):
-     - `event_date_text_ru`: `2 октября до 22:00` (заезд авто участников)
-     - `event_date_text_uz`: `2-oktyabr soat 22:00 gacha`
+     - `event_date_text_ru`: `02 октября 2026 с 17:00 до 22:00`
+     - `event_date_text_uz`: `02-oktyabr 2026, soat 17:00 dan 22:00 gacha`
      - `event_venue_text_ru/uz`: `Tashkent INDEX`
-     - `event_guest_date_text_ru`: `3 октября с 12:00` (начало шоу)
-     - `event_guest_date_text_uz`: `3-oktyabr, soat 12:00 dan`
-     - participant note: 3 октября с 09:00 рядом с автомобилем / 3-oktyabr soat 09:00 dan avtomobil yonida
+     - `event_guest_date_text_ru`: `03 октября 2026 с 12:00`
+     - `event_guest_date_text_uz`: `03-oktyabr 2026, soat 12:00 dan`
+     - participant note: 03 октября 2026 с 09:00 рядом с автомобилем / 03-oktyabr 2026 soat 09:00 dan avtomobil yonida
    - Save → worker hot-restarts only `splshow`.
 
 2. Directions CRUD: `/super-admin/tenants/splshow/directions`
