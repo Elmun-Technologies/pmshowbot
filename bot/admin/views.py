@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from html import escape
 from typing import Iterable, Optional
+import os
+import time
 
 from ..constants import DIRECTIONS_CANON, SIDES, SIDE_LABELS_RU
 from ..db import Application, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
@@ -27,7 +29,7 @@ a:hover { text-decoration: underline; }
 header { background: #4c1d95; color: #fff; padding: 14px 20px; display: flex; align-items: center;
          gap: 22px; flex-wrap: wrap; }
 header .brand { font-weight: 700; font-size: 18px; }
-header nav a { color: #ddd6fe; font-weight: 500; }
+header nav a { color: #ddd6fe; font-weight: 500; margin-right: 14px; }
 header nav a.active { color: #fff; border-bottom: 2px solid #fff; padding-bottom: 3px; }
 header .spacer { flex: 1; }
 main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
@@ -38,6 +40,7 @@ main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
 .section { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
            margin-top: 20px; }
 .section h2 { margin: 0 0 12px; font-size: 16px; }
+.section h3 { margin: 16px 0 8px; font-size: 14px; color: #374151; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #eee; vertical-align: middle; }
 th { color: #6b7280; font-weight: 600; font-size: 12px; text-transform: uppercase; }
@@ -50,7 +53,7 @@ th { color: #6b7280; font-weight: 600; font-size: 12px; text-transform: uppercas
 .filters a { padding: 6px 12px; border-radius: 8px; background: #ede9fe; color: #5b21b6; font-size: 13px; }
 .filters a.active { background: #5b21b6; color: #fff; }
 .filters form { margin-left: auto; display: flex; gap: 6px; }
-input[type=text], input[type=password] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px;
+input[type=text], input[type=password], input[type=file] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px;
                                           font-size: 14px; }
 .btn { display: inline-block; padding: 9px 16px; border-radius: 8px; border: none; cursor: pointer;
        font-size: 14px; font-weight: 600; }
@@ -58,6 +61,7 @@ input[type=text], input[type=password] { padding: 8px 10px; border: 1px solid #c
 .btn-approve { background: #059669; color: #fff; }
 .btn-reject { background: #dc2626; color: #fff; }
 .btn-ghost { background: #ede9fe; color: #5b21b6; }
+.btn-small { padding: 6px 10px; font-size: 12px; }
 .photos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .photos figure { margin: 0; }
 .photos img { width: 100%; border-radius: 10px; border: 1px solid #ddd; }
@@ -67,10 +71,23 @@ input[type=text], input[type=password] { padding: 8px 10px; border: 1px solid #c
 .actions { margin-top: 18px; display: flex; gap: 10px; }
 .login-wrap { max-width: 340px; margin: 80px auto; }
 .err { background: #fee2e2; color: #991b1b; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
+.ok { background: #d1fae5; color: #065f46; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
 .muted { color: #6b7280; }
 .bar { display:flex; align-items:center; gap:8px; margin:6px 0; }
 .bar .track { flex:1; height:10px; background:#ede9fe; border-radius:6px; overflow:hidden; }
 .bar .fill { height:100%; background:#7c3aed; }
+
+/* Ticket assets */
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: 12px; }
+.asset-card { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; }
+.asset-card .preview { background: #fff; border-radius: 8px; padding: 8px; display: flex; align-items: center; justify-content: center; min-height: 110px; border: 1px solid #eee; }
+.asset-card .preview img { max-width: 100%; max-height: 100px; object-fit: contain; }
+.asset-card .meta { margin-top: 8px; font-size: 13px; }
+.asset-card .meta .name { font-weight: 600; word-break: break-all; }
+.asset-card .actions { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+.ticket-preview-wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+.ticket-preview-img { max-width: 340px; border-radius: 16px; border: 2px solid #ddd; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+.upload-box { background: #f9fafb; border: 1px dashed #c4b5fd; border-radius: 10px; padding: 14px; margin-top: 10px; }
 """
 
 
@@ -86,8 +103,9 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
             '<span class="brand">🚗 Promotors Show — Admin</span>'
             f'<nav>{link("/", "Дашборд", "home")} '
             f'{link("/applications", "Заявки", "apps")} '
+            f'{link("/ticket-assets", "🎫 Билеты", "ticket")} '
             f'{link("/broadcast", "📢 Рассылка", "broadcast")} '
-            f'{link("/export.xlsx", "📊 Экспорт Excel (.xlsx)", "export")} '
+            f'{link("/export.xlsx", "📊 Excel", "export")} '
             f'{link("/export.csv", "CSV", "export_csv")}</nav>'
             '<span class="spacer"></span>'
             '<a href="/logout" style="color:#ddd6fe">Выйти</a>'
@@ -161,6 +179,9 @@ def dashboard_page(stats: dict) -> str:
         '<div style="margin:20px 0; text-align:right">'
         '<a class="btn btn-primary" href="/export.xlsx" style="padding:10px 20px; font-size:15px">'
         '📥 Скачать Excel (.xlsx)'
+        '</a> '
+        '<a class="btn btn-ghost" href="/ticket-assets" style="padding:10px 20px; font-size:15px">'
+        '🎫 Управление билетами'
         '</a>'
         '</div>'
     )
@@ -594,7 +615,7 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
         "if(!ta||!box)return;"
         "ta.addEventListener('input',function(){"
         "box.textContent=ta.value||'';"
-        "if(!ta.value){box.innerHTML='<span class=\"muted\">Пусто</span>';}"
+        "if(!ta.value){box.innerHTML='<span class=\\\"muted\\\">Пусто</span>';}"
         "});"
         "}"
         "bindText('text_uz','preview-uz-text');"
@@ -602,3 +623,227 @@ def _broadcast_preview_block(last_text_uz: str, last_text_ru: str) -> str:
         "})();"
         "</script>"
     )
+
+
+# ---------------------------------------------------------------------------
+# Ticket assets management page
+# ---------------------------------------------------------------------------
+
+def ticket_assets_page(
+    inventory: dict,
+    sponsors: list[dict],
+    brand: dict,
+    directions: list[dict],
+    message: str = "",
+    error: str = "",
+) -> str:
+    # Messages
+    msg_map = {
+        "brand_uploaded": "✅ Логотип бренда обновлён",
+        "brand_deleted": "🗑 Логотип бренда удалён (теперь используется версия из репозитория, если есть)",
+        "sponsor_uploaded": "✅ Логотип спонсора сохранён",
+        "sponsor_deleted": "🗑 Логотип спонсора удалён",
+        "direction_uploaded": "✅ Баннер направления сохранён",
+        "direction_deleted": "🗑 Баннер направления удалён",
+    }
+    err_map = {
+        "no_file": "Файл не выбран",
+        "name_required": "Введите имя файла (только латиница, цифры, _ и -)",
+        "invalid_name": "Имя может содержать только латиницу, цифры, _ и - (до 40 символов)",
+        "unknown_brand": "Неизвестный бренд",
+        "unknown_direction": "Неизвестное направление",
+    }
+
+    notice = ""
+    if message and message in msg_map:
+        notice = f'<div class="ok">{msg_map[message]}</div>'
+    elif message:
+        notice = f'<div class="ok">{escape(message)}</div>'
+    if error:
+        err_text = err_map.get(error, error)
+        notice += f'<div class="err">❌ {escape(err_text)}</div>'
+
+    # Ticket preview
+    ts = int(time.time())
+    preview_html = (
+        '<div class="section">'
+        '<h2>🎫 Предпросмотр билета</h2>'
+        '<p class="muted">Так будет выглядеть билет с текущими логотипами. Фон — заглушка (градиент), '
+        'в реальности за ним фото авто участника.</p>'
+        '<div class="ticket-preview-wrap">'
+        f'<img class="ticket-preview-img" src="/ticket-assets/preview.png?ts={ts}" alt="Ticket preview">'
+        '<div style="flex:1;min-width:280px">'
+        '<p class="muted" style="font-size:13px">После загрузки/удаления логотипа обновите страницу — '
+        'предпросмотр перегенерируется автоматически. '
+        'Если загружен хотя бы один спонсорский логотип из админки, используются только загруженные (из репозитория скрываются).</p>'
+        '<a class="btn btn-ghost btn-small" href="/ticket-assets/preview.png" target="_blank">Открыть в полном размере</a> '
+        f'<a class="btn btn-ghost btn-small" href="/ticket-assets?ts={ts}">🔄 Обновить</a>'
+        '</div>'
+        '</div>'
+        '</div>'
+    )
+
+    # Brand logos
+    brand_cards = ""
+    for key in ("logo", "adrenaline"):
+        info = brand.get(key, {})
+        exists = info.get("exists")
+        is_runtime = info.get("is_runtime")
+        src = f"/assets/file/brand/{key}?ts={ts}" if exists else ""
+        img_tag = f'<img src="{src}" alt="{escape(key)}">' if exists else '<span class="muted">Нет логотипа</span>'
+        status = "загружен" if is_runtime else ("из репозитория" if exists else "❌ нет")
+        badge = f'<span class="badge badge-{"approved" if exists else "rejected"}">{escape(status)}</span>'
+        title_map = {"logo": "PROMOTORS SHOW (logo.png)", "adrenaline": "Adrenaline Rush (adrenaline.png)"}
+        title = title_map.get(key, key)
+
+        brand_cards += (
+            '<div class="asset-card">'
+            f'<div class="preview">{img_tag}</div>'
+            f'<div class="meta"><div class="name">{escape(title)}</div>'
+            f'<div class="muted" style="font-size:12px;margin-top:4px">Ключ: <code>{escape(key)}</code> {badge}</div></div>'
+            '<div class="actions">'
+            f'<form method="post" action="/ticket-assets/brand/upload" enctype="multipart/form-data" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%">'
+            f'<input type="hidden" name="brand_name" value="{escape(key)}">'
+            '<input type="file" name="file" accept="image/*" required style="flex:1;min-width:120px">'
+            '<button class="btn btn-primary btn-small" type="submit">Загрузить</button>'
+            '</form>'
+        )
+        if is_runtime:
+            brand_cards += (
+                f'<form method="post" action="/ticket-assets/brand/delete" style="margin-top:6px">'
+                f'<input type="hidden" name="brand_name" value="{escape(key)}">'
+                '<button class="btn btn-reject btn-small" type="submit" onclick="return confirm(\'Удалить логотип?\')">🗑 Удалить</button>'
+                '</form>'
+            )
+        brand_cards += '</div></div>'
+
+    brand_section = (
+        '<div class="section"><h2>🏷 Главные логотипы билета</h2>'
+        '<p class="muted">Эти два логотипа показываются вверху постера. Загрузите прозрачный PNG ~1200px шириной.</p>'
+        f'<div class="asset-grid">{brand_cards}</div></div>'
+    )
+
+    # Partner checklist
+    partners = inventory.get("partners", [])
+    _SOURCE_RU = {"runtime": "загружен", "bundled": "из репозитория", None: "❌ НЕ ЗАГРУЖЕН"}
+    partner_rows = ""
+    for p in partners:
+        src = _SOURCE_RU.get(p.get("source"), "—")
+        icon = "✅" if p.get("source") else "❌"
+        partner_rows += (
+            f'<tr><td>{icon} <code>{escape(p["name"])}</code></td>'
+            f'<td>{escape(p["title"])}</td>'
+            f'<td>{escape(src)}</td></tr>'
+        )
+    partner_table = (
+        '<div class="section"><h2>🤝 Ожидаемые партнёрские логотипы</h2>'
+        '<p class="muted">Рекомендуемый набор — эти 4 логотипа показывают в полосе наверху билета. '
+        'Порядок задаётся цифрой в начале имени: 1_, 2_, 3_, 4_…</p>'
+        '<table><thead><tr><th>Имя</th><th>Описание</th><th>Статус</th></tr></thead>'
+        f'<tbody>{partner_rows}</tbody></table></div>'
+    )
+
+    # Sponsor logos grid
+    sponsor_cards = ""
+    for s in sponsors:
+        fname = s["filename"]
+        name = s["name"]
+        size_kb = f"{s['size']//1024} KB" if s["size"] > 1024 else f"{s['size']} B"
+        src = f"/assets/file/sponsors/{escape(fname)}?ts={ts}"
+        sponsor_cards += (
+            '<div class="asset-card">'
+            f'<div class="preview"><img src="{src}" alt="{escape(name)}"></div>'
+            f'<div class="meta"><div class="name">{escape(fname)}</div>'
+            f'<div class="muted" style="font-size:12px">Имя: <code>{escape(name)}</code><br>{size_kb}'
+            f' {"· загружен" if s["is_runtime"] else "· из репозитория"}</div></div>'
+            '<div class="actions">'
+            f'<form method="post" action="/ticket-assets/sponsor/delete" style="display:inline">'
+            f'<input type="hidden" name="name" value="{escape(name)}">'
+            '<button class="btn btn-reject btn-small" type="submit" '
+            'onclick="return confirm(\'Удалить логотип спонсора?\')">🗑 Удалить</button>'
+            '</form></div></div>'
+        )
+    if not sponsor_cards:
+        sponsor_cards = '<p class="muted">Пока нет логотипов спонсоров. Загрузите хотя бы один — он сразу появится на билете.</p>'
+
+    upload_sponsor_form = (
+        '<div class="upload-box">'
+        '<h3>➕ Добавить логотип спонсора / хомий логосини қўшиш</h3>'
+        '<p class="muted" style="font-size:13px">Имя задаёт порядок на билете. Используйте префикс: '
+        '<code>1_</code>, <code>2_</code> и т.д. Только латиница, цифры, _ и -.<br>'
+        'Например: <code>1_mcs_sherdor</code>, <code>2_retro_tashkent</code>, <code>5_my_sponsor</code></p>'
+        '<form method="post" action="/ticket-assets/sponsor/upload" enctype="multipart/form-data" '
+        'style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'
+        '<div><label style="display:block;font-weight:600;margin-bottom:4px">Имя логотипа</label>'
+        '<input type="text" name="name" placeholder="1_mcs_sherdor" required pattern="[A-Za-z0-9_-]{1,40}" '
+        'style="min-width:200px"></div>'
+        '<div><label style="display:block;font-weight:600;margin-bottom:4px">Файл (PNG/JPG/WEBP)</label>'
+        '<input type="file" name="file" accept="image/*" required></div>'
+        '<button class="btn btn-primary" type="submit">Загрузить</button>'
+        '</form></div>'
+    )
+
+    sponsors_section = (
+        '<div class="section"><h2>🏢 Логотипы спонсоров / ҳомийлар (полоса наверху билета)</h2>'
+        '<p class="muted">Эти логотипы показываются в чёрной полосе наверху билета, как на промо-баннерах мероприятия. '
+        'До 10 логотипов — если их много, полоса автоматически разбивается на 2 ряда.</p>'
+        f'<div class="asset-grid">{sponsor_cards}</div>'
+        + upload_sponsor_form +
+        '</div>'
+    )
+
+    # Direction banners
+    dir_cards = ""
+    for d in directions:
+        slug = d["slug"]
+        canon = d["canonical"]
+        exists = d["exists"]
+        is_runtime = d["is_runtime"]
+        src = f"/assets/file/directions/{escape(slug)}?ts={ts}" if exists else ""
+        img_tag = f'<img src="{src}" alt="{escape(slug)}">' if exists else '<span class="muted">Нет баннера</span>'
+        status = "загружен" if is_runtime else ("из репозитория" if exists else "❌ нет")
+        dir_cards += (
+            '<div class="asset-card">'
+            f'<div class="preview">{img_tag}</div>'
+            f'<div class="meta"><div class="name">{escape(canon)}</div>'
+            f'<div class="muted" style="font-size:12px">slug: <code>{escape(slug)}</code> · {escape(status)}</div></div>'
+            '<div class="actions">'
+            f'<form method="post" action="/ticket-assets/direction/upload" enctype="multipart/form-data" '
+            'style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%">'
+            f'<input type="hidden" name="slug" value="{escape(slug)}">'
+            '<input type="file" name="file" accept="image/*" required style="flex:1;min-width:100px">'
+            '<button class="btn btn-primary btn-small" type="submit">Загрузить</button>'
+            '</form>'
+        )
+        if is_runtime:
+            dir_cards += (
+                f'<form method="post" action="/ticket-assets/direction/delete" style="margin-top:6px">'
+                f'<input type="hidden" name="slug" value="{escape(slug)}">'
+                '<button class="btn btn-reject btn-small" type="submit" onclick="return confirm(\'Удалить баннер?\')">🗑 Удалить</button>'
+                '</form>'
+            )
+        dir_cards += '</div></div>'
+
+    dir_section = (
+        '<div class="section"><h2>🎨 Баннеры направлений</h2>'
+        '<p class="muted">Показываются участнику при выборе направления. Не обязательны, но делают бот красивее.</p>'
+        f'<div class="asset-grid">{dir_cards}</div></div>'
+    )
+
+    body = (
+        notice
+        + preview_html
+        + brand_section
+        + partner_table
+        + sponsors_section
+        + dir_section
+        + '<div class="section"><h2>ℹ️ Как это работает</h2>'
+        '<ul style="font-size:14px;line-height:1.6">'
+        '<li><b>Загруженные файлы живут на volume</b> — переживают рестарты и деплои, без коммита в git.</li>'
+        '<li>Если загружен хотя бы один спонсорский логотип через админку, <b>используются только загруженные</b> — из репозитория скрываются.</li>'
+        '<li>Порядок логотипов — по имени файла (алфавит). Используйте префиксы <code>1_</code>, <code>2_</code> для сортировки.</li>'
+        '<li>Рекомендуется <b>прозрачный PNG</b> — логотип ляжет на чёрный фон полосы без белого квадрата.</li>'
+        '<li>Можно по-прежнему загружать через Telegram: отправьте файл с подписью <code>/logo 1_mcs_sherdor</code> в модерационный чат.</li>'
+        '</ul></div>'
+    )
+    return _page("Билеты и логотипы", body, active="ticket")
