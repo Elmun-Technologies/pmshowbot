@@ -23,6 +23,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
 
+from .. import texts
 from ..config import Config
 from ..constants import DIRECTIONS, DIRECTIONS_CANON
 from ..db import Database, Tenant, STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
@@ -31,7 +32,6 @@ from ..services import assets, decisions, subscription
 from ..security import EncryptionError
 from . import auth, i18n, views
 from .i18n import t
-from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,7 @@ def _register_tenant_routes(app: web.Application, prefix: str) -> None:
     app.router.add_get(f"{prefix}/badgephoto/{{id}}", _badge_photo)
     app.router.add_post(f"{prefix}/application/{{id}}/delete", _delete_application)
     app.router.add_post(f"{prefix}/application/{{id}}/ticket", _resend_ticket)
+    app.router.add_get(f"{prefix}/application/{{id}}/ticket.png", _application_ticket_preview)
     app.router.add_get(f"{prefix}/export.csv", _export_csv)
     app.router.add_get(f"{prefix}/export.xlsx", _export_excel)
     app.router.add_get(f"{prefix}/broadcast", _broadcast_get)
@@ -156,6 +157,7 @@ def _register_tenant_routes(app: web.Application, prefix: str) -> None:
         app.router.add_get("/badgephoto/{id}", _badge_photo)
         app.router.add_post("/application/{id}/delete", _delete_application)
         app.router.add_post("/application/{id}/ticket", _resend_ticket)
+        app.router.add_get("/application/{id}/ticket.png", _application_ticket_preview)
         app.router.add_get("/export.csv", _export_csv)
         app.router.add_get("/export.xlsx", _export_excel)
         app.router.add_get("/broadcast", _broadcast_get)
@@ -517,8 +519,6 @@ async def _application_detail(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
     msg = request.query.get("msg")
     status_flag = request.query.get("status_change")
-    ticket = request.query.get("ticket")
-    ticket_error = request.query.get("ticket_error", "")
     return _html(
         request,
         views.application_detail_page(
@@ -531,12 +531,9 @@ async def _application_detail(request: web.Request) -> web.Response:
             ),
             status_changed=status_flag == "ok",
             status_error=t(lang, "error.status_change") if status_flag == "error" else "",
-            ticket_sent=ticket == "sent",
-            ticket_error=(
-                t(lang, "ticket.failed_notice", error=quote(ticket_error[:200]))
-                if ticket == "failed"
-                else ""
-            ),
+            # The ticket block shows the live state of a resend started from
+            # this panel (the redirect no longer carries it in the URL).
+            ticket_job=_ticket_job(_ticket_job_key(request, app_id)),
         ),
     )
 
@@ -631,12 +628,80 @@ async def _change_status(request: web.Request) -> web.Response:
     raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if app is not None else 'error'}"))
 
 
+# ---------------------------------------------------------------------------
+# Panel ticket resends run in the background
+# ---------------------------------------------------------------------------
+#
+# A resend click must answer immediately — the same rule as /approve: the
+# render (up to ~90 s per attempt on a busy render pool) and a multi-megabyte
+# upload must not hold the HTTP request, and a deploy during the POST used to
+# kill the ticket mid-flight.  The job registry below is the panel's memory of
+# each resend: the application page polls it (via meta refresh) until the
+# delivery is ``sent`` or ``failed`` with a human-readable reason.
+
+_TICKET_JOB_TTL_SECONDS = 15 * 60
+# Keyed by (asset scope, application id): two tenants may both hold
+# application №1, and one tenant's job must never show up on the other's page.
+_TICKET_JOBS: dict[tuple, dict] = {}
+
+
+def _ticket_job_key(request: web.Request, app_id: int) -> tuple:
+    return (_asset_scope(request), app_id)
+
+
+def _set_ticket_job(key: tuple, status: str, error: str = "") -> None:
+    _TICKET_JOBS[key] = {"status": status, "error": error, "updated_at": time.time()}
+    # Defensive cap: jobs of deleted applications are never re-read and would
+    # otherwise outlive the TTL pruning.  In-flight jobs are always kept.
+    if len(_TICKET_JOBS) > 1024:
+        terminal = sorted(
+            (
+                (k, v["updated_at"])
+                for k, v in _TICKET_JOBS.items()
+                if v["status"] in ("sent", "failed")
+            ),
+            key=lambda kv: kv[1],
+        )
+        for k, _ in terminal[: len(_TICKET_JOBS) - 1024]:
+            _TICKET_JOBS.pop(k, None)
+
+
+def _ticket_job(key: tuple) -> Optional[dict]:
+    """The panel's record of this application's last resend (if still fresh)."""
+    job = _TICKET_JOBS.get(key)
+    if job is None:
+        return None
+    terminal = job["status"] in ("sent", "failed")
+    if terminal and time.time() - job["updated_at"] > _TICKET_JOB_TTL_SECONDS:
+        _TICKET_JOBS.pop(key, None)
+        return None
+    return job
+
+
+async def _run_ticket_resend(bot, config, key: tuple, app) -> None:
+    """Background delivery; records the outcome in the job registry."""
+    try:
+        result = await decisions.send_ticket(bot, config, app, report_failure=False)
+    except Exception as exc:  # noqa: BLE001 - a resend must never die silently
+        logger.exception("Ticket resend for application %s crashed", key[1])
+        _set_ticket_job(key, "failed", f"{type(exc).__name__}: {exc}")
+        return
+    if result:
+        _set_ticket_job(key, "sent")
+    else:
+        _set_ticket_job(key, "failed", str(result.error or "unknown error"))
+
+
 async def _resend_ticket(request: web.Request) -> web.Response:
-    """POST /application/{id}/ticket — regenerate and send the ticket again.
+    """POST /application/{id}/ticket — resend the participant's ticket.
 
     Covers the "the picture never arrived" report without a developer: the
-    panel regenerates the ticket with the current branding and reports the
-    outcome on the application page.
+    panel regenerates the ticket with the current branding and shows the
+    outcome on the application page.  The request itself answers at once —
+    render + upload run in :func:`_run_ticket_resend` — a second click while
+    a resend is in flight does not start another one, and a tenant worker that
+    is not running (``bot is None``) is reported immediately with the same
+    wording the delivery would produce.
     """
     db = _db(request)
     bot = _bot(request)
@@ -645,15 +710,101 @@ async def _resend_ticket(request: web.Request) -> web.Response:
     app = await db.get_application(app_id)
     if app is None:
         raise web.HTTPNotFound(text=t(_lang(request), "error.app_not_found"))
+    key = _ticket_job_key(request, app_id)
+    if app.status != STATUS_APPROVED or app.reg_number is None:
+        # No ticket exists to resend; the page simply has no ticket block.
+        raise web.HTTPFound(_url(request, f"/application/{app_id}"))
+    if bot is None:
+        # The exact wording decisions.send_ticket uses, so a restarting worker
+        # is readable in the panel instead of a silent or cryptic failure.
+        _set_ticket_job(key, "failed", "рабочий процесс бота не запущен (bot is None)")
+        raise web.HTTPFound(_url(request, f"/application/{app_id}"))
+    job = _ticket_job(key)
+    if job and job["status"] == "sending":
+        raise web.HTTPFound(_url(request, f"/application/{app_id}"))
+    _set_ticket_job(key, "sending")
+    decisions.spawn(_run_ticket_resend(bot, config, key, app))
+    raise web.HTTPFound(_url(request, f"/application/{app_id}"))
 
-    result = await decisions.send_ticket(bot, config, app, report_failure=False)
-    if result:
-        raise web.HTTPFound(_url(request, f"/application/{app_id}?ticket=sent"))
-    raise web.HTTPFound(
-        _url(
-            request,
-            f"/application/{app_id}?ticket=failed&ticket_error={quote(str(result.error or ''))}",
-        )
+
+# ---------------------------------------------------------------------------
+# Per-application ticket preview
+# ---------------------------------------------------------------------------
+#
+# The ticket-assets page shows a generic sample; the application page shows
+# the participant's *actual* ticket, so the team can check what the person
+# received (and forward it by hand when Telegram delivery failed).  An
+# approved application's ticket is immutable (number, plate and direction are
+# fixed), so the rendered bytes are cached briefly: re-opening the page must
+# not pay for another render.
+
+_TICKET_PREVIEW_TTL_SECONDS = 600.0
+_TICKET_PREVIEW_MAX_ENTRIES = 32
+_ticket_preview_cache: dict[tuple, tuple[float, bytes]] = {}
+
+
+def _ticket_preview_key(request: web.Request, app) -> tuple:
+    return (_asset_scope(request), app.id, app.reg_number)
+
+
+def _invalidate_ticket_previews() -> None:
+    """Drop cached per-application renders: the artwork changed under them.
+
+    An admin who re-uploads a logo expects the application-page preview to
+    show the new design at once, not up to ten minutes later.
+    """
+    _ticket_preview_cache.clear()
+
+
+async def _application_ticket_preview(request: web.Request) -> web.Response:
+    """GET /application/{id}/ticket.png — the participant's actual ticket."""
+    db = _db(request)
+    app_id = _int_or_404(request.match_info["id"])
+    app = await db.get_application(app_id)
+    if app is None or app.status != STATUS_APPROVED or app.reg_number is None:
+        raise web.HTTPNotFound()
+    key = _ticket_preview_key(request, app)
+    now = time.time()
+    hit = _ticket_preview_cache.get(key)
+    if hit is not None and now - hit[0] < _TICKET_PREVIEW_TTL_SECONDS:
+        png = hit[1]
+    else:
+        # The same layered render as delivery: hero photo first, gradient
+        # poster when that photo cannot be decoded.
+        cfg = _config(request)
+        hero = decisions._pick_hero(app.photo_paths)
+        png: Optional[bytes] = None
+        for candidate in ([hero, None] if hero else [None]):
+            try:
+                png = await decisions._render_ticket(cfg, app, candidate)
+                break
+            except Exception:  # noqa: BLE001 - retried without the hero photo
+                logger.exception(
+                    "Ticket preview for application %s failed (hero: %s)",
+                    app_id,
+                    bool(candidate),
+                )
+        if png is None:
+            raise web.HTTPInternalServerError(text="Preview failed: ticket rendering")
+        if len(_ticket_preview_cache) >= _TICKET_PREVIEW_MAX_ENTRIES:
+            for stale in [
+                k
+                for k, (stamp, _) in _ticket_preview_cache.items()
+                if now - stamp > _TICKET_PREVIEW_TTL_SECONDS
+            ]:
+                _ticket_preview_cache.pop(stale, None)
+            while len(_ticket_preview_cache) >= _TICKET_PREVIEW_MAX_ENTRIES:
+                oldest = min(
+                    _ticket_preview_cache, key=lambda k: _ticket_preview_cache[k][0]
+                )
+                _ticket_preview_cache.pop(oldest)
+        _ticket_preview_cache[key] = (now, png)
+    return web.Response(
+        body=png,
+        headers={
+            "Content-Type": "image/png",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
     )
 
 
@@ -981,22 +1132,55 @@ async def _ticket_assets(request: web.Request) -> web.Response:
 
 
 async def _ticket_preview(request: web.Request) -> web.Response:
-    """Render a sample ticket with current assets (real logic = preview logic)."""
+    """Render a sample ticket with current assets (real logic = preview logic).
+
+    When the tenant has applications, the newest *approved* one (falling back
+    to the newest of any status) is the sample — the team then sees what a
+    current participant's ticket actually looks like with the uploaded
+    artwork, instead of a foreign direction name or language.
+    """
     try:
         from ..services.ticket import generate_ticket
         cfg = _config(request)
-        png = await run_heavy(
-            generate_ticket,
-            _asset_scope(request),
-            number=1,
-            plate="01A777AA",
-            direction="Adrenaline Drift",
-            name="Test User",
-            tenant_name=getattr(cfg, "tenant_name", ""),
-            lang="ru",
-            hero_image_path=None,
-            tenant_config=cfg,
-        )
+        sample = None
+        try:
+            samples = await _db(request).list_applications(limit=5)
+            sample = next(
+                (
+                    a
+                    for a in samples
+                    if a.status == STATUS_APPROVED and a.reg_number is not None
+                ),
+                samples[0] if samples else None,
+            )
+        except Exception:  # noqa: BLE001 - the sample must render even if the DB blips
+            logger.exception("ticket preview: could not load the sample application")
+        if sample is not None:
+            png = await run_heavy(
+                generate_ticket,
+                _asset_scope(request),
+                number=sample.reg_number or 1,
+                plate=sample.plate or "TEST",
+                direction=texts.localize_direction(sample.direction, sample.language),
+                name=decisions._get_display_name(sample),
+                tenant_name=getattr(cfg, "tenant_name", ""),
+                lang=sample.language,
+                hero_image_path=decisions._pick_hero(sample.photo_paths),
+                tenant_config=cfg,
+            )
+        else:
+            png = await run_heavy(
+                generate_ticket,
+                _asset_scope(request),
+                number=1,
+                plate="01A777AA",
+                direction="Adrenaline Drift",
+                name="Test User",
+                tenant_name=getattr(cfg, "tenant_name", ""),
+                lang="ru",
+                hero_image_path=None,
+                tenant_config=cfg,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("ticket preview failed: %s", exc)
         raise web.HTTPInternalServerError(text=f"Preview failed: {exc}")
@@ -1089,6 +1273,7 @@ async def _brand_upload(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("brand upload failed")
         raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=brand_uploaded"))
 
 
@@ -1097,6 +1282,7 @@ async def _brand_delete(request: web.Request) -> web.Response:
     brand_name = str(data.get("brand_name", "")).strip()
     if brand_name in assets.BRAND_LOGOS:
         assets.delete_asset("brand", brand_name, _asset_scope(request))
+        _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=brand_deleted"))
 
 
@@ -1118,6 +1304,7 @@ async def _sponsor_upload(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("sponsor upload failed")
         raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=sponsor_uploaded"))
 
 
@@ -1128,6 +1315,7 @@ async def _sponsor_delete(request: web.Request) -> web.Response:
     name = os.path.splitext(name)[0]
     if assets.is_safe_name(name):
         assets.delete_asset("sponsors", name, _asset_scope(request))
+        _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=sponsor_deleted"))
 
 
@@ -1147,6 +1335,7 @@ async def _direction_upload(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("direction upload failed")
         raise web.HTTPFound(_url(request, f"/ticket-assets?error={exc}"))
+    _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=direction_uploaded"))
 
 
@@ -1155,6 +1344,7 @@ async def _direction_delete(request: web.Request) -> web.Response:
     slug = str(data.get("slug", "")).strip()
     if slug in _direction_slugs():
         assets.delete_asset("directions", slug, _asset_scope(request))
+        _invalidate_ticket_previews()
     raise web.HTTPFound(_url(request, "/ticket-assets?msg=direction_deleted"))
 
 
