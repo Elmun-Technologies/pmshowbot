@@ -81,20 +81,27 @@ def test_a_tenant_ticket_carries_only_its_own_event_data():
     assert ticket._resolve_ticket_copy("ru", None, base) == base
 
 
-def test_the_spl_ticket_shows_the_confirmed_schedule():
-    """The seeded SPL copy is what a participant's ticket must say."""
+def test_the_spl_ticket_shows_the_panel_schedule():
+    """The SPL ticket prints the venue seed plus whatever date the panel holds."""
     from bot.db import SPL_EVENT_COPY
 
-    tenant = _TenantStub(**SPL_EVENT_COPY)
-    for lang, expected_date, expected_place in (
-        ("ru", "02 октября 2026 с 17:00 до 22:00", "TASHKENT INDEX"),
-        ("uz", "02-oktyabr 2026, soat 17:00 dan 22:00 gacha", "TASHKENT INDEX"),
+    bare = _TenantStub(**SPL_EVENT_COPY)
+    copy = ticket._resolve_ticket_copy("ru", bare, ticket._COPY["ru"])
+    assert copy["date"] == "", copy
+    assert copy["place"] == "TASHKENT INDEX", copy
+
+    typed = _TenantStub(
+        **SPL_EVENT_COPY,
+        event_date_text_ru="02 октября 2026 с 17:00 до 22:00",
+        event_date_text_uz="02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
+    )
+    for lang, expected in (
+        ("ru", "02 октября 2026 с 17:00 до 22:00"),
+        ("uz", "02-oktyabr 2026, soat 17:00 dan 22:00 gacha"),
     ):
-        copy = ticket._resolve_ticket_copy(lang, tenant, ticket._COPY[lang])
-        assert expected_date in copy["date"], copy
-        assert copy["place"] == expected_place, copy
-        assert "sentyabr" not in copy["date"].lower(), copy
-        assert "сентябр" not in copy["date"].lower(), copy
+        copy = ticket._resolve_ticket_copy(lang, typed, ticket._COPY[lang])
+        assert expected in copy["date"], copy
+        assert copy["place"] == "TASHKENT INDEX", copy
         assert "SOF EXPO" not in copy["place"].upper(), copy
 
 

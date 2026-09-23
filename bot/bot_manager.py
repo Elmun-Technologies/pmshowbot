@@ -178,6 +178,10 @@ class BotManager:
             event_guest_date_text_uz=getattr(tenant, "event_guest_date_text_uz", "") or "",
             event_note_text_ru=getattr(tenant, "event_note_text_ru", "") or "",
             event_note_text_uz=getattr(tenant, "event_note_text_uz", "") or "",
+            approved_text_ru=getattr(tenant, "approved_text_ru", "") or "",
+            approved_text_uz=getattr(tenant, "approved_text_uz", "") or "",
+            rejected_text_ru=getattr(tenant, "rejected_text_ru", "") or "",
+            rejected_text_uz=getattr(tenant, "rejected_text_uz", "") or "",
         )
 
     @staticmethod
@@ -202,6 +206,10 @@ class BotManager:
             getattr(tenant, "event_guest_date_text_uz", "") or "",
             getattr(tenant, "event_note_text_ru", "") or "",
             getattr(tenant, "event_note_text_uz", "") or "",
+            getattr(tenant, "approved_text_ru", "") or "",
+            getattr(tenant, "approved_text_uz", "") or "",
+            getattr(tenant, "rejected_text_ru", "") or "",
+            getattr(tenant, "rejected_text_uz", "") or "",
         )
 
     def _new_bot(self, token: str) -> Any:

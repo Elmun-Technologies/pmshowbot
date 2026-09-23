@@ -114,6 +114,11 @@ class TenantConfig:
     event_guest_date_text_uz: str = ""
     event_note_text_ru: str = ""
     event_note_text_uz: str = ""
+    # Full approval / rejection texts from the panel (empty = assembled text).
+    approved_text_ru: str = ""
+    approved_text_uz: str = ""
+    rejected_text_ru: str = ""
+    rejected_text_uz: str = ""
 
     @property
     def sheets_enabled(self) -> bool:
@@ -235,6 +240,10 @@ class Config:
             event_guest_date_text_uz=getattr(tenant, "event_guest_date_text_uz", "") or "",
             event_note_text_ru=getattr(tenant, "event_note_text_ru", "") or "",
             event_note_text_uz=getattr(tenant, "event_note_text_uz", "") or "",
+            approved_text_ru=getattr(tenant, "approved_text_ru", "") or "",
+            approved_text_uz=getattr(tenant, "approved_text_uz", "") or "",
+            rejected_text_ru=getattr(tenant, "rejected_text_ru", "") or "",
+            rejected_text_uz=getattr(tenant, "rejected_text_uz", "") or "",
         )
 
 

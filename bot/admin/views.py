@@ -1365,7 +1365,8 @@ def super_tenant_form_page(
         f'<div class="k">{t(lang, "tenant.form.event_note_text_uz")}</div><div>'
         f'<textarea name="event_note_text_uz" rows="3" style="width:100%">{_form_value(values, tenant, "event_note_text_uz")}</textarea></div>'
         f'<div class="k"></div><div><small class="muted">{t(lang, "tenant.form.event_hint")}</small></div>'
-        f'<div class="k">{t(lang, "tenant.form.registration_closed")}</div><div><label>'
+        + _message_template_fields(lang, lambda name: _form_value(values, tenant, name))
+        + f'<div class="k">{t(lang, "tenant.form.registration_closed")}</div><div><label>'
         f'<input type="checkbox" name="registration_closed" value="1"{closed}> '
         f'{t(lang, "tenant.form.registration_closed_hint")}</label></div>'
         f'<div class="k">{t(lang, "tenant.form.admin_password")}</div><div>'
@@ -1381,6 +1382,26 @@ def super_tenant_form_page(
     )
     return _super_page(t(lang, "tenant.form.page_title"), body, lang)
 
+
+
+def _message_template_fields(lang: str, value_of) -> str:
+    """Textareas for the approval/rejection texts the participant receives.
+
+    ``value_of(name)`` must return an already-escaped value.
+    """
+    rows = [
+        f'<div class="k" style="grid-column:1 / -1; margin-top:12px; font-weight:700">'
+        f'{t(lang, "messages.section")}</div>'
+    ]
+    for name in ("approved_text_ru", "approved_text_uz", "rejected_text_ru", "rejected_text_uz"):
+        rows.append(
+            f'<div class="k">{t(lang, "messages." + name)}</div><div>'
+            f'<textarea name="{name}" rows="6" style="width:100%">{value_of(name)}</textarea></div>'
+        )
+    rows.append(
+        f'<div class="k"></div><div><small class="muted">{t(lang, "messages.hint")}</small></div>'
+    )
+    return "".join(rows)
 
 def tenant_settings_page(lang: str, tenant, message: str = "", error: str = "") -> str:
     """Render settings tenant admins may change without seeing their bot token."""
@@ -1428,6 +1449,9 @@ def tenant_settings_page(lang: str, tenant, message: str = "", error: str = "") 
             f'{escape(str(getattr(tenant, "event_note_text_uz", "") or ""))}</textarea></div>'
         )
         + f'<div class="k"></div><div><small class="muted">{t(lang, "settings.event_hint")}</small></div>'
+        + _message_template_fields(
+            lang, lambda name: escape(str(getattr(tenant, name, "") or ""))
+        )
         + (
             f'<div class="k">{t(lang, "settings.registration_closed")}</div><div><label>'
             f'<input type="checkbox" name="registration_closed" value="1"'

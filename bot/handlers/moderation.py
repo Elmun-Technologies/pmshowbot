@@ -342,7 +342,7 @@ async def diag(message: Message, bot: Bot, config: Config, db: Database) -> None
                 _asset_scope(config),
                 number=app.reg_number or 1,
                 plate=app.plate or "TEST",
-                direction=texts.localize_direction(app.direction, app.language),
+                direction=texts.ticket_direction(app.direction, app.language),
                 name=decisions._get_display_name(app),
                 tenant_name=getattr(config, "tenant_name", ""),
                 lang=app.language,
