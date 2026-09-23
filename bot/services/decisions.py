@@ -169,7 +169,7 @@ async def _render_ticket(
             _tenant_scope(config),
             number=app.reg_number,
             plate=app.plate,
-            direction=texts.localize_direction(app.direction, app.language),
+            direction=texts.ticket_direction(app.direction, app.language),
             name=_get_display_name(app),
             tenant_name=getattr(config, "tenant_name", ""),
             lang=app.language,
@@ -497,7 +497,14 @@ async def deliver_approval(
     whether the participant really received their ticket.
     """
     # Tenant-branded approved text
-    approved_text = texts.approved_for_tenant(app.language, config, app.reg_number)
+    approved_text = texts.approved_for_tenant(
+        app.language,
+        config,
+        app.reg_number,
+        name=_get_display_name(app),
+        plate=app.plate,
+        direction=app.direction,
+    )
     await notify_applicant(bot, app.user_id, approved_text, app.language)
     result = await send_ticket(bot, config, app)
     if announce_in_chat:
@@ -526,7 +533,9 @@ async def deliver_rejection(
     ``False`` when the participant could not be reached — the moderation chat is
     told, because "the bot never answered me" reports usually start there.
     """
-    rejected_text = texts.rejected_for_tenant(app.language, config)
+    rejected_text = texts.rejected_for_tenant(
+        app.language, config, name=_get_display_name(app), plate=app.plate, direction=app.direction
+    )
     delivered = await notify_applicant(bot, app.user_id, rejected_text, app.language)
     if not delivered:
         chat_id = getattr(config, "admin_chat_id", 0)

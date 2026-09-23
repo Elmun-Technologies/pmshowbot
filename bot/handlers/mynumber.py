@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 router = Router(name="mynumber")
 
 
+def _display_name(app: Application) -> str:
+    from ..services.decisions import _get_display_name
+
+    return _get_display_name(app)
+
+
 async def show_status(
     message: Message,
     app: Application,
@@ -45,11 +51,16 @@ async def show_status(
     t = texts.T(lang)
     if config is not None:
         if app.status == STATUS_APPROVED and app.reg_number is not None:
-            text = texts.approved_for_tenant(lang, config, app.reg_number)
+            text = texts.approved_for_tenant(
+                lang, config, app.reg_number,
+                name=_display_name(app), plate=app.plate, direction=app.direction,
+            )
         elif app.status == STATUS_PENDING:
             text = t.STATUS_PENDING
         else:
-            text = texts.rejected_for_tenant(lang, config)
+            text = texts.rejected_for_tenant(
+                lang, config, name=_display_name(app), plate=app.plate, direction=app.direction
+            )
     else:
         # No tenant context (legacy callers only).  Answer with the bare status
         # rather than another event's dates and channel link.

@@ -118,6 +118,7 @@ def test_a_form_survives_a_worker_restart_and_continues():
             )
             if directions:
                 await harness.tap(USER, f"direction:{directions[0].id}")
+                await harness.tap(USER, "dirdone", text="directions")
             key = StorageKey(bot_id=harness.bot.id, chat_id=USER, user_id=USER)
             assert await harness.dispatcher.storage.get_state(key) == Registration.photos.state
 

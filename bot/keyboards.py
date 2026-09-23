@@ -19,6 +19,8 @@ CB_LANG = "lang"
 CB_COUNTRY = "country"
 CB_DIRECTION = "direction"
 CB_SUB_DIRECTION = "subdirection"
+CB_DIRECTIONS_DONE = "dirdone"
+CB_DIRECTIONS_BACK = "dirback"
 CB_MODS_DONE = "modsdone"
 CB_APPROVE = "approve"
 CB_REJECT = "reject"
@@ -67,31 +69,51 @@ def direction_keyboard(lang: str) -> InlineKeyboardMarkup:
 
 
 def direction_keyboard_from_db(
-    directions: list[Direction], lang: str, *, parent_id: Optional[int] = None
+    directions: list[Direction],
+    lang: str,
+    *,
+    parent_id: Optional[int] = None,
+    selected: Optional[list[int]] = None,
+    children_by_parent: Optional[dict[int, list[int]]] = None,
 ) -> InlineKeyboardMarkup:
-    """Build inline keyboard from DB directions, filtered by parent_id.
+    """Build the direction menu from DB directions (multi-select aware).
 
-    - When ``parent_id`` is None, shows root directions.
-    - When ``parent_id`` is set, shows its children (podnapravleniya).
-    - Callback data uses DB id: ``direction:<id>`` for roots,
+    - ``parent_id`` None → root directions; otherwise that parent's children.
+    - Callback data uses DB ids: ``direction:<id>`` for roots,
       ``subdirection:<parent_id>:<child_id>`` for children.
+    - ``selected`` (leaf ids already chosen) are left out of the menu — the menu
+      reopens after every pick with only what can still be chosen.  A root is
+      left out once it is picked (no children) or all its children are.
+    - When something is selected a «Готово» button finishes the choice; inside
+      a parent a «Назад» button returns to the root menu.
     """
+    t = texts.T(lang)
+    chosen = set(selected or [])
+    kids = children_by_parent or {}
     builder = InlineKeyboardBuilder()
-    # Filter
     if parent_id is None:
         filtered = [d for d in directions if d.parent_id is None and d.is_active]
     else:
         filtered = [d for d in directions if d.parent_id == parent_id and d.is_active]
-    # Sort by sort_order
     filtered = sorted(filtered, key=lambda d: (d.sort_order, d.id))
+    shown = 0
     for d in filtered:
+        if d.id in chosen:
+            continue
+        if parent_id is None and d.id in kids and kids[d.id] and all(k in chosen for k in kids[d.id]):
+            continue
         label = d.label_uz if lang == "uz" else d.label_ru
         label = label or d.canonical
         if parent_id is None:
             builder.button(text=label, callback_data=f"{CB_DIRECTION}:{d.id}")
         else:
             builder.button(text=label, callback_data=f"{CB_SUB_DIRECTION}:{parent_id}:{d.id}")
+        shown += 1
     builder.adjust(2)
+    if parent_id is not None:
+        builder.row(InlineKeyboardButton(text=t.BTN_DIRECTIONS_BACK, callback_data=CB_DIRECTIONS_BACK))
+    if chosen:
+        builder.row(InlineKeyboardButton(text=t.BTN_DIRECTIONS_DONE, callback_data=CB_DIRECTIONS_DONE))
     return builder.as_markup()
 
 

@@ -71,6 +71,12 @@ class Tenant:
     # Per-tenant switch. A process-wide REGISTRATION_CLOSED secret must not
     # close every bot — that is what made SPL Show answer «завершена».
     registration_closed: bool = False
+    # Full participant-facing texts, editable in the panel.  Empty = the text is
+    # assembled from the event fields above (historic behaviour).
+    approved_text_ru: str = ""
+    approved_text_uz: str = ""
+    rejected_text_ru: str = ""
+    rejected_text_uz: str = ""
 
     @property
     def bot_token(self) -> str:
@@ -176,48 +182,56 @@ _TENANTS_EVENT_MIGRATIONS = [
     ("event_note_text_ru", "ALTER TABLE tenants ADD COLUMN event_note_text_ru TEXT NOT NULL DEFAULT ''"),
     ("event_note_text_uz", "ALTER TABLE tenants ADD COLUMN event_note_text_uz TEXT NOT NULL DEFAULT ''"),
     ("registration_closed", "ALTER TABLE tenants ADD COLUMN registration_closed INTEGER NOT NULL DEFAULT 0"),
+    ("approved_text_ru", "ALTER TABLE tenants ADD COLUMN approved_text_ru TEXT NOT NULL DEFAULT ''"),
+    ("approved_text_uz", "ALTER TABLE tenants ADD COLUMN approved_text_uz TEXT NOT NULL DEFAULT ''"),
+    ("rejected_text_ru", "ALTER TABLE tenants ADD COLUMN rejected_text_ru TEXT NOT NULL DEFAULT ''"),
+    ("rejected_text_uz", "ALTER TABLE tenants ADD COLUMN rejected_text_uz TEXT NOT NULL DEFAULT ''"),
 ]
 
-# SPL Show, Tashkent INDEX. Participant entry 2 October 17:00-22:00, participants
-# next to their cars on 3 October from 09:00 (confirmed by the team).
-# Applied when the splshow tenant exists and a field is still empty or still
-# holds an outdated schedule. A custom value is left alone.
+# Editable message templates (see bot.texts.render_template for placeholders).
+MESSAGE_TEMPLATE_FIELDS = (
+    "approved_text_ru", "approved_text_uz", "rejected_text_ru", "rejected_text_uz",
+)
+
+# SPL Show, Tashkent INDEX.
 #
-# There is deliberately **no** guest date for SPL: the client's rule is
-# "hozircha faqat uchastniklar uchun" (only registered participants for now), so
-# the rejection message stays neutral. Filling "Дата для гостей" in the panel
-# switches the guest invitation back on for that tenant.
+# Only the venue is seeded.  The arrival date/time and the participant note used
+# to be seeded too — and re-seeded on *every* startup: an empty field was filled
+# again, and any arrival date naming 3 October was "corrected" back to the 2nd.
+# The client reported «после одобрения приходит сообщение с неправильными датами,
+# временем» and could not fix it in the panel, because the next restart put the
+# old values back.  Dates are now whatever the panel says, and nothing else.
 SPL_EVENT_COPY = {
-    "event_date_text_ru": "02 октября 2026 с 17:00 до 22:00",
-    "event_date_text_uz": "02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
     "event_venue_text_ru": "Tashkent INDEX",
     "event_venue_text_uz": "Tashkent INDEX",
-    "event_note_text_ru": (
-        "Площадка — Tashkent INDEX. "
-        "03 октября 2026 с 09:00 участники должны находиться рядом со своими автомобилями."
-    ),
-    "event_note_text_uz": (
-        "Maydon — Tashkent INDEX. "
-        "Tadbir ishtirokchilari 03-oktyabr 2026 kuni soat 09:00 dan boshlab "
-        "avtomobillari yonida bo‘lishlari shart."
-    ),
 }
-_SPL_STALE_EVENT_VALUES = frozenset({
-    "",
-    "11 сентября 2026 с 10:00 до 19:00",
-    "11-sentyabr 2026, 10:00 dan 19:00 gacha",
-    "SOF EXPO",
-    "12 и 13 сентября с 10:00",
-    "12 va 13-sentyabr, 10:00 dan",
-    # First SPL draft, before the client confirmed 17:00–22:00 / guest date.
+
+# Every schedule value an earlier build of this bot seeded (or migrated to) for
+# SPL.  The one-time migration below clears these — and only these — from the
+# SPL tenant, so the wrong date/time disappears from the approval message and
+# the ticket while anything typed by hand in the panel is kept.
+_SPL_SEEDED_SCHEDULE_VALUES = frozenset({
+    "02 октября 2026 с 17:00 до 22:00",
+    "02-oktyabr 2026, soat 17:00 dan 22:00 gacha",
     "2 октября до 22:00",
     "2-oktyabr soat 22:00 gacha",
-    # Guest invitation of the previous SPL seed — no guests for SPL (the team
-    # confirmed "only participants"), so the field is cleared instead.
+    "11 сентября 2026 с 10:00 до 19:00",
+    "11-sentyabr 2026, 10:00 dan 19:00 gacha",
+    "12 и 13 сентября с 10:00",
+    "12 va 13-sentyabr, 10:00 dan",
     "03 октября 2026 с 12:00",
     "03-oktyabr 2026, soat 12:00 dan",
     "3 октября с 12:00",
     "3-oktyabr, soat 12:00 dan",
+    (
+        "Площадка — Tashkent INDEX. "
+        "03 октября 2026 с 09:00 участники должны находиться рядом со своими автомобилями."
+    ),
+    (
+        "Maydon — Tashkent INDEX. "
+        "Tadbir ishtirokchilari 03-oktyabr 2026 kuni soat 09:00 dan boshlab "
+        "avtomobillari yonida bo‘lishlari shart."
+    ),
     (
         "Начало шоу — 3 октября в 12:00, Tashkent INDEX. "
         "3 октября с 09:00 участники должны находиться рядом со своими автомобилями."
@@ -228,23 +242,31 @@ _SPL_STALE_EVENT_VALUES = frozenset({
         "avtomobillari yonida bo‘lishlari shart."
     ),
 })
-# Event fields that must be emptied for SPL while they still hold one of the
-# values above (currently: the guest invitation nobody wants yet).
+SPL_SCHEDULE_FIELDS = (
+    "event_date_text_ru", "event_date_text_uz", "event_note_text_ru", "event_note_text_uz",
+)
+# SPL is "only registered participants": a guest date is what put an event time
+# into the rejection message («при отклонении — неправильное время»).
 SPL_CLEARED_EVENT_FIELDS = ("event_guest_date_text_ru", "event_guest_date_text_uz")
+# Bumped when the SPL one-time migration changes; stored per tenant in app_meta.
+SPL_MIGRATION_KEY = "spl_messages_2026_09"
 _SPL_SLUGS = frozenset({"splshow", "spl", "spl-show"})
 _SPL_NAMES = frozenset({"spl show", "spl"})
 
-# «Заезд показывает 3 октября, а на самом деле 2» — the SPL Show arrival is
-# 2 October 17:00–22:00 (the *show* day is the 3rd: that is what the participant
-# note says).  A stored arrival date naming the 3rd is wrong no matter how it got
-# there — the panel, an older seed, a copy/paste — and the client reads it in the
-# first line of the approval.  The value is corrected on startup, with a log
-# line, instead of waiting for somebody to find the right field in the panel.
 _THIRD_OF_OCTOBER = re.compile(
     r"(?<![\d])0?3\s*[.\-/]?\s*(?:0?10(?:[.\-/]\s*\d{2,4})?|октябр\w*|окт\w*|oktyabr\w*|okt\w*)",
     re.IGNORECASE,
 )
-SPL_ARRIVAL_FIELDS = ("event_date_text_ru", "event_date_text_uz")
+
+# «Везде нужно изменить Spl Show на SPL Show» — the brand is written in capitals.
+_SPL_WORD = re.compile(r"\bspl\b", re.IGNORECASE)
+
+
+def normalize_spl_brand(text: str) -> str:
+    """``Spl Show`` / ``spl show`` → ``SPL Show`` (only the word "SPL" changes)."""
+    if not text:
+        return text
+    return _SPL_WORD.sub("SPL", text)
 
 
 def mentions_third_of_october(text: str) -> bool:
@@ -287,29 +309,35 @@ SPL_TUNING_CHILDREN = [
     {"canonical": "Тюнинг — Т2 Профессионал", "label_ru": "Т2 Профессионал", "label_uz": "T2 Professional", "slug": "tuning_t2_pro", "sort": 1},
 ]
 
-# The four SPL Avtozvuk categories the participant must choose from.
+# The SPL Avtozvuk categories, as confirmed by the client (September 2026).
 SPL_AUTOSOUND_CHILDREN = [
-    {"canonical": "SPL Автозвук — SPL Front", "label_ru": "SPL Front", "label_uz": "SPL Front", "slug": "spl_front", "sort": 0},
-    {"canonical": "SPL Автозвук — SPL Тыл", "label_ru": "SPL Тыл", "label_uz": "SPL Orqa", "slug": "spl_rear", "sort": 1},
-    {
-        "canonical": "SPL Автозвук — SPL Game (129/139/149)",
-        "label_ru": "SPL Game (129/139/149)",
-        "label_uz": "SPL Game (129/139/149)",
-        "slug": "spl_game",
-        "sort": 2,
-    },
-    {
-        "canonical": "SPL Автозвук — SPL Sport / SPL Show",
-        "label_ru": "SPL Sport / SPL Show",
-        "label_uz": "SPL Sport / SPL Show",
-        "slug": "spl_sport_show",
-        "sort": 3,
-    },
+    {"canonical": "SPL Автозвук — SPL Sport Багажник 2К", "label_ru": "SPL Sport Багажник 2К", "label_uz": "SPL Sport Bagajnik 2K", "slug": "spl_sport_trunk_2k", "sort": 0},
+    {"canonical": "SPL Автозвук — SPL Sport Багажник 4К", "label_ru": "SPL Sport Багажник 4К", "label_uz": "SPL Sport Bagajnik 4K", "slug": "spl_sport_trunk_4k", "sort": 1},
+    {"canonical": "SPL Автозвук — SPL Sport Максимум", "label_ru": "SPL Sport Максимум", "label_uz": "SPL Sport Maksimum", "slug": "spl_sport_max", "sort": 2},
+    {"canonical": "SPL Автозвук — SPL Sport Салон", "label_ru": "SPL Sport Салон", "label_uz": "SPL Sport Salon", "slug": "spl_sport_salon", "sort": 3},
+    {"canonical": "SPL Автозвук — SPL Show Лайт", "label_ru": "SPL Show Лайт", "label_uz": "SPL Show Layt", "slug": "spl_show_light", "sort": 4},
+    {"canonical": "SPL Автозвук — SPL Show Стандарт", "label_ru": "SPL Show Стандарт", "label_uz": "SPL Show Standart", "slug": "spl_show_standard", "sort": 5},
+    {"canonical": "SPL Автозвук — SPL Show Профи", "label_ru": "SPL Show Профи", "label_uz": "SPL Show Profi", "slug": "spl_show_pro", "sort": 6},
+    {"canonical": "SPL Автозвук — SPL Show Полубронь", "label_ru": "SPL Show Полубронь", "label_uz": "SPL Show Polubron", "slug": "spl_show_halfarmor", "sort": 7},
+    {"canonical": "SPL Автозвук — SPL Front Лайт", "label_ru": "SPL Front Лайт", "label_uz": "SPL Front Layt", "slug": "spl_front_light", "sort": 8},
+    {"canonical": "SPL Автозвук — SPL Front Стандарт", "label_ru": "SPL Front Стандарт", "label_uz": "SPL Front Standart", "slug": "spl_front_standard", "sort": 9},
+    {"canonical": "SPL Автозвук — SPL Front Максимум", "label_ru": "SPL Front Максимум", "label_uz": "SPL Front Maksimum", "slug": "spl_front_max", "sort": 10},
+    {"canonical": "SPL Автозвук — SPL Тыл Стандарт", "label_ru": "SPL Тыл Стандарт", "label_uz": "SPL Orqa Standart", "slug": "spl_rear_standard", "sort": 11},
+    {"canonical": "SPL Автозвук — SPL Тыл Максимум", "label_ru": "SPL Тыл Максимум", "label_uz": "SPL Orqa Maksimum", "slug": "spl_rear_max", "sort": 12},
+    {"canonical": "SPL Автозвук — SPL Game 129.99", "label_ru": "SPL Game 129.99", "label_uz": "SPL Game 129.99", "slug": "spl_game_129", "sort": 13},
+    {"canonical": "SPL Автозвук — SPL Game 139.99", "label_ru": "SPL Game 139.99", "label_uz": "SPL Game 139.99", "slug": "spl_game_139", "sort": 14},
+    {"canonical": "SPL Автозвук — SPL Game 149.99", "label_ru": "SPL Game 149.99", "label_uz": "SPL Game 149.99", "slug": "spl_game_149", "sort": 15},
 ]
 
-# Placeholder children shipped before the client confirmed the list above.
-# A deployment whose SPL Avtozvuk children still match this seed exactly is
-# migrated to the confirmed four; hand-edited lists are left untouched.
+# Lists shipped by earlier builds.  A deployment whose SPL Avtozvuk children
+# still match one of them exactly is migrated to the list above; a list edited
+# by hand in the panel is left alone.
+SPL_AUTOSOUND_PREVIOUS = [
+    {"slug": "spl_front", "canonical": "SPL Автозвук — SPL Front"},
+    {"slug": "spl_rear", "canonical": "SPL Автозвук — SPL Тыл"},
+    {"slug": "spl_game", "canonical": "SPL Автозвук — SPL Game (129/139/149)"},
+    {"slug": "spl_sport_show", "canonical": "SPL Автозвук — SPL Sport / SPL Show"},
+]
 SPL_AUTOSOUND_STALE = [
     {"slug": "spl", "canonical": "SPL Автозвук — SPL"},
     {"slug": "spl_t1", "canonical": "SPL Автозвук — SPL Т1"},
@@ -482,6 +510,10 @@ def _row_to_tenant(row: sqlite3.Row) -> Tenant:
         event_note_text_ru=str(row["event_note_text_ru"] or "") if "event_note_text_ru" in keys else "",
         event_note_text_uz=str(row["event_note_text_uz"] or "") if "event_note_text_uz" in keys else "",
         registration_closed=bool(row["registration_closed"]) if "registration_closed" in keys else False,
+        **{
+            key: (str(row[key] or "") if key in keys else "")
+            for key in MESSAGE_TEMPLATE_FIELDS
+        },
     )
 
 
@@ -830,11 +862,36 @@ class Database:
                 conn.execute(f"UPDATE tenants SET {set_clause}, updated_at = ? WHERE id = ?", params)
         self._seed_spl_event(conn)
 
-    def _seed_spl_event(self, conn: sqlite3.Connection) -> None:
-        """Fill SPL Show schedule when the tenant exists and fields are still stale.
+    @staticmethod
+    def _meta_done(conn: sqlite3.Connection, key: str) -> bool:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        return conn.execute("SELECT 1 FROM app_meta WHERE key = ?", (key,)).fetchone() is not None
 
-        Does not reopen a tenant an admin has explicitly closed, and does not
-        overwrite a custom date/venue/note.
+    @staticmethod
+    def _meta_mark(conn: sqlite3.Connection, key: str) -> None:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", (key, _now())
+        )
+
+    def _seed_spl_event(self, conn: sqlite3.Connection) -> None:
+        """One-time clean-up of the SPL Show schedule and branding.
+
+        Earlier builds re-seeded the SPL arrival date and note on **every**
+        startup, so a correction typed in the panel was silently overwritten by
+        the next deploy — the reported «неправильные даты, время» after approval.
+        Now, once per tenant (tracked in ``app_meta``):
+
+        * schedule values that an earlier build wrote are cleared — the approval
+          then carries no date/time until the team types the real one in the
+          panel; values typed by hand are kept;
+        * the guest date is cleared (SPL is participants only), which keeps any
+          event time out of the rejection message;
+        * an empty venue gets «Tashkent INDEX»;
+        * «Spl Show» in the tenant name is written «SPL Show».
+
+        After that the panel is the only source of truth for these fields.
         """
         if not self._table_exists(conn, "tenants"):
             return
@@ -842,56 +899,45 @@ class Database:
         for row in conn.execute("SELECT * FROM tenants").fetchall():
             if not is_spl_tenant(str(row["slug"] or ""), str(row["name"] or "")):
                 continue
-            updates: dict[str, str] = {}
-            for key, new_val in SPL_EVENT_COPY.items():
-                if key not in cols:
-                    continue
-                try:
-                    current = str(row[key] or "").strip()
-                except (KeyError, IndexError):
-                    current = ""
-                if current in _SPL_STALE_EVENT_VALUES:
-                    updates[key] = new_val
-            for key in SPL_CLEARED_EVENT_FIELDS:
-                if key not in cols or key in updates:
-                    continue
-                try:
-                    current = str(row[key] or "").strip()
-                except (KeyError, IndexError):
-                    current = ""
-                if current in _SPL_STALE_EVENT_VALUES:
-                    updates[key] = ""
-            # The arrival date is the one line the client reads first («Заезд
-            # участников — …») and prints on the ticket, so a 3-October value is
-            # corrected even when it is not one of the known stale strings: a
-            # hand-typed value in the panel is exactly how it got there.
-            for key in SPL_ARRIVAL_FIELDS:
-                if key not in cols or key in updates:
-                    continue
-                try:
-                    current = str(row[key] or "").strip()
-                except (KeyError, IndexError):
-                    current = ""
-                if current and mentions_third_of_october(current):
-                    correct = SPL_EVENT_COPY[key]
-                    if current != correct:
-                        logger.warning(
-                            "[%s] Arrival date %r names 3 October — the SPL Show arrival is "
-                            "2 October; correcting it to %r (change it in the panel if the "
-                            "client confirms otherwise)",
-                            row["slug"],
-                            current,
-                            correct,
-                        )
-                    updates[key] = correct
-            if not updates:
+            key = f"{SPL_MIGRATION_KEY}:{int(row['id'])}"
+            if self._meta_done(conn, key):
                 continue
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            params = list(updates.values()) + [_now(), int(row["id"])]
-            conn.execute(
-                f"UPDATE tenants SET {set_clause}, updated_at = ? WHERE id = ?",
-                params,
-            )
+            updates: dict[str, str] = {}
+
+            def current(name: str) -> str:
+                try:
+                    return str(row[name] or "").strip()
+                except (KeyError, IndexError):
+                    return ""
+
+            for name in SPL_SCHEDULE_FIELDS + SPL_CLEARED_EVENT_FIELDS:
+                if name not in cols:
+                    continue
+                value = current(name)
+                seeded = value in _SPL_SEEDED_SCHEDULE_VALUES
+                if name in SPL_CLEARED_EVENT_FIELDS and value:
+                    seeded = True
+                if seeded:
+                    updates[name] = ""
+            for name, value in SPL_EVENT_COPY.items():
+                if name in cols and not current(name):
+                    updates[name] = value
+            name_fixed = normalize_spl_brand(str(row["name"] or ""))
+            if name_fixed != row["name"]:
+                updates["name"] = name_fixed
+            if updates:
+                logger.warning(
+                    "[%s] SPL one-time migration: %s",
+                    row["slug"],
+                    ", ".join(f"{k}: {current(k)!r} -> {v!r}" for k, v in updates.items()),
+                )
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                params = list(updates.values()) + [_now(), int(row["id"])]
+                conn.execute(
+                    f"UPDATE tenants SET {set_clause}, updated_at = ? WHERE id = ?",
+                    params,
+                )
+            self._meta_mark(conn, key)
 
     def _migrate_applications(self, conn: sqlite3.Connection, default_tenant_id: int) -> None:
         if not self._table_exists(conn, "applications"):
@@ -1054,8 +1100,7 @@ class Database:
 
         Roots are only created when missing, so an admin's rename or reorder is
         kept.  Children are synced by :meth:`_sync_direction_children` directly
-        below, which also migrates the placeholder SPL Avtozvuk list that was
-        shipped before the client confirmed the four categories.
+        below; the SPL Avtozvuk categories by :meth:`_sync_autosound_children`.
         """
         root_ids: dict[str, int] = {}
         for root in SPL_ROOT_DIRECTIONS:
@@ -1065,13 +1110,34 @@ class Database:
         self._sync_direction_children(
             conn, tenant_id, root_ids.get("Тюнинг"), SPL_TUNING_CHILDREN
         )
-        self._sync_direction_children(
-            conn,
-            tenant_id,
-            root_ids.get("SPL Автозвук"),
-            SPL_AUTOSOUND_CHILDREN,
-            stale=SPL_AUTOSOUND_STALE,
+        self._sync_autosound_children(conn, tenant_id, root_ids.get("SPL Автозвук"))
+
+    @staticmethod
+    def _sync_autosound_children(
+        conn: sqlite3.Connection, tenant_id: int, parent_id: Optional[int]
+    ) -> None:
+        """Bring the SPL Avtozvuk categories to the confirmed list (idempotent).
+
+        The previous rule only replaced the list when it matched an old seed
+        *exactly*, so one renamed or switched-off category kept the whole stale
+        list forever.  Now:
+
+        * every category an earlier build shipped is switched off (the row is
+          kept, so old applications still show where they came from);
+        * every confirmed category that does not exist yet is inserted — one an
+          admin switched off in the panel exists, and stays off;
+        * categories added by hand in the panel are not touched.
+        """
+        if not parent_id:
+            return
+        old_slugs = [s["slug"] for s in (*SPL_AUTOSOUND_PREVIOUS, *SPL_AUTOSOUND_STALE)]
+        placeholders = ",".join("?" for _ in old_slugs)
+        conn.execute(
+            f"UPDATE directions SET is_active = 0, updated_at = ? "
+            f"WHERE tenant_id = ? AND parent_id = ? AND is_active = 1 AND slug IN ({placeholders})",
+            (_now(), tenant_id, parent_id, *old_slugs),
         )
+        Database._insert_directions(conn, tenant_id, parent_id, SPL_AUTOSOUND_CHILDREN)
 
     def _ensure_direction(
         self,
@@ -1274,6 +1340,10 @@ class Database:
         event_note_text_ru: str = "",
         event_note_text_uz: str = "",
         registration_closed: bool = False,
+        approved_text_ru: str = "",
+        approved_text_uz: str = "",
+        rejected_text_ru: str = "",
+        rejected_text_uz: str = "",
     ) -> Tenant:
         slug = self._clean_slug(slug)
         name = (name or "").strip()
@@ -1284,23 +1354,11 @@ class Database:
         except (TypeError, ValueError) as exc:
             raise ValueError("admin_chat_id must be an integer") from exc
         if is_spl_tenant(slug, name):
-            defaults = SPL_EVENT_COPY
-            if not (event_date_text_ru or "").strip():
-                event_date_text_ru = defaults.get("event_date_text_ru", event_date_text_ru)
-            if not (event_date_text_uz or "").strip():
-                event_date_text_uz = defaults.get("event_date_text_uz", event_date_text_uz)
+            name = normalize_spl_brand(name)
             if not (event_venue_text_ru or "").strip():
-                event_venue_text_ru = defaults.get("event_venue_text_ru", event_venue_text_ru)
+                event_venue_text_ru = SPL_EVENT_COPY["event_venue_text_ru"]
             if not (event_venue_text_uz or "").strip():
-                event_venue_text_uz = defaults.get("event_venue_text_uz", event_venue_text_uz)
-            if not (event_guest_date_text_ru or "").strip():
-                event_guest_date_text_ru = defaults.get("event_guest_date_text_ru", "")
-            if not (event_guest_date_text_uz or "").strip():
-                event_guest_date_text_uz = defaults.get("event_guest_date_text_uz", "")
-            if not (event_note_text_ru or "").strip():
-                event_note_text_ru = defaults.get("event_note_text_ru", event_note_text_ru)
-            if not (event_note_text_uz or "").strip():
-                event_note_text_uz = defaults.get("event_note_text_uz", event_note_text_uz)
+                event_venue_text_uz = SPL_EVENT_COPY["event_venue_text_uz"]
         now = _now()
         password = (admin_password or "").strip()
         if password and not is_password_hash(password):
@@ -1335,6 +1393,18 @@ class Database:
                     self._to_bool(registration_closed),
                 ),
             )
+            templates = {
+                "approved_text_ru": approved_text_ru,
+                "approved_text_uz": approved_text_uz,
+                "rejected_text_ru": rejected_text_ru,
+                "rejected_text_uz": rejected_text_uz,
+            }
+            templates = {k: (v or "").strip() for k, v in templates.items() if (v or "").strip()}
+            if templates:
+                conn.execute(
+                    f"UPDATE tenants SET {', '.join(f'{k} = ?' for k in templates)} WHERE id = ?",
+                    [*templates.values(), cur.lastrowid],
+                )
             row = conn.execute("SELECT * FROM tenants WHERE id = ?", (cur.lastrowid,)).fetchone()
             return _row_to_tenant(row)
 
@@ -1346,6 +1416,7 @@ class Database:
             "event_venue_text_ru", "event_venue_text_uz",
             "event_guest_date_text_ru", "event_guest_date_text_uz",
             "event_note_text_ru", "event_note_text_uz",
+            *MESSAGE_TEMPLATE_FIELDS,
         }
         with self._connect() as conn:
             tenant_id = self._resolve_tenant_id(conn, identifier)
@@ -1356,7 +1427,8 @@ class Database:
                     continue
                 value = changes[key]
                 if key == "name":
-                    value = str(value or "").strip()
+                    # «Spl Show» typed in the panel is still written «SPL Show».
+                    value = normalize_spl_brand(str(value or "").strip())
                     if not value:
                         raise ValueError("Tenant name is required")
                 elif key in {"is_active", "registration_closed"}:

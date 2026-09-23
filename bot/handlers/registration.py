@@ -308,9 +308,32 @@ async def set_plate(message: Message, state: FSMContext, config: Config | Tenant
         mod_paths=[],
         direction=None,
         direction_id=None,
+        direction_ids=[],
         direction_parent_id=None,
     )
     await _ask_direction(message, state, lang, config, db)
+
+
+MAX_DIRECTIONS = texts.MAX_DIRECTIONS
+
+
+def _children_map(directions: list) -> dict[int, list[int]]:
+    """Parent id → its active child ids (used to hide fully-picked parents)."""
+    out: dict[int, list[int]] = {}
+    for d in directions:
+        if d.parent_id is not None and d.is_active:
+            out.setdefault(d.parent_id, []).append(d.id)
+    return out
+
+
+def _selected_ids(data: dict, directions: list) -> list[int]:
+    """Leaf ids picked so far that still exist (a deleted one is dropped)."""
+    known = {d.id for d in directions}
+    return [i for i in (data.get("direction_ids") or []) if i in known]
+
+
+def _selected_lines(directions: list, ids: list[int], lang: str) -> str:
+    return "\n".join(f"• {localized_final_choice(directions, i, lang)}" for i in ids)
 
 
 async def _ask_direction(
@@ -323,13 +346,19 @@ async def _ask_direction(
     parent_id: Optional[int] = None,
     directions: Optional[list] = None,
 ) -> None:
-    """Ask for the direction (or its sub-direction when ``parent_id`` is given)."""
+    """Open the direction menu (or a parent's categories when ``parent_id`` is set).
+
+    The participant may pick up to :data:`MAX_DIRECTIONS` categories: the menu
+    reopens after every pick, without what is already chosen, and «Готово»
+    finishes the choice.
+    """
+    t = texts.T(lang)
     if directions is None:
         directions = await _load_tenant_directions(db, config)
     if not directions:
         # No DB directions for this tenant: keep the historic static keyboard
-        # (old single-tenant installs).  For any other tenant this is a setup
-        # mistake worth seeing in the log — the list below is Promotors'.
+        # (old single-tenant installs, single choice).  For any other tenant this
+        # is a setup mistake worth seeing in the log — the list below is Promotors'.
         if getattr(config, "tenant_slug", "promotors") != "promotors":
             logger.warning(
                 "Tenant %s has no directions in the database — falling back to the "
@@ -338,26 +367,44 @@ async def _ask_direction(
             )
         await state.set_state(Registration.direction)
         await message.answer(
-            texts.T(lang).ASK_DIRECTION, reply_markup=keyboards.direction_keyboard(lang)
+            t.ASK_DIRECTION.format(max=MAX_DIRECTIONS),
+            reply_markup=keyboards.direction_keyboard(lang),
         )
         return
 
+    data = await state.get_data()
+    selected = _selected_ids(data, directions)
     if parent_id is not None:
         parent = find_direction_by_id(directions, parent_id)
         prompt = (
-            texts.T(lang).ASK_SUB_DIRECTION.format(parent=label_for(parent, lang))
+            t.ASK_SUB_DIRECTION.format(parent=label_for(parent, lang), max=MAX_DIRECTIONS)
             if parent is not None
-            else texts.T(lang).ASK_SUB_DIRECTION_PLAIN
+            else t.ASK_SUB_DIRECTION_PLAIN
         )
+        await state.update_data(direction_parent_id=parent_id)
         await state.set_state(Registration.sub_direction)
     else:
-        prompt = texts.T(lang).ASK_DIRECTION
+        prompt = t.ASK_DIRECTION.format(max=MAX_DIRECTIONS)
+        await state.update_data(direction_parent_id=None)
         await state.set_state(Registration.direction)
+    if selected:
+        prompt = (
+            t.DIRECTIONS_SELECTED.format(
+                n=len(selected), max=MAX_DIRECTIONS,
+                items=_selected_lines(directions, selected, lang),
+            )
+            + "\n\n" + t.DIRECTIONS_MORE_HINT.format(done=t.BTN_DIRECTIONS_DONE)
+            + "\n\n" + prompt
+        )
 
     await message.answer(
         prompt,
         reply_markup=keyboards.direction_keyboard_from_db(
-            directions, lang=lang, parent_id=parent_id
+            directions,
+            lang=lang,
+            parent_id=parent_id,
+            selected=selected,
+            children_by_parent=_children_map(directions),
         ),
     )
 
@@ -373,6 +420,87 @@ def _direction_banner(direction: Direction, config: Config | TenantConfig) -> Op
     return direction_image_path(direction.canonical, scope)
 
 
+async def _add_direction(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    lang: str,
+    config: Config | TenantConfig,
+    db: Database,
+    directions: list,
+    leaf_id: int,
+) -> bool:
+    """Add one picked leaf; reopen the menu, or finish at the limit."""
+    leaf = find_direction_by_id(directions, leaf_id)
+    if leaf is None or not format_final_choice(directions, leaf_id):
+        return False
+    data = await state.get_data()
+    selected = _selected_ids(data, directions)
+    if leaf_id not in selected:
+        if len(selected) >= MAX_DIRECTIONS:
+            await message.answer(texts.T(lang).DIRECTION_LIMIT.format(max=MAX_DIRECTIONS))
+            await _finish_directions(message, state, bot, lang, config, directions)
+            return True
+        selected.append(leaf_id)
+    await state.update_data(direction_ids=selected)
+    if len(selected) >= MAX_DIRECTIONS:
+        await _finish_directions(message, state, bot, lang, config, directions)
+        return True
+    # Reopen the menu.  Inside a parent that still has categories left, stay
+    # there — SPL Avtozvuk has 16 of them and most people pick several.
+    parent_id = leaf.parent_id
+    if parent_id is not None:
+        remaining = [c for c in children_of(directions, parent_id) if c.id not in selected]
+        if not remaining:
+            parent_id = None
+    await _ask_direction(
+        message, state, lang, config, db, parent_id=parent_id, directions=directions
+    )
+    return True
+
+
+async def _finish_directions(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    lang: str,
+    config: Config | TenantConfig,
+    directions: list,
+) -> bool:
+    """Store the chosen categories and move on to the photos."""
+    data = await state.get_data()
+    selected = _selected_ids(data, directions)
+    if not selected:
+        return False
+    stored = texts.join_directions([format_final_choice(directions, i) for i in selected])
+    await state.update_data(
+        direction=stored,
+        direction_id=selected[0],
+        direction_ids=selected,
+        direction_parent_id=None,
+    )
+    await state.set_state(Registration.photos)
+
+    t = texts.T(lang)
+    if len(selected) == 1:
+        picked = t.DIRECTION_PICKED.format(
+            direction=localized_final_choice(directions, selected[0], lang)
+        )
+    else:
+        picked = t.DIRECTIONS_PICKED.format(items=_selected_lines(directions, selected, lang))
+    first = find_direction_by_id(directions, selected[0])
+    banner = _direction_banner(first, config) if first is not None else None
+    if banner:
+        # Sent through the file_id cache: the banner is uploaded once per bot,
+        # not once per registration.
+        if not await media.send_cached_photo(bot, message.chat.id, banner, picked):
+            await message.answer(picked)
+    else:
+        await message.answer(picked)
+    await message.answer(t.PHOTO_PROMPTS[0])
+    return True
+
+
 async def _accept_direction(
     message: Message,
     state: FSMContext,
@@ -381,34 +509,13 @@ async def _accept_direction(
     config: Config | TenantConfig,
     directions: list,
     leaf_id: int,
+    db: Database | None = None,
 ) -> bool:
-    """Store a leaf direction and move on to the photos."""
-    leaf = find_direction_by_id(directions, leaf_id)
-    final_str = format_final_choice(directions, leaf_id)
-    if leaf is None or not final_str:
-        return False
-    await state.update_data(
-        direction=final_str, direction_id=leaf.id, direction_parent_id=None
-    )
-    await state.set_state(Registration.photos)
-
-    picked = texts.T(lang).DIRECTION_PICKED.format(
-        direction=localized_final_choice(directions, leaf.id, lang)
-    )
-    banner = _direction_banner(leaf, config)
-    if banner:
-        # Sent through the file_id cache: the banner is uploaded once per bot,
-        # not once per registration (it is a big image and the participant is
-        # waiting for the first photo question).
-        if not await media.send_cached_photo(bot, message.chat.id, banner, picked):
-            await message.answer(picked)
-    else:
-        await message.answer(picked)
-    await message.answer(texts.T(lang).PHOTO_PROMPTS[0])
-    return True
+    """Pick one leaf (kept under its historic name for callers and tests)."""
+    return await _add_direction(message, state, bot, lang, config, db, directions, leaf_id)
 
 
-# --- Direction (right after the plate, before photos) — DB-aware, 2 levels ---
+# --- Direction (right after the plate, before photos) — DB-aware, multi-select ---
 @router.callback_query(Registration.direction, F.data.startswith(f"{keyboards.CB_DIRECTION}:"))
 async def choose_direction(
     query: CallbackQuery,
@@ -428,22 +535,17 @@ async def choose_direction(
         except (TypeError, ValueError):
             dir_id = None
         selected = find_direction_by_id(db_directions, dir_id)
-        if selected is not None:
+        if selected is not None and selected.parent_id is None:
             # Parents with children open the second level.
             if children_of(db_directions, selected.id):
-                await state.update_data(direction_parent_id=selected.id)
-                await state.set_state(Registration.sub_direction)
-                await query.message.answer(
-                    texts.T(lang).ASK_SUB_DIRECTION.format(
-                        parent=label_for(selected, lang)
-                    ),
-                    reply_markup=keyboards.direction_keyboard_from_db(
-                        db_directions, lang=lang, parent_id=selected.id
-                    ),
+                await _ask_direction(
+                    query.message, state, lang, config, db,
+                    parent_id=selected.id, directions=db_directions,
                 )
                 return
             if await _accept_direction(
-                query.message, state, bot, lang, config, db_directions, leaf_id=selected.id
+                query.message, state, bot, lang, config, db_directions,
+                leaf_id=selected.id, db=db,
             ):
                 return
         # The direction was deleted (or the keyboard is stale) — ask again
@@ -453,7 +555,7 @@ async def choose_direction(
         await _ask_direction(query.message, state, lang, config, db, directions=db_directions)
         return
 
-    # Legacy fallback: index into the static DIRECTIONS_CANON list.
+    # Legacy fallback (no DB directions): index into the static list, single choice.
     canonical = raw
     try:
         canonical = texts.DIRECTIONS_CANON[int(raw)]
@@ -466,7 +568,7 @@ async def choose_direction(
     picked = texts.T(lang).DIRECTION_PICKED.format(
         direction=texts.localize_direction(canonical, lang)
     )
-    if banner and not await media.send_cached_photo(
+    if not banner or not await media.send_cached_photo(
         bot, query.message.chat.id, banner, picked
     ):
         await query.message.answer(picked)
@@ -482,7 +584,7 @@ async def choose_sub_direction(
     config: Config | TenantConfig,
     db: Database,
 ) -> None:
-    """Second level: podnapravleniya. Callback format ``subdirection:parent:child``."""
+    """Second level: categories. Callback format ``subdirection:parent:child``."""
     lang = await _lang(state)
     try:
         _, parent_s, child_s = query.data.split(":")
@@ -490,6 +592,7 @@ async def choose_sub_direction(
         child_id = int(child_s)
     except Exception:
         await query.answer()
+        await _repeat_step(query.message, state, lang, config, db)
         return
     await query.answer()
 
@@ -499,7 +602,9 @@ async def choose_sub_direction(
         return
 
     child = find_direction_by_id(db_directions, child_id)
-    if child is None or child.parent_id != parent_id:
+    if child is None or child.parent_id != parent_id or not await _accept_direction(
+        query.message, state, bot, lang, config, db_directions, leaf_id=child_id, db=db
+    ):
         logger.info(
             "Stale sub-direction %s/%s for tenant %s",
             parent_id,
@@ -510,15 +615,43 @@ async def choose_sub_direction(
         await _ask_direction(
             query.message, state, lang, config, db, parent_id=parent_id, directions=db_directions
         )
-        return
 
-    if not await _accept_direction(
-        query.message, state, bot, lang, config, db_directions, leaf_id=child_id
-    ):
-        await query.message.answer(texts.T(lang).STEP_STALE)
-        await _ask_direction(
-            query.message, state, lang, config, db, parent_id=parent_id, directions=db_directions
-        )
+
+@router.callback_query(
+    StateFilter(Registration.direction, Registration.sub_direction),
+    F.data == keyboards.CB_DIRECTIONS_BACK,
+)
+async def directions_back(
+    query: CallbackQuery, state: FSMContext, config: Config | TenantConfig, db: Database
+) -> None:
+    """«Назад» inside a parent: back to the root menu, choices kept."""
+    lang = await _lang(state)
+    await query.answer()
+    await _ask_direction(query.message, state, lang, config, db)
+
+
+@router.callback_query(
+    StateFilter(Registration.direction, Registration.sub_direction),
+    F.data == keyboards.CB_DIRECTIONS_DONE,
+)
+async def directions_done(
+    query: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    config: Config | TenantConfig,
+    db: Database,
+) -> None:
+    """«Готово»: finish with the 1–4 categories picked so far."""
+    lang = await _lang(state)
+    await query.answer()
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001 - the message may be too old to edit
+        logger.debug("Could not clear the directions keyboard", exc_info=True)
+    directions = await _load_tenant_directions(db, config)
+    if not await _finish_directions(query.message, state, bot, lang, config, directions):
+        # Nothing picked (or everything picked was deleted meanwhile).
+        await _ask_direction(query.message, state, lang, config, db, directions=directions)
 
 
 # --- Photos (the four required sides) ---------------------------------------
@@ -1258,10 +1391,11 @@ async def _send_moderation_card(
                 album.add_photo(media=file_id)
             await bot.send_media_group(config.admin_chat_id, media=album.build())
 
+        direction_text = texts.direction_lines(direction)
         card = texts.MODERATION_CARD.format(
             country=country,
             plate=plate,
-            direction=direction,
+            direction=("\n" + direction_text) if "\n" in direction_text else direction_text,
             phone=phone,
             mods=(
                 texts.MODERATION_MODS_COUNT.format(n=len(mod_file_ids))
@@ -1434,6 +1568,16 @@ def create_router() -> Router:
         choose_sub_direction,
         Registration.sub_direction,
         F.data.startswith(f"{keyboards.CB_SUB_DIRECTION}:"),
+    )
+    fresh.callback_query.register(
+        directions_back,
+        StateFilter(Registration.direction, Registration.sub_direction),
+        F.data == keyboards.CB_DIRECTIONS_BACK,
+    )
+    fresh.callback_query.register(
+        directions_done,
+        StateFilter(Registration.direction, Registration.sub_direction),
+        F.data == keyboards.CB_DIRECTIONS_DONE,
     )
     fresh.message.register(collect_photo, Registration.photos, F.photo)
     fresh.message.register(photos_not_a_photo, Registration.photos)

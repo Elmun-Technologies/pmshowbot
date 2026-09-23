@@ -58,45 +58,54 @@ def test_process_flag_does_not_close_any_tenant():
     asyncio.run(run())
 
 
-def test_spl_schedule_is_seeded_and_stale_september_copy_is_replaced():
+def test_spl_schedule_is_not_invented_and_old_seeds_are_cleared_once():
+    """The SPL date/time comes from the panel only.
+
+    Earlier builds re-seeded the arrival date and note on every start, which is
+    how the approval kept arriving with the wrong date and time even after the
+    team corrected it.  Now a new tenant gets the venue only, and a one-time
+    migration clears values an earlier build wrote (hand-typed ones stay).
+    """
     async def run():
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "spl.db")
             key = Fernet.generate_key().decode()
             db = Database(path, encryption_key=key)
             await db.init()
-            created = await db.create_tenant(slug="splshow", name="SPL Show")
+            created = await db.create_tenant(slug="splshow", name="Spl Show")
+            assert created.name == "SPL Show"
             assert created.event_venue_text_ru == "Tashkent INDEX"
-            assert created.event_date_text_ru == "02 октября 2026 с 17:00 до 22:00"
-            # No guest invitation for SPL: "hozircha faqat uchastniklar uchun".
+            assert created.event_date_text_ru == ""
+            assert created.event_note_text_ru == ""
             assert created.event_guest_date_text_ru == ""
-            assert created.event_guest_date_text_uz == ""
-            assert "09:00" in created.event_note_text_ru
-            assert "09:00" in created.event_note_text_uz
-            assert "Tashkent INDEX" in created.event_note_text_ru
             assert created.registration_closed is False
 
-            # Simulate the old README defaults already stored, plus one custom note.
+            # Old seeds already stored, plus one custom note.
             await db.update_tenant(
                 "splshow",
-                event_date_text_ru="11 сентября 2026 с 10:00 до 19:00",
+                event_date_text_ru="02 октября 2026 с 17:00 до 22:00",
                 event_date_text_uz="11-sentyabr 2026, 10:00 dan 19:00 gacha",
-                event_venue_text_ru="SOF EXPO",
-                event_venue_text_uz="SOF EXPO",
                 event_guest_date_text_ru="12 и 13 сентября с 10:00",
                 event_guest_date_text_uz="12 va 13-sentyabr, 10:00 dan",
                 event_note_text_ru="custom note",
             )
             await db.init()
             refreshed = await db.get_tenant("splshow")
-            assert refreshed.event_date_text_ru == SPL_EVENT_COPY["event_date_text_ru"]
-            assert refreshed.event_venue_text_ru == "Tashkent INDEX"
-            # The guest dates of the previous seed are cleared, not replaced.
+            assert refreshed.event_date_text_ru == ""
+            assert refreshed.event_date_text_uz == ""
             assert refreshed.event_guest_date_text_ru == ""
             assert refreshed.event_guest_date_text_uz == ""
-            # A custom instruction is not overwritten.
             assert refreshed.event_note_text_ru == "custom note"
-            assert refreshed.event_note_text_uz == SPL_EVENT_COPY["event_note_text_uz"]
+            assert refreshed.event_venue_text_ru == "Tashkent INDEX"
+
+            # The migration runs once: what the team types afterwards stays,
+            # even if it happens to equal an old seed.
+            await db.update_tenant(
+                "splshow", event_date_text_ru="02 октября 2026 с 17:00 до 22:00"
+            )
+            await db.init()
+            again = await db.get_tenant("splshow")
+            assert again.event_date_text_ru == "02 октября 2026 с 17:00 до 22:00"
 
             # Promotors keeps its own September copy.
             promotors = await db.get_tenant("promotors")
@@ -106,7 +115,7 @@ def test_spl_schedule_is_seeded_and_stale_september_copy_is_replaced():
     asyncio.run(run())
 
 
-def test_approved_message_includes_arrival_show_start_and_car_rule():
+def test_approved_message_carries_exactly_the_panel_schedule():
     tenant = type(
         "T",
         (),
@@ -117,16 +126,28 @@ def test_approved_message_includes_arrival_show_start_and_car_rule():
         },
     )()
     ru = approved_for_tenant("ru", tenant, 7)
-    uz = approved_for_tenant("uz", tenant, 7)
     assert "№7" in ru
-    assert "Заезд участников — " in ru
-    assert "02 октября 2026 с 17:00 до 22:00" in ru
-    assert "Tashkent INDEX" in ru
-    assert "09:00" in ru
-    assert "рядом со своими автомобилями" in ru
-    assert "02-oktyabr 2026" in uz
-    assert "09:00" in uz
-    assert "avtomobillari yonida" in uz
+    # Nothing typed in the panel -> no date or time is invented.
+    assert "Заезд участников" not in ru
+    assert "октябр" not in ru and "09:00" not in ru
+
+    typed = type(
+        "T",
+        (),
+        {
+            "tenant_name": "SPL Show",
+            "channel_url": "https://t.me/splshow",
+            "event_date_text_ru": "2 октября с 18:00",
+            "event_date_text_uz": "2-oktyabr soat 18:00 dan",
+            "event_note_text_ru": "С 08:00 будьте у машин.",
+        },
+    )()
+    ru = approved_for_tenant("ru", typed, 7)
+    uz = approved_for_tenant("uz", typed, 7)
+    assert "Заезд участников — <b>2 октября с 18:00</b>" in ru
+    assert "С 08:00 будьте у машин." in ru
+    assert "2-oktyabr soat 18:00 dan" in uz
+    assert "17:00" not in ru and "22:00" not in ru
     # Empty note must not add a blank operational paragraph for other tenants.
     plain = approved_for_tenant(
         "ru",

@@ -102,6 +102,7 @@ async def _register(harness: BotHarness, user: int = USER, language: str = "ru")
         else:
             continue
         break
+    await harness.tap(user, "dirdone", text="directions")
     for index in range(4):
         await harness.send_photo(user, f"side-{index}")
     await harness.tap(user, "modsdone", text="mods")
@@ -268,13 +269,11 @@ def test_an_undelivered_ticket_is_reported_on_the_card():
     asyncio.run(run())
 
 
-def test_the_spl_arrival_date_that_names_october_third_is_corrected():
-    """«Заезд — 3 октября» on the SPL tenant is corrected to the confirmed date.
+def test_a_hand_typed_spl_date_is_never_rewritten_by_a_restart():
+    """A date typed in the panel survives every redeploy — even «3 октября».
 
-    The client's arrival is 2 October 17:00–22:00 (only the show day is the 3rd).
-    A stored arrival date naming the 3rd — typed in the panel, left over from an
-    older seed — is what the first line of the approval printed, and it cannot be
-    expected that somebody finds the right field while the event is running.
+    The old startup «correction» rewrote any arrival naming the 3rd to the
+    2nd on every boot, so the team could not fix the approval text.
     """
 
     async def run():
@@ -292,30 +291,16 @@ def test_the_spl_arrival_date_that_names_october_third_is_corrected():
                 event_date_text_ru="3 октября 2026 с 18:00",
                 event_date_text_uz="3-oktyabr 2026, soat 18:00 dan",
             )
-            # Every startup runs the seed, like a redeploy does.
-            await db.init()
+            for _ in range(2):
+                await db.init()
             spl = await db.get_tenant(spl.id)
-            assert spl.event_date_text_ru == "02 октября 2026 с 17:00 до 22:00"
-            assert spl.event_date_text_uz.startswith("02-oktyabr 2026")
+            assert spl.event_date_text_ru == "3 октября 2026 с 18:00"
+            assert spl.event_date_text_uz == "3-oktyabr 2026, soat 18:00 dan"
 
-            # An arrival that is *not* the 3rd is a deliberate value: keep it.
             await db.update_tenant(spl.id, event_date_text_ru="01 октября 2026 с 10:00")
             await db.init()
             spl = await db.get_tenant(spl.id)
             assert spl.event_date_text_ru == "01 октября 2026 с 10:00"
-
-            # Another tenant's 3 October is its own event, never rewritten.
-            other = await db.create_tenant(
-                slug="drift",
-                name="Adrenaline Drift",
-                bot_token="123:def",
-                admin_chat_id=-200,
-                admin_password="pw",
-                event_date_text_ru="3 октября 2026 с 18:00",
-            )
-            await db.init()
-            other = await db.get_tenant(other.id)
-            assert other.event_date_text_ru == "3 октября 2026 с 18:00"
 
     asyncio.run(run())
 

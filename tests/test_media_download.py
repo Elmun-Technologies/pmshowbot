@@ -283,6 +283,7 @@ async def walk_to_photo_step(harness: BotHarness) -> None:
     directions = await harness.db.list_directions(tenant_id=harness.tenant.id, active_only=True)
     if directions:
         await harness.tap(USER, f"direction:{directions[0].id}")
+        await harness.tap(USER, "dirdone", text="directions")
     assert (
         await harness.dispatcher.storage.get_state(_key(harness))
         == Registration.photos.state
@@ -390,6 +391,7 @@ def test_all_four_photos_are_written_on_the_volume():
             )
             if directions:
                 await harness.tap(USER, f"direction:{directions[0].id}")
+                await harness.tap(USER, "dirdone", text="directions")
             for index in range(4):
                 await harness.send_photo(USER, f"side-{index}")
             data = await harness.dispatcher.storage.get_data(_key(harness))

@@ -48,6 +48,7 @@ async def _register(harness: BotHarness, user: int = USER) -> int:
         else:
             continue
         break
+    await harness.tap(user, "dirdone", text="directions")
     for index in range(4):
         await harness.send_photo(user, f"side-{index}")
     await harness.tap(user, "modsdone", text="mods")
@@ -443,7 +444,8 @@ def test_the_diag_self_test_ticket_shows_the_tenants_own_schedule():
             )
             assert "сентябр" not in copy["date"].lower(), copy
             assert "SOF EXPO" not in copy["place"].upper(), copy
-            assert "октябр" in copy["date"].lower(), copy
+            # The SPL date is typed in the panel; nothing is invented here.
+            assert copy["place"] == "TASHKENT INDEX", copy
 
             assert [
                 m

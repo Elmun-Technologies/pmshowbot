@@ -1161,7 +1161,7 @@ async def _ticket_preview(request: web.Request) -> web.Response:
                 _asset_scope(request),
                 number=sample.reg_number or 1,
                 plate=sample.plate or "TEST",
-                direction=texts.localize_direction(sample.direction, sample.language),
+                direction=texts.ticket_direction(sample.direction, sample.language),
                 name=decisions._get_display_name(sample),
                 tenant_name=getattr(cfg, "tenant_name", ""),
                 lang=sample.language,
@@ -1378,6 +1378,11 @@ def _tenant_form_values(data, *, editing: bool = False) -> dict[str, Any]:
         "event_guest_date_text_uz": str(data.get("event_guest_date_text_uz", "")).strip(),
         "event_note_text_ru": str(data.get("event_note_text_ru", "")).strip(),
         "event_note_text_uz": str(data.get("event_note_text_uz", "")).strip(),
+        # Full message texts written by the team (empty = the bot's own text).
+        "approved_text_ru": str(data.get("approved_text_ru", "")).strip(),
+        "approved_text_uz": str(data.get("approved_text_uz", "")).strip(),
+        "rejected_text_ru": str(data.get("rejected_text_ru", "")).strip(),
+        "rejected_text_uz": str(data.get("rejected_text_uz", "")).strip(),
         # Unchecked checkbox is omitted from the POST, which means registration is open.
         "registration_closed": str(data.get("registration_closed", "")) in {"1", "true", "on"},
     }

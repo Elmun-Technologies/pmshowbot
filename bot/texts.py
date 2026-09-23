@@ -66,8 +66,13 @@ _RU = dict(
     ),
     BTN_MODS_DONE="Готово ✅",
     BTN_MODS_NONE="Изменений нет ➡️",
-    ASK_DIRECTION="Выберите направление для участия:",
-    ASK_SUB_DIRECTION="Выберите поднаправление для <b>{parent}</b>:",
+    ASK_DIRECTION="Выберите направление для участия (до {max} категорий):",
+    ASK_SUB_DIRECTION="Выберите категорию для <b>{parent}</b> (до {max} категорий):",
+    DIRECTIONS_SELECTED="Выбрано ({n} из {max}):\n{items}",
+    DIRECTIONS_MORE_HINT="Можно выбрать ещё или нажать «{done}».",
+    DIRECTION_LIMIT="Можно выбрать не больше {max} категорий.",
+    BTN_DIRECTIONS_DONE="Готово ✅",
+    BTN_DIRECTIONS_BACK="⬅️ Назад к направлениям",
     ASK_SUB_DIRECTION_PLAIN="Выберите поднаправление:",
     PHOTO_DOWNLOAD_FAILED=(
         "Не удалось сохранить эту фотографию. Пришлите, пожалуйста, её ещё раз."
@@ -110,6 +115,7 @@ _RU = dict(
         "Начать заново: /start."
     ),
     DIRECTION_PICKED="Ваше направление: <b>{direction}</b> 🔥",
+    DIRECTIONS_PICKED="Ваши категории:\n{items} 🔥",
     ASK_PHONE="Отправьте, пожалуйста, ваш номер телефона кнопкой ниже.",
     BAD_PHONE=(
         "Это не похоже на номер телефона. Нажмите кнопку ниже или напишите "
@@ -215,8 +221,13 @@ _UZ = dict(
     ),
     BTN_MODS_DONE="Tayyor ✅",
     BTN_MODS_NONE="O‘zgarish yo‘q ➡️",
-    ASK_DIRECTION="Ishtirok yo‘nalishini tanlang:",
-    ASK_SUB_DIRECTION="<b>{parent}</b> uchun yo‘nalish osti turini tanlang:",
+    ASK_DIRECTION="Ishtirok yo‘nalishini tanlang ({max} tagacha kategoriya):",
+    ASK_SUB_DIRECTION="<b>{parent}</b> uchun kategoriyani tanlang ({max} tagacha kategoriya):",
+    DIRECTIONS_SELECTED="Tanlandi ({n} / {max}):\n{items}",
+    DIRECTIONS_MORE_HINT="Yana tanlashingiz yoki «{done}» tugmasini bosishingiz mumkin.",
+    DIRECTION_LIMIT="{max} tadan ortiq kategoriya tanlab bo‘lmaydi.",
+    BTN_DIRECTIONS_DONE="Tayyor ✅",
+    BTN_DIRECTIONS_BACK="⬅️ Yo‘nalishlarga qaytish",
     ASK_SUB_DIRECTION_PLAIN="Yo‘nalish osti turini tanlang:",
     PHOTO_DOWNLOAD_FAILED=(
         "Bu suratni saqlab bo‘lmadi. Iltimos, uni yana bir marta yuboring."
@@ -255,6 +266,7 @@ _UZ = dict(
         "Joriy qadamdan davom etamiz — savol yuqorida. Boshidan boshlash: /start."
     ),
     DIRECTION_PICKED="Sizning yo‘nalishingiz: <b>{direction}</b> 🔥",
+    DIRECTIONS_PICKED="Sizning kategoriyalaringiz:\n{items} 🔥",
     ASK_PHONE="Iltimos, telefon raqamingizni pastdagi tugma orqali yuboring.",
     BAD_PHONE=(
         "Bu telefon raqamiga o‘xshamaydi. Pastdagi tugmani bosing yoki raqamni "
@@ -323,6 +335,41 @@ _LANGS = {"ru": RU, "uz": UZ}
 def T(lang: str) -> SimpleNamespace:
     """Return the text namespace for a language (falls back to Russian)."""
     return _LANGS.get(lang, RU)
+
+
+# Several categories are stored in ``applications.direction`` joined by this.
+DIRECTION_SEPARATOR = "; "
+MAX_DIRECTIONS = 4
+
+
+def split_directions(value: str) -> list[str]:
+    """``"A; B"`` → ``["A", "B"]`` (a single old-style value stays one item)."""
+    return [part.strip() for part in (value or "").split(DIRECTION_SEPARATOR.strip()) if part.strip()]
+
+
+def join_directions(values: list[str]) -> str:
+    return DIRECTION_SEPARATOR.join(v for v in values if v)
+
+
+def short_direction(canonical: str) -> str:
+    """``"SPL Автозвук — SPL Sport Салон"`` → ``"SPL Sport Салон"`` (for tight spots)."""
+    return canonical.split(" — ")[-1].strip() if " — " in canonical else canonical
+
+
+def ticket_direction(value: str, lang: str) -> str:
+    """One line for the poster: each category by its short name, comma-joined."""
+    parts = split_directions(value)
+    if len(parts) <= 1:
+        return localize_direction(value, lang)
+    return ", ".join(short_direction(localize_direction(p, lang)) for p in parts)
+
+
+def direction_lines(value: str) -> str:
+    """Categories as a bulleted list (messages and the moderation card)."""
+    parts = split_directions(value)
+    if len(parts) <= 1:
+        return value or ""
+    return "\n".join(f"• {p}" for p in parts)
 
 
 def localize_direction(canonical: str, lang: str) -> str:
@@ -453,7 +500,15 @@ BADGE_PHOTO_ADMIN_NOTICE = (
 
 def _tenant_name_or_default(tenant: Any) -> str:
     name = getattr(tenant, "tenant_name", "") or getattr(tenant, "name", "") or "Promotors Show"
-    return str(name).strip() or "Promotors Show"
+    # «Spl Show» → «SPL Show», whatever was typed in the panel.
+    return brand_name(str(name).strip()) or "Promotors Show"
+
+
+def brand_name(name: str) -> str:
+    """Write the SPL brand in capitals (``Spl Show`` → ``SPL Show``)."""
+    from .db import normalize_spl_brand
+
+    return normalize_spl_brand(name or "")
 
 
 def _channel_url_for_tenant(tenant: Any) -> str:
@@ -527,8 +582,61 @@ def subscribe_required_for_tenant(lang: str, tenant: Any) -> str:
     )
 
 
-def approved_for_tenant(lang: str, tenant: Any, number: int) -> str:
-    """Approved message with tenant channel and date, no hard-coded link."""
+class _SafeValues(dict):
+    """``str.format_map`` helper: an unknown ``{placeholder}`` stays as typed."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+TEMPLATE_PLACEHOLDERS = ("number", "name", "plate", "direction", "event", "date", "venue", "channel")
+
+
+def _template(tenant: Any, kind: str, lang: str) -> str:
+    """The panel's own text for ``kind`` ("approved"/"rejected") in ``lang``."""
+    lang = "uz" if lang == "uz" else "ru"
+    return (getattr(tenant, f"{kind}_text_{lang}", "") or "").strip()
+
+
+def render_template(template: str, tenant: Any, lang: str, **values: Any) -> str:
+    """Fill ``{number}``, ``{date}``, ``{venue}``, ``{channel}``… in a panel text.
+
+    Never raises: stray braces or unknown names are left as they are, so a typo
+    in the panel cannot break the approval.
+    """
+    data = _SafeValues(
+        event=_tenant_name_or_default(tenant),
+        date=_event_date(tenant, lang),
+        venue=_venue(tenant, lang),
+        channel=_channel_url_for_tenant(tenant),
+    )
+    data.update({k: ("" if v is None else v) for k, v in values.items()})
+    try:
+        return template.format_map(data)
+    except (ValueError, IndexError, AttributeError, KeyError):
+        return template
+
+
+def approved_for_tenant(
+    lang: str,
+    tenant: Any,
+    number: int,
+    *,
+    name: str = "",
+    plate: str = "",
+    direction: str = "",
+) -> str:
+    """Approved message with tenant channel and date, no hard-coded link.
+
+    A text written in the panel («Текст после одобрения») wins over the
+    assembled one — the team controls every word, date and time there.
+    """
+    custom = _template(tenant, "approved", lang)
+    if custom:
+        return render_template(
+            custom, tenant, lang, number=number, name=name, plate=plate,
+            direction=direction_lines(direction),
+        )
     name = _tenant_name_or_default(tenant)
     channel = _channel_url_for_tenant(tenant)
     ev_date = _event_date(tenant, lang)
@@ -584,8 +692,11 @@ def _venue_is_parking(venue: str) -> bool:
     return "expo" in low
 
 
-def rejected_for_tenant(lang: str, tenant: Any) -> str:
+def rejected_for_tenant(lang: str, tenant: Any, *, name: str = "", plate: str = "", direction: str = "") -> str:
     """Rejection message.
+
+    A text written in the panel («Текст при отклонении») wins over everything
+    below.
 
     Two flavours, chosen by the tenant's own settings:
 
@@ -597,6 +708,11 @@ def rejected_for_tenant(lang: str, tenant: Any) -> str:
       мероприятия" from the rejection: the empty "Дата для гостей" field in the
       panel is the switch.
     """
+    custom = _template(tenant, "rejected", lang)
+    if custom:
+        return render_template(
+            custom, tenant, lang, name=name, plate=plate, direction=direction_lines(direction)
+        )
     gdate = _guest_date(tenant, lang)
     if not gdate:
         if lang == "uz":

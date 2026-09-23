@@ -60,6 +60,12 @@ async def _tap_root(harness: BotHarness, label: str) -> str:
     raise AssertionError(f"direction {label!r} not found in the current keyboard")
 
 
+async def _pick_only(harness: BotHarness, label: str) -> None:
+    """Pick one direction and finish the choice with «Готово»."""
+    await _tap_root(harness, label)
+    await harness.tap(USER, "dirdone", text="directions")
+
+
 async def _tap_child(harness: BotHarness, label: str) -> str:
     """Tap a sub-direction button by its label."""
     for row in await _direction_keyboard(harness):
@@ -98,11 +104,25 @@ def test_direction_list_comes_from_the_tenant_database():
     asyncio.run(run())
 
 
-def test_autosound_shows_the_four_confirmed_categories_in_both_languages():
-    expected_ru = ["SPL Front", "SPL Тыл", "SPL Game (129/139/149)", "SPL Sport / SPL Show"]
-    expected_uz = ["SPL Front", "SPL Orqa", "SPL Game (129/139/149)", "SPL Sport / SPL Show"]
+AUTOSOUND_RU = [
+    "SPL Sport Багажник 2К", "SPL Sport Багажник 4К", "SPL Sport Максимум", "SPL Sport Салон",
+    "SPL Show Лайт", "SPL Show Стандарт", "SPL Show Профи", "SPL Show Полубронь",
+    "SPL Front Лайт", "SPL Front Стандарт", "SPL Front Максимум",
+    "SPL Тыл Стандарт", "SPL Тыл Максимум",
+    "SPL Game 129.99", "SPL Game 139.99", "SPL Game 149.99",
+]
 
-    async def run(lang: str, expected: list[str], callback: str):
+
+def _category_labels(rows) -> list[str]:
+    """Category buttons only (without «Назад» / «Готово»)."""
+    return [
+        b.text for row in rows for b in row
+        if b.callback_data.startswith("subdirection:")
+    ]
+
+
+def test_autosound_shows_the_sixteen_confirmed_categories_in_both_languages():
+    async def run(lang: str):
         harness = BotHarness()
         await harness.start()
         try:
@@ -110,19 +130,89 @@ def test_autosound_shows_the_four_confirmed_categories_in_both_languages():
             await harness.tap(USER, f"lang:{lang}")
             await harness.tap(USER, "country:1")
             await harness.send_text(USER, "01A123BC")
+            prompt = harness.private_texts(USER)[-1]
+            assert ("до 4 категорий" in prompt) if lang == "ru" else ("4 tagacha" in prompt), prompt
             await _tap_root(harness, "SPL Автозвук" if lang == "ru" else "SPL Avtozvuk")
-            labels = [b.text for row in await _direction_keyboard(harness) for b in row]
-            assert labels == expected, f"{lang}: {labels}"
-            assert len(labels) == 4
-            # Every child leads somewhere: tapping one stores the full choice.
-            await _tap_child(harness, expected[0])
-            texts = harness.private_texts(USER)
-            assert any("Пришлите фотографию" in t or "suratini yuboring" in t for t in texts), texts[-2:]
+            labels = _category_labels(await _direction_keyboard(harness))
+            assert len(labels) == 16, labels
+            if lang == "ru":
+                assert labels == AUTOSOUND_RU, labels
+            # The old four are gone.
+            assert "SPL Sport / SPL Show" not in labels
+            assert "SPL Game (129/139/149)" not in labels
+            # Nobody sees «Spl Show».
+            assert not any("Spl " in label for label in labels)
         finally:
             await harness.stop()
 
-    asyncio.run(run("ru", expected_ru, "lang:ru"))
-    asyncio.run(run("uz", expected_uz, "lang:uz"))
+    asyncio.run(run("ru"))
+    asyncio.run(run("uz"))
+
+
+def test_up_to_four_categories_with_the_menu_reopening_after_each_pick():
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            await _register_until_directions(harness)
+            await _tap_root(harness, "SPL Автозвук")
+            await _tap_child(harness, "SPL Sport Салон")
+            # The menu reopens (same parent), without the picked one, with «Готово».
+            rows = await _direction_keyboard(harness)
+            labels = _category_labels(rows)
+            assert "SPL Sport Салон" not in labels and len(labels) == 15, labels
+            assert any(b.callback_data == "dirdone" for row in rows for b in row)
+            assert "Выбрано (1 из 4)" in harness.private_texts(USER)[-1]
+
+            await _tap_child(harness, "SPL Show Профи")
+            # Back to the root menu and a root direction as the third pick.
+            await harness.tap(USER, "dirback", text="directions")
+            await _tap_root(harness, "SQ")
+            assert "Выбрано (3 из 4)" in harness.private_texts(USER)[-1]
+            await _tap_root(harness, "SPL Автозвук")
+            await _tap_child(harness, "SPL Game 139.99")
+            # The fourth pick finishes the choice by itself.
+            texts_ = harness.private_texts(USER)
+            assert any("Ваши категории" in t for t in texts_[-3:]), texts_[-3:]
+            assert "1 из 4" in texts_[-1]  # first photo prompt
+
+            await _complete_form(harness, mods=0)
+            app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
+            assert app.direction == (
+                "SPL Автозвук — SPL Sport Салон; SPL Автозвук — SPL Show Профи; "
+                "SQ; SPL Автозвук — SPL Game 139.99"
+            ), app.direction
+            card = [
+                m.text for m in harness.session.methods_named("SendMessage")
+                if m.chat_id == harness.admin_chat_id and m.reply_markup
+            ][-1]
+            assert "• SQ" in card and "• SPL Автозвук — SPL Game 139.99" in card, card
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
+
+
+def test_done_after_one_category_and_stale_done_is_answered():
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            await _register_until_directions(harness)
+            # «Готово» before anything is picked just repeats the menu.
+            await harness.tap(USER, "dirdone", text="directions")
+            assert "до 4 категорий" in harness.private_texts(USER)[-1]
+            await _tap_root(harness, "SPL Автозвук")
+            await _tap_child(harness, "SPL Front Лайт")
+            await harness.tap(USER, "dirdone", text="directions")
+            assert "1 из 4" in harness.private_texts(USER)[-1]
+            await _complete_form(harness, mods=0)
+            app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
+            assert app.direction == "SPL Автозвук — SPL Front Лайт"
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
 
 
 def test_full_form_stores_parent_child_direction_and_all_photos():
@@ -132,14 +222,15 @@ def test_full_form_stores_parent_child_direction_and_all_photos():
         try:
             await _register_until_directions(harness)
             await _tap_root(harness, "SPL Автозвук")
-            await _tap_child(harness, "SPL Sport / SPL Show")
+            await _tap_child(harness, "SPL Show Полубронь")
+            await harness.tap(USER, "dirdone", text="directions")
 
             await _complete_form(harness)
 
             apps = await harness.db.for_tenant(harness.tenant.id).list_applications()
             assert len(apps) == 1
             app = apps[0]
-            assert app.direction == "SPL Автозвук — SPL Sport / SPL Show"
+            assert app.direction == "SPL Автозвук — SPL Show Полубронь"
             assert app.direction_id is not None
             assert app.plate == "01A123BC"
             assert app.phone.startswith("+998")
@@ -148,18 +239,15 @@ def test_full_form_stores_parent_child_direction_and_all_photos():
             assert len(app.mod_paths) == 1
             for path in app.photo_paths + app.mod_paths:
                 assert os.path.getsize(path) > 0
-            # The four sides are stored under their side names.
             assert [os.path.basename(p) for p in app.photo_paths] == [
                 "left.jpg", "right.jpg", "front.jpg", "back.jpg"
             ]
-            # Moderation chat received the card with Accept / Reject buttons.
             cards = [
                 m for m in harness.session.methods_named("SendMessage")
                 if m.chat_id == harness.admin_chat_id and m.reply_markup
             ]
             assert cards, "moderation card was not sent"
             assert cards[-1].reply_markup.inline_keyboard[0][0].callback_data == f"approve:{app.id}"
-            # …and its message id is remembered for panel decisions.
             assert app.card_message_id is not None
         finally:
             await harness.stop()
@@ -173,7 +261,7 @@ def test_start_after_registration_is_tenant_branded_not_promotors():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             await _complete_form(harness, mods=0)
             app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
             await harness.tap(MODERATOR, f"approve:{app.id}", chat_id=harness.admin_chat_id)
@@ -183,8 +271,9 @@ def test_start_after_registration_is_tenant_branded_not_promotors():
             assert "11 сентября" not in answer
             assert "promotorsshow" not in answer
             assert "SPL Show" in answer or "t.me/splshow" in answer
-            assert "02 октября 2026" in answer
-            assert "Tashkent INDEX" in answer
+            # No date is invented: the SPL schedule comes only from the panel.
+            assert "октября" not in answer
+            assert "№1" in answer
         finally:
             await harness.stop()
 
@@ -197,7 +286,7 @@ def test_approve_from_telegram_updates_the_card_without_freeze():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             await _complete_form(harness, mods=0)
             app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
 
@@ -213,7 +302,8 @@ def test_approve_from_telegram_updates_the_card_without_freeze():
             assert "№1" in edits[-1].text
             # The participant got the tenant-branded approval + a ticket.
             texts = harness.private_texts(USER)
-            assert any("02 октября 2026" in t for t in texts), texts[-3:]
+            assert any("№1" in t and "Поздравляем" in t for t in texts), texts[-3:]
+            assert not any("3 октября" in t for t in texts)
             assert not any("11 сентября" in t for t in texts)
             assert harness.session.methods_named("SendPhoto"), "ticket photo was not sent"
             # The moderator's callback was always answered.
@@ -230,7 +320,7 @@ def test_panel_decision_clears_buttons_and_posts_to_the_group():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             await _complete_form(harness, mods=0)
             scoped = harness.db.for_tenant(harness.tenant.id)
             app = (await scoped.list_applications())[0]
@@ -264,7 +354,7 @@ def test_duplicate_photo_update_cannot_break_the_sequence():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             # Telegram re-delivers the same update: the same file_id twice.
             await harness.send_photo(USER, "left-photo")
             assert "2 из 4" in harness.private_texts(USER)[-1]
@@ -292,7 +382,7 @@ def test_failed_photo_download_asks_to_resend():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             harness.session.fail_next(
                 "GetFile", TelegramBadRequest(method=None, message="file is too big")
             )
@@ -330,7 +420,7 @@ def test_unexpected_message_is_always_answered():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             before = len(harness.private_texts(USER))
             await harness.send_text(USER, "а это что за шаг?")
             after = harness.private_texts(USER)
@@ -348,7 +438,7 @@ def test_deleting_an_application_lets_the_person_register_again():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             await _complete_form(harness, mods=0)
             scoped = harness.db.for_tenant(harness.tenant.id)
             app = (await scoped.list_applications())[0]
@@ -374,7 +464,7 @@ def test_state_survives_a_worker_restart():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             await harness.send_photo(USER, "photo-1")
 
             # Simulate the worker restart: same database, fresh dispatcher.
@@ -422,7 +512,8 @@ def test_legacy_database_with_old_spl_seed_is_migrated():
             children = [
                 d for d in await scoped.list_all_directions() if d.parent_id == root.id
             ]
-            assert sorted(d.canonical for d in children) == sorted(
+            active = [d for d in children if d.is_active]
+            assert sorted(d.canonical for d in active) == sorted(
                 c["canonical"] for c in SPL_AUTOSOUND_CHILDREN
             )
         finally:
@@ -454,7 +545,7 @@ def test_a_crashing_handler_still_answers_and_the_bot_keeps_working(monkeypatch=
             registration._accept_direction = boom
             try:
                 # Tap a real direction so the crashed helper is reached.
-                await _tap_root(harness, "SQ")
+                await _pick_only(harness, "SQ")
             finally:
                 registration._accept_direction = original
 
@@ -483,7 +574,7 @@ def test_a_crashing_message_handler_answers_the_participant():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
 
             async def boom(*args, **kwargs):
                 raise RuntimeError("simulated photo failure")
@@ -564,7 +655,7 @@ def test_start_in_the_middle_of_the_form_offers_continue_or_restart():
         await harness.start()
         try:
             await _register_until_directions(harness)
-            await _tap_root(harness, "SQ")
+            await _pick_only(harness, "SQ")
             await harness.send_photo(USER, "left")
             await harness.send_photo(USER, "right")
 
