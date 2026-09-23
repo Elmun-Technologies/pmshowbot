@@ -131,7 +131,7 @@ def test_autosound_shows_the_sixteen_confirmed_categories_in_both_languages():
             await harness.tap(USER, "country:1")
             await harness.send_text(USER, "01A123BC")
             prompt = harness.private_texts(USER)[-1]
-            assert ("до 4 категорий" in prompt) if lang == "ru" else ("4 tagacha" in prompt), prompt
+            assert ("Выберите одну или несколько категорий" in prompt) if lang == "ru" else ("4 tagacha" in prompt), prompt
             await _tap_root(harness, "SPL Автозвук" if lang == "ru" else "SPL Avtozvuk")
             labels = _category_labels(await _direction_keyboard(harness))
             assert len(labels) == 16, labels
@@ -201,7 +201,7 @@ def test_done_after_one_category_and_stale_done_is_answered():
             await _register_until_directions(harness)
             # «Готово» before anything is picked just repeats the menu.
             await harness.tap(USER, "dirdone", text="directions")
-            assert "до 4 категорий" in harness.private_texts(USER)[-1]
+            assert "Выберите одну или несколько категорий" in harness.private_texts(USER)[-1]
             await _tap_root(harness, "SPL Автозвук")
             await _tap_child(harness, "SPL Front Лайт")
             await harness.tap(USER, "dirdone", text="directions")
@@ -614,7 +614,7 @@ def test_global_buttons_still_work_in_the_middle_of_the_form():
             answers = harness.private_texts(USER)[-2:]
             assert "процессе регистрации" in answers[0], answers
             # …and the current step (choosing a direction) is re-asked.
-            assert any("направление" in a for a in answers), answers
+            assert any("категори" in a.lower() for a in answers), answers
             assert not any("нет заявки" in a for a in answers)
         finally:
             await harness.stop()

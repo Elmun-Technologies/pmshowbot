@@ -283,12 +283,17 @@ async def send_ticket(
     else:
         transports = ("photo", "photo_jpeg", "document")
 
+    share_text = texts.share_cta_for_tenant(app.language, config)
+    # The final ticket caption must end with the reminder phrase
+    _suffix = "Не забудьте отметить в сторис SPL SHOW."
+    ticket_caption = share_text if _suffix in share_text else f"{share_text}\n\n{_suffix}"
+
     for kind in transports:
         for attempt in (1, 2):
             try:
                 if kind == "photo":
                     await bot.send_photo(
-                        app.user_id, BufferedInputFile(png, filename=png_name)
+                        app.user_id, BufferedInputFile(png, filename=png_name), caption=ticket_caption
                     )
                 elif kind == "photo_jpeg":
                     if jpeg is None:
@@ -297,13 +302,12 @@ async def send_ticket(
                     if not jpeg:
                         break  # nothing to send on this transport
                     await bot.send_photo(
-                        app.user_id, BufferedInputFile(jpeg, filename=jpg_name)
+                        app.user_id, BufferedInputFile(jpeg, filename=jpg_name), caption=ticket_caption
                     )
                 else:
                     await bot.send_document(
-                        app.user_id, BufferedInputFile(png, filename=png_name)
+                        app.user_id, BufferedInputFile(png, filename=png_name), caption=ticket_caption
                     )
-                share_text = texts.share_cta_for_tenant(app.language, config)
                 try:
                     await bot.send_message(app.user_id, share_text)
                 except Exception:  # noqa: BLE001 - the ticket itself arrived
