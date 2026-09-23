@@ -66,8 +66,8 @@ _RU = dict(
     ),
     BTN_MODS_DONE="Готово ✅",
     BTN_MODS_NONE="Изменений нет ➡️",
-    ASK_DIRECTION="Выберите направление для участия (до {max} категорий):",
-    ASK_SUB_DIRECTION="Выберите категорию для <b>{parent}</b> (до {max} категорий):",
+    ASK_DIRECTION="Выберите одну или несколько категорий, в которых планируете участие.",
+    ASK_SUB_DIRECTION="Выберите одну или несколько категорий, в которых планируете участие.",
     DIRECTIONS_SELECTED="Выбрано ({n} из {max}):\n{items}",
     DIRECTIONS_MORE_HINT="Можно выбрать ещё или нажать «{done}».",
     DIRECTION_LIMIT="Можно выбрать не больше {max} категорий.",
@@ -154,8 +154,8 @@ _RU = dict(
         "Приходите на мероприятие в качестве гостя — оно пройдёт "
         "<b>12 и 13 сентября с 10:00</b> на парковке <b>SOF EXPO</b>."
     ),
-    SHARE_CTA="📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на Promotors Show!",
-    SHARE_CTA_PLAIN="📸 Опубликуй свой билет в Stories — увидимся на Promotors Show!",
+    SHARE_CTA="📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на Promotors Show! Не забудьте отметить в сторис SPL SHOW.",
+    SHARE_CTA_PLAIN="📸 Опубликуй свой билет в Stories — увидимся на Promotors Show! Не забудьте отметить в сторис SPL SHOW.",
     BTN_SUBSCRIBE="Подписаться на канал",
     BTN_CHECK_SUBSCRIPTION="Я подписался ✅",
     BTN_SEND_PHONE="Отправить номер телефона ☎️",
@@ -307,8 +307,8 @@ _UZ = dict(
         "Tadbirga mehmon sifatida tashrif buyuring — u <b>12 va 13-sentyabr, 10:00 dan</b> "
         "<b>SOF EXPO</b> avtoturargohida bo‘lib o‘tadi."
     ),
-    SHARE_CTA="📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — Promotors Show’da ko‘rishguncha!",
-    SHARE_CTA_PLAIN="📸 Biletingizni Storiesda ulashing — Promotors Show’da ko‘rishguncha!",
+    SHARE_CTA="📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — Promotors Show’da ko‘rishguncha! Не забудьте отметить в сторис SPL SHOW.",
+    SHARE_CTA_PLAIN="📸 Biletingizni Storiesda ulashing — Promotors Show’da ko‘rishguncha! Не забудьте отметить в сторис SPL SHOW.",
     BTN_SUBSCRIBE="Kanalga obuna bo‘lish",
     BTN_CHECK_SUBSCRIPTION="Obuna bo‘ldim ✅",
     BTN_SEND_PHONE="Telefon raqamni yuborish ☎️",
@@ -821,15 +821,21 @@ def registration_closed_bilingual_for_tenant(tenant: Any) -> str:
 
 def share_cta_for_tenant(lang: str, tenant: Any, handle: str = "") -> str:
     name = _tenant_name_or_default(tenant)
+    suffix = "Не забудьте отметить в сторис SPL SHOW."
     # handle may be instagram handle
     if lang == "uz":
         if handle:
-            return f"📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — {name}’da ko‘rishguncha!"
-        return f"📸 Biletingizni Storiesda ulashing — {name}’da ko‘rishguncha!"
+            base = f"📸 Biletingizni Storiesda ulashing va bizni belgilang {handle} — {name}’da ko‘rishguncha!"
+        else:
+            base = f"📸 Biletingizni Storiesda ulashing — {name}’da ko‘rishguncha!"
     else:
         if handle:
-            return f"📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на {name}!"
-        return f"📸 Опубликуй свой билет в Stories — увидимся на {name}!"
+            base = f"📸 Опубликуй свой билет в Stories и отметь нас {handle} — увидимся на {name}!"
+        else:
+            base = f"📸 Опубликуй свой билет в Stories — увидимся на {name}!"
+    if suffix not in base:
+        base = f"{base} {suffix}"
+    return base
 
 
 def ticket_copy_for_tenant(lang: str, tenant: Any) -> dict:
