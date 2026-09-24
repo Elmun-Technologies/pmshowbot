@@ -47,6 +47,32 @@ def test_unknown_direction_falls_back_to_itself():
     assert constants.direction_image_path("Формула-1") is None
 
 
+def test_apply_exclusive_selection_replaces_only_its_own_group():
+    """Single-choice groups: a new pick drops earlier picks of the same group."""
+    from bot.db import Direction
+    from bot.services.directions import apply_exclusive_selection
+
+    def _dir(i, group=""):
+        return Direction(
+            id=i, tenant_id=1, parent_id=None, canonical=f"d{i}",
+            label_ru=f"d{i}", label_uz=f"d{i}", slug=f"d{i}", sort_order=0,
+            is_active=True, created_at="", updated_at="", exclusive_group=group,
+        )
+
+    dirs = [_dir(1, "front"), _dir(2, "front"), _dir(3, "rear"), _dir(4), _dir(5, "front")]
+    # A grouped pick drops only the earlier picks of its own group.
+    assert apply_exclusive_selection(dirs, [1, 3, 4], 2) == [3, 4]
+    assert apply_exclusive_selection(dirs, [2, 3, 4], 5) == [3, 4]
+    # An ungrouped pick changes nothing, whatever is selected.
+    assert apply_exclusive_selection(dirs, [1, 3], 4) == [1, 3]
+    # A pick that is already selected keeps its place (no duplicate on append).
+    assert apply_exclusive_selection(dirs, [1, 3], 1) == [1, 3]
+    # Unknown leaf id: the selection is returned untouched.
+    assert apply_exclusive_selection(dirs, [1, 3], 99) == [1, 3]
+    # An empty selection stays empty.
+    assert apply_exclusive_selection(dirs, [], 2) == []
+
+
 def test_missing_banner_returns_none():
     with tempfile.TemporaryDirectory() as tmp:
         assets.configure(tmp)
@@ -76,6 +102,7 @@ if __name__ == "__main__":
     test_directions_table_is_self_consistent()
     test_labels_follow_the_table()
     test_unknown_direction_falls_back_to_itself()
+    test_apply_exclusive_selection_replaces_only_its_own_group()
     test_missing_banner_returns_none()
     test_uploaded_banner_is_found_per_direction()
     print("All direction tests passed.")

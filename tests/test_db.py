@@ -293,6 +293,117 @@ def test_get_user_language():
         assert asyncio.run(db.get_user_language(1)) == "uz"
 
 
+def test_fresh_seed_carries_single_choice_groups():
+    """The seeded SPL Avtozvuk categories arrive with their exclusive groups."""
+    from bot.db import (
+        SPL_AUTOSOUND_CHILDREN,
+        SPL_TUNING_CHILDREN,
+        SPL_EXCLUSIVE_GROUPS,
+        is_spl_tenant,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "t.db"))
+        asyncio.run(db.init())
+        tenant = asyncio.run(
+            db.create_tenant(slug="splshow", name="SPL Show", admin_password="pw")
+        )
+        assert is_spl_tenant(tenant.slug, tenant.name)
+        asyncio.run(db.init())  # the next boot seeds the SPL structure
+
+        directions = asyncio.run(db.list_directions(tenant_id=tenant.id))
+        by_slug = {d.slug: d for d in directions}
+        for spec in SPL_AUTOSOUND_CHILDREN:
+            assert by_slug[spec["slug"]].exclusive_group == spec["group"], spec
+        # Show and Sport share one group (Show XOR Sport, one pick total) …
+        assert by_slug["spl_show_light"].exclusive_group == by_slug["spl_sport_salon"].exclusive_group
+        # … while Front, Rear and Bass Race are separate groups.
+        groups = {by_slug[s["slug"]].exclusive_group for s in SPL_AUTOSOUND_CHILDREN}
+        assert groups == {"spl", "front", "rear", "bass_race"}
+        # Categories the client did not group stay freely combinable.
+        for spec in SPL_TUNING_CHILDREN:
+            assert by_slug[spec["slug"]].exclusive_group == ""
+        assert all(d.exclusive_group == "" for d in directions if d.parent_id is None)
+        # The backfill map used by the migration matches the seeds.
+        assert SPL_EXCLUSIVE_GROUPS["spl_front_light"] == "front"
+        assert SPL_EXCLUSIVE_GROUPS["spl_game_149"] == "bass_race"
+
+
+def test_legacy_directions_table_is_migrated_with_groups():
+    """A pre-group database gets the column — and the seeded groups — once."""
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "t.db")
+        db = Database(path)
+        asyncio.run(db.init())
+        db.close()
+
+        # Roll the table back to the pre-group era, with two rows that carry
+        # seeded SPL slugs and one the panel made up.
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TABLE directions")
+        conn.execute(
+            """
+            CREATE TABLE directions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id   INTEGER NOT NULL,
+                parent_id   INTEGER,
+                canonical   TEXT NOT NULL,
+                label_ru    TEXT NOT NULL,
+                label_uz    TEXT NOT NULL,
+                slug        TEXT NOT NULL,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                is_active   INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(tenant_id, canonical),
+                UNIQUE(tenant_id, slug)
+            )
+            """
+        )
+        for slug, canonical in (
+            ("spl_front_light", "SPL Автозвук — SPL Front Лайт"),
+            ("spl_game_129", "SPL Автозвук — SPL Game 129.99"),
+            ("custom_category", "Выставка — Своя"),
+        ):
+            conn.execute(
+                "INSERT INTO directions (tenant_id, canonical, label_ru, label_uz,"
+                " slug, created_at, updated_at) VALUES (1, ?, ?, ?, ?, 'now', 'now')",
+                (canonical, canonical, canonical, slug),
+            )
+        conn.commit()
+        conn.close()
+
+        db = Database(path)
+        asyncio.run(db.init())  # the next boot migrates and backfills
+
+        by_slug = {d.slug: d for d in asyncio.run(db.list_directions())}
+        assert by_slug["spl_front_light"].exclusive_group == "front"
+        assert by_slug["spl_game_129"].exclusive_group == "bass_race"
+        # A category the seeds do not know stays ungrouped, and a group an
+        # admin sets afterwards is never overwritten by a restart.
+        assert by_slug["custom_category"].exclusive_group == ""
+        changed = asyncio.run(
+            db.update_direction(by_slug["spl_front_light"].id, exclusive_group="front2")
+        )
+        assert changed.exclusive_group == "front2"
+        asyncio.run(db.init())
+        by_slug = {d.slug: d for d in asyncio.run(db.list_directions())}
+        assert by_slug["spl_front_light"].exclusive_group == "front2"
+
+        # Create/update roundtrip with normalization ('' clears the group).
+        created = asyncio.run(
+            db.create_direction(
+                canonical="Тест — Группа", label_ru="Тест", label_uz="Test",
+                slug="test_grouped", exclusive_group=" Front ",
+            )
+        )
+        assert created.exclusive_group == "front"
+        cleared = asyncio.run(db.update_direction(created.id, exclusive_group=""))
+        assert cleared.exclusive_group == ""
+
+
 if __name__ == "__main__":
     test_sequential_numbers_and_rejection_gaps()
     test_active_application_lookup()
@@ -303,4 +414,6 @@ if __name__ == "__main__":
     test_recipients_filter_by_language_and_direction()
     test_badge_photo_roundtrip()
     test_get_user_language()
+    test_fresh_seed_carries_single_choice_groups()
+    test_legacy_directions_table_is_migrated_with_groups()
     print("All tests passed.")

@@ -9,6 +9,10 @@ Storage decision (documented):
   string.  When a child (podnapravleniye) is selected the format is
   ``"Parent — Child"`` (em dash separated).  This keeps existing rows
   untouched and remains searchable.
+- ``directions.exclusive_group`` (non-empty) marks a single-choice group:
+  categories sharing one value are mutually exclusive — the participant may
+  pick only ONE of them, and a later pick replaces the earlier one
+  (:func:`apply_exclusive_selection`).
 - Additionally ``applications.direction_id`` stores the leaf direction's DB id
   when the choice came from the DB table.  Old rows have NULL there.
 - Export (CSV/Excel/Sheets) shows the final string (Parent — Child) so admins
@@ -43,6 +47,35 @@ def label_for(direction: Direction, lang: str) -> str:
 
 # Historic private name kept for any out-of-tree caller.
 _label_for = label_for
+
+
+def exclusive_group_of(direction: Optional[Direction]) -> str:
+    """Single-choice group of a direction (``""`` = combines freely)."""
+    return str(getattr(direction, "exclusive_group", "") or "").strip()
+
+
+def apply_exclusive_selection(
+    directions: Iterable[Direction], selected: list[int], leaf_id: int
+) -> list[int]:
+    """Single-choice groups: return ``selected`` ready for adding ``leaf_id``.
+
+    Categories of one tenant that share a non-empty ``exclusive_group`` form a
+    mutually exclusive group — the participant may keep only ONE of them.  When
+    ``leaf_id`` belongs to such a group, every earlier pick from the *same*
+    group is dropped, so the new pick silently replaces it.  Picks from other
+    groups (and ungrouped categories) are kept; an unknown ``leaf_id`` or a
+    groupless one changes nothing.
+    """
+    directions = list(directions)
+    leaf = find_direction_by_id(directions, leaf_id)
+    group = exclusive_group_of(leaf)
+    if not group:
+        return selected
+    by_id = {d.id: d for d in directions}
+    return [
+        i for i in selected
+        if i == leaf_id or exclusive_group_of(by_id.get(i)) != group
+    ]
 
 
 def build_hierarchy(directions: list[Direction]) -> tuple[list[Direction], dict[int, list[Direction]]]:

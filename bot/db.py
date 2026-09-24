@@ -103,7 +103,14 @@ class Tenant:
 
 @dataclass
 class Direction:
-    """One participation direction, tenant-scoped, optionally hierarchical."""
+    """One participation direction, tenant-scoped, optionally hierarchical.
+
+    ``exclusive_group`` puts this category into a single-choice ("mutually
+    exclusive") group: categories of one tenant sharing the same non-empty
+    value form a group in which a participant may pick only ONE option — a new
+    pick replaces the previous one.  An empty value means the category combines
+    freely with any other.
+    """
 
     id: int
     tenant_id: int
@@ -116,6 +123,7 @@ class Direction:
     is_active: bool
     created_at: str
     updated_at: str
+    exclusive_group: str = ""
 
 
 @dataclass
@@ -310,24 +318,40 @@ SPL_TUNING_CHILDREN = [
 ]
 
 # The SPL Avtozvuk categories, as confirmed by the client (September 2026).
+#
+# ``group`` puts a category into a single-choice ("mutually exclusive") group:
+# categories sharing one value can only be picked ONE at a time in the bot —
+# a new pick automatically replaces the previous one from the same group
+# (client requirement, September 2026):
+#
+#   spl        — EITHER a Show OR a Sport category (one of the eight total);
+#   bass_race  — SPL Game 129.99 / 139.99 / 149.99 — only one;
+#   front      — SPL Front Лайт / Стандарт / Максимум — only one;
+#   rear       — SPL Тыл Стандарт / Максимум — only one.
 SPL_AUTOSOUND_CHILDREN = [
-    {"canonical": "SPL Автозвук — SPL Sport Багажник 2К", "label_ru": "SPL Sport Багажник 2К", "label_uz": "SPL Sport Bagajnik 2K", "slug": "spl_sport_trunk_2k", "sort": 0},
-    {"canonical": "SPL Автозвук — SPL Sport Багажник 4К", "label_ru": "SPL Sport Багажник 4К", "label_uz": "SPL Sport Bagajnik 4K", "slug": "spl_sport_trunk_4k", "sort": 1},
-    {"canonical": "SPL Автозвук — SPL Sport Максимум", "label_ru": "SPL Sport Максимум", "label_uz": "SPL Sport Maksimum", "slug": "spl_sport_max", "sort": 2},
-    {"canonical": "SPL Автозвук — SPL Sport Салон", "label_ru": "SPL Sport Салон", "label_uz": "SPL Sport Salon", "slug": "spl_sport_salon", "sort": 3},
-    {"canonical": "SPL Автозвук — SPL Show Лайт", "label_ru": "SPL Show Лайт", "label_uz": "SPL Show Layt", "slug": "spl_show_light", "sort": 4},
-    {"canonical": "SPL Автозвук — SPL Show Стандарт", "label_ru": "SPL Show Стандарт", "label_uz": "SPL Show Standart", "slug": "spl_show_standard", "sort": 5},
-    {"canonical": "SPL Автозвук — SPL Show Профи", "label_ru": "SPL Show Профи", "label_uz": "SPL Show Profi", "slug": "spl_show_pro", "sort": 6},
-    {"canonical": "SPL Автозвук — SPL Show Полубронь", "label_ru": "SPL Show Полубронь", "label_uz": "SPL Show Polubron", "slug": "spl_show_halfarmor", "sort": 7},
-    {"canonical": "SPL Автозвук — SPL Front Лайт", "label_ru": "SPL Front Лайт", "label_uz": "SPL Front Layt", "slug": "spl_front_light", "sort": 8},
-    {"canonical": "SPL Автозвук — SPL Front Стандарт", "label_ru": "SPL Front Стандарт", "label_uz": "SPL Front Standart", "slug": "spl_front_standard", "sort": 9},
-    {"canonical": "SPL Автозвук — SPL Front Максимум", "label_ru": "SPL Front Максимум", "label_uz": "SPL Front Maksimum", "slug": "spl_front_max", "sort": 10},
-    {"canonical": "SPL Автозвук — SPL Тыл Стандарт", "label_ru": "SPL Тыл Стандарт", "label_uz": "SPL Orqa Standart", "slug": "spl_rear_standard", "sort": 11},
-    {"canonical": "SPL Автозвук — SPL Тыл Максимум", "label_ru": "SPL Тыл Максимум", "label_uz": "SPL Orqa Maksimum", "slug": "spl_rear_max", "sort": 12},
-    {"canonical": "SPL Автозвук — SPL Game 129.99", "label_ru": "SPL Game 129.99", "label_uz": "SPL Game 129.99", "slug": "spl_game_129", "sort": 13},
-    {"canonical": "SPL Автозвук — SPL Game 139.99", "label_ru": "SPL Game 139.99", "label_uz": "SPL Game 139.99", "slug": "spl_game_139", "sort": 14},
-    {"canonical": "SPL Автозвук — SPL Game 149.99", "label_ru": "SPL Game 149.99", "label_uz": "SPL Game 149.99", "slug": "spl_game_149", "sort": 15},
+    {"canonical": "SPL Автозвук — SPL Sport Багажник 2К", "label_ru": "SPL Sport Багажник 2К", "label_uz": "SPL Sport Bagajnik 2K", "slug": "spl_sport_trunk_2k", "sort": 0, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Sport Багажник 4К", "label_ru": "SPL Sport Багажник 4К", "label_uz": "SPL Sport Bagajnik 4K", "slug": "spl_sport_trunk_4k", "sort": 1, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Sport Максимум", "label_ru": "SPL Sport Максимум", "label_uz": "SPL Sport Maksimum", "slug": "spl_sport_max", "sort": 2, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Sport Салон", "label_ru": "SPL Sport Салон", "label_uz": "SPL Sport Salon", "slug": "spl_sport_salon", "sort": 3, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Show Лайт", "label_ru": "SPL Show Лайт", "label_uz": "SPL Show Layt", "slug": "spl_show_light", "sort": 4, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Show Стандарт", "label_ru": "SPL Show Стандарт", "label_uz": "SPL Show Standart", "slug": "spl_show_standard", "sort": 5, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Show Профи", "label_ru": "SPL Show Профи", "label_uz": "SPL Show Profi", "slug": "spl_show_pro", "sort": 6, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Show Полубронь", "label_ru": "SPL Show Полубронь", "label_uz": "SPL Show Polubron", "slug": "spl_show_halfarmor", "sort": 7, "group": "spl"},
+    {"canonical": "SPL Автозвук — SPL Front Лайт", "label_ru": "SPL Front Лайт", "label_uz": "SPL Front Layt", "slug": "spl_front_light", "sort": 8, "group": "front"},
+    {"canonical": "SPL Автозвук — SPL Front Стандарт", "label_ru": "SPL Front Стандарт", "label_uz": "SPL Front Standart", "slug": "spl_front_standard", "sort": 9, "group": "front"},
+    {"canonical": "SPL Автозвук — SPL Front Максимум", "label_ru": "SPL Front Максимум", "label_uz": "SPL Front Maksimum", "slug": "spl_front_max", "sort": 10, "group": "front"},
+    {"canonical": "SPL Автозвук — SPL Тыл Стандарт", "label_ru": "SPL Тыл Стандарт", "label_uz": "SPL Orqa Standart", "slug": "spl_rear_standard", "sort": 11, "group": "rear"},
+    {"canonical": "SPL Автозвук — SPL Тыл Максимум", "label_ru": "SPL Тыл Максимум", "label_uz": "SPL Orqa Maksimum", "slug": "spl_rear_max", "sort": 12, "group": "rear"},
+    {"canonical": "SPL Автозвук — SPL Game 129.99", "label_ru": "SPL Game 129.99", "label_uz": "SPL Game 129.99", "slug": "spl_game_129", "sort": 13, "group": "bass_race"},
+    {"canonical": "SPL Автозвук — SPL Game 139.99", "label_ru": "SPL Game 139.99", "label_uz": "SPL Game 139.99", "slug": "spl_game_139", "sort": 14, "group": "bass_race"},
+    {"canonical": "SPL Автозвук — SPL Game 149.99", "label_ru": "SPL Game 149.99", "label_uz": "SPL Game 149.99", "slug": "spl_game_149", "sort": 15, "group": "bass_race"},
 ]
+
+# Seeded single-choice groups: slug → group.  Used by the one-time migration
+# that brings an existing deployment's rows to the grouped structure.
+SPL_EXCLUSIVE_GROUPS = {
+    spec["slug"]: spec["group"] for spec in SPL_AUTOSOUND_CHILDREN if spec.get("group")
+}
 
 # Lists shipped by earlier builds.  A deployment whose SPL Avtozvuk children
 # still match one of them exactly is migrated to the list above; a list edited
@@ -387,10 +411,20 @@ CREATE TABLE IF NOT EXISTS directions (
     is_active   INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
+    exclusive_group TEXT NOT NULL DEFAULT '',
     UNIQUE(tenant_id, canonical),
     UNIQUE(tenant_id, slug)
 );
 """
+
+# Lightweight migrations for ``directions`` tables created before the
+# single-choice group column existed.
+_DIRECTION_MIGRATIONS = [
+    (
+        "exclusive_group",
+        "ALTER TABLE directions ADD COLUMN exclusive_group TEXT NOT NULL DEFAULT ''",
+    ),
+]
 
 _BOT_USERS_CREATE = """
 CREATE TABLE bot_users (
@@ -435,6 +469,7 @@ def _json_list(value: Any) -> list[str]:
 
 
 def _row_to_direction(row: sqlite3.Row) -> Direction:
+    keys = row.keys()
     return Direction(
         id=int(row["id"]),
         tenant_id=int(row["tenant_id"]),
@@ -447,6 +482,9 @@ def _row_to_direction(row: sqlite3.Row) -> Direction:
         is_active=bool(row["is_active"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        exclusive_group=(
+            str(row["exclusive_group"] or "") if "exclusive_group" in keys else ""
+        ),
     )
 
 
@@ -829,6 +867,34 @@ class Database:
     def _create_directions_table(self, conn: sqlite3.Connection) -> None:
         conn.execute(_DIRECTIONS_SCHEMA)
 
+    def _migrate_directions(self, conn: sqlite3.Connection) -> None:
+        """Add the single-choice group column to old ``directions`` tables.
+
+        When the column is created, the seeded SPL Avtozvuk categories get
+        their confirmed groups backfilled **exactly once** — after that the
+        panel is the only source of truth, so a group an admin changed (or
+        cleared) is never overwritten by a restart.  Fresh databases get the
+        groups straight from the seeds.
+        """
+        if not self._table_exists(conn, "directions"):
+            return
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(directions)").fetchall()}
+        added = False
+        for col, ddl in _DIRECTION_MIGRATIONS:
+            if col not in cols:
+                try:
+                    conn.execute(ddl)
+                    added = True
+                except sqlite3.OperationalError:
+                    pass
+        if added:
+            for slug, group in SPL_EXCLUSIVE_GROUPS.items():
+                conn.execute(
+                    "UPDATE directions SET exclusive_group = ? "
+                    "WHERE slug = ? AND exclusive_group = ''",
+                    (group, slug),
+                )
+
     def _migrate_tenants(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "tenants"):
             return
@@ -1165,8 +1231,8 @@ class Database:
                 """
                 INSERT INTO directions
                     (tenant_id, parent_id, canonical, label_ru, label_uz, slug,
-                     sort_order, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                     sort_order, is_active, exclusive_group, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
                     tenant_id,
@@ -1176,6 +1242,7 @@ class Database:
                     spec.get("label_uz") or spec["canonical"],
                     spec["slug"],
                     int(spec.get("sort", 0)),
+                    str(spec.get("group") or ""),
                     now,
                     now,
                 ),
@@ -1204,8 +1271,8 @@ class Database:
                     """
                     INSERT OR IGNORE INTO directions
                         (tenant_id, parent_id, canonical, label_ru, label_uz, slug,
-                         sort_order, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                         sort_order, is_active, exclusive_group, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                     """,
                     (
                         tenant_id,
@@ -1215,6 +1282,7 @@ class Database:
                         spec.get("label_uz") or spec.get("uz") or spec["canonical"],
                         spec["slug"],
                         int(spec.get("sort", spec.get("sort_order", 0))),
+                        str(spec.get("group") or ""),
                         now,
                         now,
                     ),
@@ -1264,6 +1332,7 @@ class Database:
             conn.executescript(_DIRECTIONS_SCHEMA)
             default_tenant_id = self._ensure_default_tenant(conn)
             self._migrate_tenants(conn)
+            self._migrate_directions(conn)
             self._migrate_applications(conn, default_tenant_id)
             self._migrate_bot_users(conn, default_tenant_id)
             self._create_indexes(conn)
@@ -1500,6 +1569,18 @@ class Database:
             raise ValueError("Direction slug must be ascii letters/digits/_/-")
         return value
 
+    @staticmethod
+    def _clean_exclusive_group(group: Any) -> str:
+        """Normalize a single-choice group value ('' = no group).
+
+        Only lowered/trimmed, not validated: the value is a free-form key that
+        links categories together, never a filename or an HTML attribute, and
+        making it strict would stop admins from naming groups in their own
+        language.
+        """
+        value = str(group or "").strip().lower()
+        return value or ""
+
     def _list_directions(self, tenant_id: int | str | None = None, active_only: bool = True) -> list[Direction]:
         with self._connect() as conn:
             tid = self._resolve_tenant_id(conn, tenant_id)
@@ -1529,6 +1610,7 @@ class Database:
         slug: str = "",
         sort_order: int = 0,
         is_active: bool = True,
+        exclusive_group: str = "",
     ) -> Direction:
         with self._connect() as conn:
             tid = self._resolve_tenant_id(conn, tenant_id)
@@ -1536,6 +1618,7 @@ class Database:
             label_ru = (label_ru or "").strip()
             label_uz = (label_uz or "").strip()
             slug = self._clean_direction_slug(slug or canonical.lower().replace(" ", "_")[:40] or "dir")
+            exclusive_group = self._clean_exclusive_group(exclusive_group)
             if not canonical:
                 raise ValueError("canonical is required")
             if not label_ru:
@@ -1557,10 +1640,10 @@ class Database:
                 cur = conn.execute(
                     """
                     INSERT INTO directions
-                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, exclusive_group, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (tid, parent_id, canonical, label_ru, label_uz, slug, int(sort_order or 0), self._to_bool(is_active), now, now),
+                    (tid, parent_id, canonical, label_ru, label_uz, slug, int(sort_order or 0), self._to_bool(is_active), exclusive_group, now, now),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"Direction already exists: {exc}") from exc
@@ -1568,7 +1651,7 @@ class Database:
             return _row_to_direction(row)
 
     def _update_direction(self, direction_id: int, tenant_id: int | str | None = None, **changes: Any) -> Optional[Direction]:
-        allowed = {"canonical", "label_ru", "label_uz", "slug", "sort_order", "is_active", "parent_id"}
+        allowed = {"canonical", "label_ru", "label_uz", "slug", "sort_order", "is_active", "parent_id", "exclusive_group"}
         with self._connect() as conn:
             tid = self._resolve_tenant_id(conn, tenant_id)
             existing = conn.execute(
@@ -1590,6 +1673,8 @@ class Database:
                     val = str(val or "").strip() or existing["canonical"]
                 elif key == "slug":
                     val = self._clean_direction_slug(str(val or ""))
+                elif key == "exclusive_group":
+                    val = self._clean_exclusive_group(val)
                 elif key == "sort_order":
                     try:
                         val = int(val or 0)
