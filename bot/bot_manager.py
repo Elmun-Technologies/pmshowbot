@@ -260,7 +260,6 @@ class BotManager:
             (
                 registration_router,
                 moderation_router,
-                badge_router,
                 number_router,
                 safety_router,
             ) = create_tenant_routers()
@@ -268,7 +267,6 @@ class BotManager:
             registration_router.callback_query.outer_middleware(RegistrationClosedMiddleware())
             dispatcher.include_router(registration_router)
             dispatcher.include_router(moderation_router)
-            dispatcher.include_router(badge_router)
             dispatcher.include_router(number_router)
             # Included last on purpose: it answers only what none of the
             # routers above claimed.  Without it an unmatched update was

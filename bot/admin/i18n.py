@@ -172,6 +172,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "detail.badge_empty": "Участник ещё не прислал фото для бейджа",
         "detail.accept": "✅ Принять",
         "detail.reject": "❌ Отклонить",
+        "detail.reject_reason_title": "Причина отказа",
+        "detail.reject_reason_hint": "Выберите причину — она будет отправлена участнику вместе с уведомлением об отказе.",
+        "detail.reject_reason_required": "Выберите причину отказа",
+        "reject.reason.bad_form": "Неправильно заполнена заявка",
+        "reject.reason.bad_class": "Автомобиль не подходит по классу",
 
         # --- Danger zone: permanent delete ---
         "ticket.resend_title": "🎫 Билет участника",
@@ -756,6 +761,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "detail.badge_empty": "Ishtirokchi hali badge uchun surat yubormagan",
         "detail.accept": "✅ Qabul qilish",
         "detail.reject": "❌ Rad etish",
+        "detail.reject_reason_title": "Rad etish sababi",
+        "detail.reject_reason_hint": "Sababni tanlang — u ishtirokchiga rad etish haqidagi xabar bilan birga yuboriladi.",
+        "detail.reject_reason_required": "Rad etish sababini tanlang",
+        "reject.reason.bad_form": "Неправильно заполнена заявка",
+        "reject.reason.bad_class": "Автомобиль не подходит по классу",
 
         # --- Danger zone: permanent delete ---
         "ticket.resend_title": "🎫 Ishtirokchi bileti",

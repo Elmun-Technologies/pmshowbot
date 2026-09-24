@@ -353,6 +353,29 @@ def _individual_message_form(
     )
 
 
+def _reject_reason_options(lang: str) -> str:
+    """Two preset rejection reasons the admin must pick from (radio inputs).
+
+    The values are stable keys (``bad_form``/``bad_class``); the server maps
+    them onto the exact notification texts.  No free-text input: the choice is
+    exactly these two ready variants.
+    """
+    opts = ""
+    for key in ("bad_form", "bad_class"):
+        label = t(lang, f"reject.reason.{key}")
+        opts += (
+            '<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;'
+            'cursor:pointer">'
+            f'<input type="radio" name="reason" value="{key}" required style="margin-top:4px"> '
+            f'<span>{escape(label)}</span></label>'
+        )
+    return (
+        f'<div style="margin:0 0 8px"><b>{t(lang, "detail.reject_reason_title")}</b>'
+        f'<div class="muted" style="font-size:13px">{t(lang, "detail.reject_reason_hint")}</div>'
+        f'{opts}</div>'
+    )
+
+
 def _status_control(
     lang: str, app_id: int, current_status: str, changed: bool = False, error: str = ""
 ) -> str:
@@ -374,6 +397,20 @@ def _status_control(
     buttons = ""
     for status, label, cls in options:
         if status == current_status:
+            continue
+        if status == STATUS_REJECTED:
+            # Rejecting requires one of the two preset reasons, sent to the
+            # participant together with the rejection notice.
+            buttons += (
+                f'<form method="post" action="/application/{app_id}/status" '
+                f'style="border:1px solid #fecaca;border-radius:10px;padding:12px;'
+                f'min-width:260px;flex:1">'
+                f'<input type="hidden" name="status" value="{status}">'
+                f'{_reject_reason_options(lang)}'
+                f'<button class="btn {cls}" type="submit" '
+                f'onclick="return confirm(\'{_js_confirm(t(lang, "statusctl.confirm"))}\')">'
+                f'{label}</button></form>'
+            )
             continue
         buttons += (
             f'<form method="post" action="/application/{app_id}/status" style="display:inline">'
@@ -464,6 +501,7 @@ def application_detail_page(
     status_changed: bool = False,
     status_error: str = "",
     ticket_job: Optional[dict] = None,
+    reject_error: str = "",
 ) -> str:
     lang = i18n.normalize_lang(lang)
     photos = ""
@@ -525,11 +563,16 @@ def application_detail_page(
 
     actions = ""
     if app.status == STATUS_PENDING:
+        reject_err = f'<div class="err">{escape(reject_error)}</div>' if reject_error else ""
         actions = (
-            '<div class="actions">'
+            f'{reject_err}'
+            '<div class="actions" style="align-items:flex-start">'
             f'<form method="post" action="/application/{app.id}/approve">'
             f'<button class="btn btn-approve" type="submit">{t(lang, "detail.accept")}</button></form>'
-            f'<form method="post" action="/application/{app.id}/reject">'
+            f'<form method="post" action="/application/{app.id}/reject" '
+            f'style="border:1px solid #fecaca;border-radius:10px;padding:12px;'
+            f'min-width:280px;flex:1">'
+            f'{_reject_reason_options(lang)}'
             f'<button class="btn btn-reject" type="submit">{t(lang, "detail.reject")}</button></form>'
             '</div>'
         )

@@ -11,7 +11,7 @@ handler matched, so a participant who sends something the form does not expect
 sees a dead bot while the log looks perfectly healthy.
 
 That is what this router exists for.  It is attached **last**, after
-registration, moderation, badge and number handlers, so it can only ever see
+registration, moderation and number handlers, so it can only ever see
 updates no other handler wanted.  It answers them:
 
 * mid-form input that no step expected (an unknown command, a sticker, a
