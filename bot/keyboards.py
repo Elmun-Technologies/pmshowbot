@@ -84,6 +84,10 @@ def direction_keyboard_from_db(
     - ``selected`` (leaf ids already chosen) are left out of the menu — the menu
       reopens after every pick with only what can still be chosen.  A root is
       left out once it is picked (no children) or all its children are.
+    - Categories marked with a single-choice ``exclusive_group`` keep their
+      group siblings in the menu even after one of them is picked: the handler
+      replaces the group's earlier pick when a sibling is tapped, and the
+      replaced option reappears here because it is no longer selected.
     - When something is selected a «Готово» button finishes the choice; inside
       a parent a «Назад» button returns to the root menu.
     """

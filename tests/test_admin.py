@@ -576,6 +576,91 @@ def test_status_override():
         asyncio.run(run())
 
 
+def test_super_admin_directions_reflect_and_edit_single_choice_groups():
+    """The grouped category structure is visible and editable in the panel."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "groups.db"))
+        asyncio.run(db.init())
+        tenant = asyncio.run(
+            db.create_tenant(slug="splshow", name="SPL Show", admin_password="pw")
+        )
+        asyncio.run(db.init())  # the next boot seeds the SPL structure
+        config = SimpleNamespace(
+            admin_password=PW, super_admin_password="super-pw", panel_port=8080
+        )
+        admin_app = create_admin_app(bot=None, config=config, db=db)
+        hdr = {"Cookie": f"{auth.SUPER_COOKIE_NAME}={auth.make_cookie('super-pw')}"}
+
+        async def run():
+            async with TestClient(TestServer(admin_app)) as client:
+                # The listing shows the group column with the seeded groups.
+                r = await client.get("/super-admin/tenants/splshow/directions", headers=hdr)
+                body = await r.text()
+                assert r.status == 200
+                assert "Группа" in body
+                assert "взаимоисключающие" in body  # the single-choice hint
+                for group in ("spl", "front", "rear", "bass_race"):
+                    assert f"<code>{group}</code>" in body, group
+
+                # The edit form carries the field, prefilled, with the known
+                # groups offered as datalist suggestions.
+                dirs = await db.list_directions(tenant_id=tenant.id)
+                front = next(d for d in dirs if d.slug == "spl_front_standard")
+                r = await client.get(
+                    f"/super-admin/tenants/splshow/directions/{front.id}/edit", headers=hdr
+                )
+                body = await r.text()
+                assert r.status == 200
+                assert 'name="exclusive_group"' in body
+                assert 'value="front"' in body
+                assert '<option value="spl">' in body
+
+                # Saving rewrites the group (normalized to lowercase).
+                r = await client.post(
+                    f"/super-admin/tenants/splshow/directions/{front.id}/edit",
+                    data={
+                        "canonical": front.canonical,
+                        "label_ru": front.label_ru,
+                        "label_uz": front.label_uz,
+                        "slug": front.slug,
+                        "parent_id": str(front.parent_id),
+                        "sort_order": str(front.sort_order),
+                        "is_active": "1",
+                        "exclusive_group": "  FRONT ",
+                    },
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.status == 302
+                updated = await db.get_direction(front.id, tenant_id=tenant.id)
+                assert updated.exclusive_group == "front"
+
+                # A fresh category can join an existing group via the form.
+                r = await client.post(
+                    "/super-admin/tenants/splshow/directions/new",
+                    data={
+                        "canonical": "SPL Автозвук — SPL Тыл Профи",
+                        "label_ru": "SPL Тыл Профи",
+                        "label_uz": "SPL Orqa Profi",
+                        "slug": "spl_rear_pro",
+                        "parent_id": str(front.parent_id),
+                        "sort_order": "20",
+                        "is_active": "1",
+                        "exclusive_group": "rear",
+                    },
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.status == 302
+                created = next(
+                    d for d in await db.list_directions(tenant_id=tenant.id)
+                    if d.slug == "spl_rear_pro"
+                )
+                assert created.exclusive_group == "rear"
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_cookie_signing()
     test_routes()
@@ -587,4 +672,5 @@ if __name__ == "__main__":
     test_badge_photo_route()
     test_individual_message()
     test_status_override()
+    test_super_admin_directions_reflect_and_edit_single_choice_groups()
     print("All admin tests passed.")

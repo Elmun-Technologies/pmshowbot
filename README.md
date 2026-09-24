@@ -238,7 +238,7 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
 - **Event dates / venue** come from new columns `event_date_text_ru/uz`, `event_venue_text_ru/uz`, `event_guest_date_text_ru/uz` (RU/UZ). Empty means sentence omitted.
 - **Ticket**: 1-2 generic logo slots. Promotors keeps `logo.png` / `adrenaline.png` fallback from repo; other tenants have **no repo fallback** → wordmark from `tenant_name`. Generic slot titles are i18n (`assets.brand.generic_title`). Preview = real ticket logic.
 - **Sponsors**: `PARTNER_LOGOS` checklist only for promotors or removed; bundled `bot/assets/sponsors/` fallback only for promotors; new tenants start empty + admin empty-state i18n (`assets.sponsors.empty_tenant`, `assets.partners.empty_tenant`).
-- **Directions**: tenant-specific + podnapravleniya (2-level). New table `directions(id, tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, created_at, updated_at)`. Seed promotors 4 directions. Backward-compatible: old `applications.direction` canonical strings stay, new `direction_id` FK added. Storage format `Parent — Child` or `direction_id`. Admin CRUD at `/super-admin/tenants/{slug}/directions`. Export shows final name, `direction_label` stays.
+- **Directions**: tenant-specific + podnapravleniye (2-level). New table `directions(id, tenant_id, parent_id, canonical, label_ru, label_uz, slug, sort_order, is_active, exclusive_group, created_at, updated_at)`. Seed promotors 4 directions. Backward-compatible: old `applications.direction` canonical strings stay, new `direction_id` FK added. Storage format `Parent — Child` or `direction_id`. Admin CRUD at `/super-admin/tenants/{slug}/directions`. Export shows final name, `direction_label` stays. `exclusive_group` (non-empty) marks a **single-choice group**: categories sharing one value are mutually exclusive — the participant may keep only ONE of them, and a later pick silently replaces the earlier one (`bot.services.directions.apply_exclusive_selection`). Existing databases get the column (and the seeded SPL groups) via a one-time boot migration; afterwards the panel is the source of truth.
 
 ### Architecture
 
@@ -280,14 +280,22 @@ This release adds **SPL Show** as a first-class example of a fully tenant-brande
    Seeding is automatic for an SPL tenant — no clicking needed:
    - Roots: `SQ`, `Выставка`, `Тюнинг`, `SPL Автозвук`.
    - `Тюнинг` → `Т1 Новичок`, `Т2 Профессионал`.
-   - `SPL Автозвук` → the four categories the client confirmed:
-     `SPL Front`, `SPL Тыл` (UZ `SPL Orqa`), `SPL Game (129/139/149)`,
-     `SPL Sport / SPL Show`.
-   Deployment that still holds the first placeholder seed (SPL / SPL Т1 /
-   SPL Т2) is migrated to those four on the next boot; a list an admin edited
-   by hand is never touched.
+   - `SPL Автозвук` → the 16 categories the client confirmed (September 2026),
+     grouped into **mutually exclusive (single-choice) groups** — within one
+     group the participant can pick only ONE category; a later pick silently
+     replaces the earlier one:
+     - group `spl` — the eight `SPL Sport …` and `SPL Show …` categories
+       (EITHER a Show OR a Sport category, one in total);
+     - group `front` — `SPL Front Лайт / Стандарт / Максимум` — only one;
+     - group `rear` — `SPL Тыл Стандарт / Максимум` (UZ `SPL Orqa …`) — only one;
+     - group `bass_race` — `SPL Game 129.99 / 139.99 / 149.99` — only one.
+   A deployment whose table predates the groups gets them backfilled once on
+   the next boot; groups changed by hand in the panel are never overwritten.
    Anything can be renamed/added here (max 2 levels); the bot always reads the
    tenant's own rows, so the buttons, the DB value and exports stay in sync.
+   The panel shows each category's group in a dedicated column, and the
+   create/edit form has a "Группа (одиночный выбор)" field (empty = ordinary
+   freely-combinable category).
 
 3. Ticket branding: `/t/splshow/ticket-assets`
    - Upload brand logos (generic slots) — transparent PNG ~1200px. If none uploaded, ticket shows wordmark `SPL SHOW`.

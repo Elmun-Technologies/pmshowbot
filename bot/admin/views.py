@@ -1500,6 +1500,14 @@ def super_tenant_directions_page(lang: str, tenant, directions) -> str:
     # Sort: parents first then children
     roots = [d for d in directions if d.parent_id is None]
     roots_sorted = sorted(roots, key=lambda d: (d.sort_order, d.id))
+
+    def group_cell(d) -> str:
+        """Single-choice group badge ('—' when the category is ungrouped)."""
+        group = str(getattr(d, "exclusive_group", "") or "").strip()
+        if not group:
+            return f'<span class="muted">{t(lang, "tenant.directions.group_none")}</span>'
+        return f'<code>{escape(group)}</code>'
+
     rows = ""
     for root in roots_sorted:
         status = t(lang, "tenant.directions.active") if root.is_active else t(lang, "tenant.directions.inactive")
@@ -1509,6 +1517,7 @@ def super_tenant_directions_page(lang: str, tenant, directions) -> str:
             f'<small class="muted">{escape(root.canonical)}</small></td>'
             f'<td><code>{escape(root.slug)}</code></td>'
             f'<td>{escape(parent_label)}</td>'
+            f'<td>{group_cell(root)}</td>'
             f'<td>{root.sort_order}</td>'
             f'<td>{escape(status)}</td>'
             f'<td style="white-space:nowrap">'
@@ -1525,6 +1534,7 @@ def super_tenant_directions_page(lang: str, tenant, directions) -> str:
                 f'<small class="muted">{escape(child.canonical)}</small></td>'
                 f'<td><code>{escape(child.slug)}</code></td>'
                 f'<td>{escape(root.label_ru if lang=="ru" else root.label_uz)}</td>'
+                f'<td>{group_cell(child)}</td>'
                 f'<td>{child.sort_order}</td>'
                 f'<td>{escape(status_c)}</td>'
                 f'<td style="white-space:nowrap">'
@@ -1541,12 +1551,13 @@ def super_tenant_directions_page(lang: str, tenant, directions) -> str:
             f'<tr><td>{escape(o.label_ru if lang=="ru" else o.label_uz)}<br><small class="muted">{escape(o.canonical)}</small></td>'
             f'<td><code>{escape(o.slug)}</code></td>'
             f'<td class="muted">orphan {o.parent_id}</td>'
+            f'<td>{group_cell(o)}</td>'
             f'<td>{o.sort_order}</td>'
             f'<td>{escape(status_o)}</td>'
             f'<td><a class="btn btn-ghost btn-small" href="/super-admin/tenants/{escape(tenant.slug)}/directions/{o.id}/edit">{t(lang, "tenant.directions.edit")}</a></td></tr>'
         )
     if not rows:
-        rows = f'<tr><td colspan="6" class="muted">{t(lang, "tenant.directions.empty")}</td></tr>'
+        rows = f'<tr><td colspan="7" class="muted">{t(lang, "tenant.directions.empty")}</td></tr>'
 
     body = (
         f'<p><a href="/super-admin/tenants/{escape(tenant.slug)}/edit">{t(lang, "tenant.directions.back")}</a></p>'
@@ -1554,10 +1565,12 @@ def super_tenant_directions_page(lang: str, tenant, directions) -> str:
         f'<h2>{t(lang, "tenant.directions.heading", name=escape(tenant.name))}</h2>'
         f'<a class="btn btn-primary" href="/super-admin/tenants/{escape(tenant.slug)}/directions/new">{t(lang, "tenant.directions.create")}</a>'
         f'</div>'
+        f'<p class="muted">{t(lang, "tenant.directions.group_hint")}</p>'
         '<div style="overflow-x:auto"><table><thead><tr>'
         f'<th>{t(lang, "tenant.directions.col_name")}</th>'
         f'<th>{t(lang, "tenant.directions.col_canonical")}</th>'
         f'<th>{t(lang, "tenant.directions.col_parent")}</th>'
+        f'<th>{t(lang, "tenant.directions.col_group")}</th>'
         f'<th>{t(lang, "tenant.directions.col_sort")}</th>'
         f'<th>{t(lang, "tenant.directions.col_status")}</th>'
         f'<th>{t(lang, "tenant.directions.col_actions")}</th>'
@@ -1566,7 +1579,7 @@ def super_tenant_directions_page(lang: str, tenant, directions) -> str:
     return _super_page(t(lang, "tenant.directions.page_title"), body, lang)
 
 
-def super_direction_form_page(lang: str, tenant, direction=None, parents=None, values=None, error="") -> str:
+def super_direction_form_page(lang: str, tenant, direction=None, parents=None, values=None, error="", groups=None) -> str:
     lang = i18n.normalize_lang(lang)
     editing = direction is not None
     title = t(lang, "tenant.direction.edit.title", name=tenant.name) if editing else t(lang, "tenant.direction.create.title", name=tenant.name)
@@ -1599,6 +1612,14 @@ def super_direction_form_page(lang: str, tenant, direction=None, parents=None, v
             sel = " selected"
         parent_options += f'<option value="{p.id}"{sel}>{escape(p.label_ru)} ({escape(p.canonical)})</option>'
 
+    # Known single-choice groups of this tenant, offered as datalist options so
+    # a new category can join an existing group without guessing its spelling.
+    known_groups = [str(g).strip() for g in (groups or []) if str(g).strip()]
+    group_datalist = ""
+    if known_groups:
+        options = "".join(f'<option value="{escape(g)}"></option>' for g in known_groups)
+        group_datalist = f'<datalist id="direction-exclusive-groups">{options}</datalist>'
+
     # is_active checkbox
     if values is not None:
         is_active_checked = str(values.get("is_active", "")) in {"1", "true", "on", "True"}
@@ -1618,6 +1639,7 @@ def super_direction_form_page(lang: str, tenant, direction=None, parents=None, v
         f'<div class="k">{t(lang, "tenant.direction.form.label_uz")}</div><div><input type="text" name="label_uz" value="{fv("label_uz")}" style="width:100%"></div>'
         f'<div class="k">{t(lang, "tenant.direction.form.slug")}</div><div><input type="text" name="slug" value="{fv("slug")}" pattern="[A-Za-z0-9_-]{1,64}" style="width:100%"><small class="muted">{t(lang, "tenant.direction.form.hint_slug")}</small></div>'
         f'<div class="k">{t(lang, "tenant.direction.form.parent")}</div><div><select name="parent_id" style="width:100%">{parent_options}</select></div>'
+        f'<div class="k">{t(lang, "tenant.direction.form.exclusive_group")}</div><div><input type="text" name="exclusive_group" value="{fv("exclusive_group")}" list="direction-exclusive-groups" style="width:100%">{group_datalist}<small class="muted">{t(lang, "tenant.direction.form.hint_exclusive_group")}</small></div>'
         f'<div class="k">{t(lang, "tenant.direction.form.sort_order")}</div><div><input type="number" name="sort_order" value="{fv("sort_order", "0")}" style="width:100%"></div>'
         f'<div class="k">{t(lang, "tenant.direction.form.is_active")}</div><div><label><input type="checkbox" name="is_active" value="1"{active_attr}> {t(lang, "common.active")}</label></div>'
         '</div><div class="actions">'

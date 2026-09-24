@@ -1634,6 +1634,8 @@ def _direction_form_values(data, existing=None) -> dict:
     except ValueError:
         sort_order = 0
     is_active = str(data.get("is_active", "")) in {"1", "true", "on"}
+    # Single-choice ("mutually exclusive") group: same value = same group.
+    exclusive_group = str(data.get("exclusive_group", "")).strip().lower()
     if not canonical:
         raise ValueError("canonical required")
     if not slug:
@@ -1647,7 +1649,18 @@ def _direction_form_values(data, existing=None) -> dict:
         "parent_id": parent_id,
         "sort_order": sort_order,
         "is_active": is_active,
+        "exclusive_group": exclusive_group,
     }
+
+
+def _known_exclusive_groups(directions) -> list[str]:
+    """Distinct single-choice groups of one tenant, in a stable order."""
+    seen: list[str] = []
+    for d in directions or []:
+        group = str(getattr(d, "exclusive_group", "") or "").strip()
+        if group and group not in seen:
+            seen.append(group)
+    return seen
 
 async def _super_tenant_directions(request: web.Request) -> web.Response:
     db = request.app["db"]
@@ -1665,7 +1678,12 @@ async def _super_direction_new_get(request: web.Request) -> web.Response:
     all_dirs = await db.list_directions(tenant_id=tenant.id, active_only=False)
     # Only roots can be parents (enforce 2-level)
     parents = [d for d in all_dirs if d.parent_id is None]
-    return _html(request, views.super_direction_form_page(_lang(request), tenant, parents=parents))
+    return _html(
+        request,
+        views.super_direction_form_page(
+            _lang(request), tenant, parents=parents, groups=_known_exclusive_groups(all_dirs)
+        ),
+    )
 
 async def _super_direction_new_post(request: web.Request) -> web.Response:
     db = request.app["db"]
@@ -1683,7 +1701,9 @@ async def _super_direction_new_post(request: web.Request) -> web.Response:
         return _html(
             request,
             views.super_direction_form_page(
-                lang, tenant, values=dict(data), parents=parents, error=t(lang, "tenant.direction.form.err_generic", detail=str(exc))
+                lang, tenant, values=dict(data), parents=parents,
+                error=t(lang, "tenant.direction.form.err_generic", detail=str(exc)),
+                groups=_known_exclusive_groups(all_dirs),
             ),
             status=400,
         )
@@ -1700,7 +1720,13 @@ async def _super_direction_edit_get(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text="Direction not found")
     all_dirs = await db.list_directions(tenant_id=tenant.id, active_only=False)
     parents = [d for d in all_dirs if d.parent_id is None and d.id != direction.id]
-    return _html(request, views.super_direction_form_page(_lang(request), tenant, direction=direction, parents=parents))
+    return _html(
+        request,
+        views.super_direction_form_page(
+            _lang(request), tenant, direction=direction, parents=parents,
+            groups=_known_exclusive_groups(all_dirs),
+        ),
+    )
 
 async def _super_direction_edit_post(request: web.Request) -> web.Response:
     db = request.app["db"]
@@ -1720,7 +1746,9 @@ async def _super_direction_edit_post(request: web.Request) -> web.Response:
         return _html(
             request,
             views.super_direction_form_page(
-                lang, tenant, direction=direction, values=dict(data), parents=parents, error=t(lang, "tenant.direction.form.err_generic", detail=str(exc))
+                lang, tenant, direction=direction, values=dict(data), parents=parents,
+                error=t(lang, "tenant.direction.form.err_generic", detail=str(exc)),
+                groups=_known_exclusive_groups(all_dirs),
             ),
             status=400,
         )

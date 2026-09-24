@@ -44,6 +44,7 @@ from ..constants import MAX_MOD_PHOTOS, SIDES, direction_image_path
 from ..db import Database, Direction
 from ..services import assets, media, subscription
 from ..services.directions import (
+    apply_exclusive_selection,
     children_of,
     find_direction_by_id,
     format_final_choice,
@@ -430,13 +431,20 @@ async def _add_direction(
     directions: list,
     leaf_id: int,
 ) -> bool:
-    """Add one picked leaf; reopen the menu, or finish at the limit."""
+    """Add one picked leaf; reopen the menu, or finish at the limit.
+
+    A pick from a single-choice group (``exclusive_group``) first drops the
+    group's earlier pick — the new category silently replaces it, which is
+    what the "Выбрано" list above the reopened keyboard then shows.
+    """
     leaf = find_direction_by_id(directions, leaf_id)
     if leaf is None or not format_final_choice(directions, leaf_id):
         return False
     data = await state.get_data()
     selected = _selected_ids(data, directions)
     if leaf_id not in selected:
+        # Mutually exclusive group: deselect whatever was picked in it before.
+        selected = apply_exclusive_selection(directions, selected, leaf_id)
         if len(selected) >= MAX_DIRECTIONS:
             await message.answer(texts.T(lang).DIRECTION_LIMIT.format(max=MAX_DIRECTIONS))
             await _finish_directions(message, state, bot, lang, config, directions)

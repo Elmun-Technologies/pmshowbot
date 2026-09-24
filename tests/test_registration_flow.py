@@ -164,7 +164,10 @@ def test_up_to_four_categories_with_the_menu_reopening_after_each_pick():
             assert any(b.callback_data == "dirdone" for row in rows for b in row)
             assert "Выбрано (1 из 4)" in harness.private_texts(USER)[-1]
 
-            await _tap_child(harness, "SPL Show Профи")
+            # A second category still combines freely with the first — as long
+            # as it is from a different single-choice group (Sport and Show are
+            # mutually exclusive now, so the second pick comes from Front).
+            await _tap_child(harness, "SPL Front Лайт")
             # Back to the root menu and a root direction as the third pick.
             await harness.tap(USER, "dirback", text="directions")
             await _tap_root(harness, "SQ")
@@ -179,7 +182,7 @@ def test_up_to_four_categories_with_the_menu_reopening_after_each_pick():
             await _complete_form(harness, mods=0)
             app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
             assert app.direction == (
-                "SPL Автозвук — SPL Sport Салон; SPL Автозвук — SPL Show Профи; "
+                "SPL Автозвук — SPL Sport Салон; SPL Автозвук — SPL Front Лайт; "
                 "SQ; SPL Автозвук — SPL Game 139.99"
             ), app.direction
             card = [
@@ -187,6 +190,110 @@ def test_up_to_four_categories_with_the_menu_reopening_after_each_pick():
                 if m.chat_id == harness.admin_chat_id and m.reply_markup
             ][-1]
             assert "• SQ" in card and "• SPL Автозвук — SPL Game 139.99" in card, card
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
+
+
+def test_single_choice_group_picks_silently_replace_the_earlier_one():
+    """Front/SPL/Bass-Race groups: a new pick replaces the group's earlier one.
+
+    The client's requirement (September 2026): within a mutually exclusive
+    group only ONE category may stay selected — clicking a sibling deselects
+    the previous pick without a word, and the "Выбрано" list above the reopened
+    keyboard shows the swap.
+    """
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            await _register_until_directions(harness)
+            await _tap_root(harness, "SPL Автозвук")
+
+            # Front group: Лайт → Стандарт → Максимум, each replacing the last.
+            await _tap_child(harness, "SPL Front Лайт")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Front Лайт" in prompt
+            await _tap_child(harness, "SPL Front Стандарт")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Front Стандарт" in prompt, prompt
+            assert "SPL Автозвук — SPL Front Лайт" not in prompt
+            # Still one pick, not two — and the swapped-out button is back.
+            assert "Выбрано (1 из 4)" in prompt
+            labels = _category_labels(await _direction_keyboard(harness))
+            assert "SPL Front Лайт" in labels and "SPL Front Стандарт" not in labels
+            await _tap_child(harness, "SPL Front Максимум")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Front Максимум" in prompt
+            assert "SPL Автозвук — SPL Front Стандарт" not in prompt
+
+            # SPL group: a Sport pick replaces a Show pick (Show XOR Sport).
+            await _tap_child(harness, "SPL Show Профи")
+            assert "Выбрано (2 из 4)" in harness.private_texts(USER)[-1]
+            await _tap_child(harness, "SPL Sport Салон")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Sport Салон" in prompt
+            assert "SPL Автозвук — SPL Show Профи" not in prompt
+            # A second Sport pick still replaces the first: one per group total.
+            await _tap_child(harness, "SPL Sport Багажник 2К")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Sport Багажник 2К" in prompt
+            assert "SPL Автозвук — SPL Sport Салон" not in prompt
+
+            # Bass Race group (SPL Game 129/139/149): only one survives.
+            await _tap_child(harness, "SPL Game 129.99")
+            await _tap_child(harness, "SPL Game 149.99")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Game 149.99" in prompt
+            assert "SPL Автозвук — SPL Game 129.99" not in prompt
+
+            # Three picks — one per group — finish with «Готово».
+            await harness.tap(USER, "dirdone", text="directions")
+            await _complete_form(harness, mods=0)
+            app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
+            assert app.direction == (
+                "SPL Автозвук — SPL Front Максимум; SPL Автозвук — SPL Sport Багажник 2К; "
+                "SPL Автозвук — SPL Game 149.99"
+            ), app.direction
+        finally:
+            await harness.stop()
+
+    asyncio.run(run())
+
+
+def test_one_pick_per_group_coexists_and_the_fourth_group_pick_finishes():
+    """Rear/Tyl group swaps too, and picks from different groups combine."""
+    async def run():
+        harness = BotHarness()
+        await harness.start()
+        try:
+            await _register_until_directions(harness)
+            await _tap_root(harness, "SPL Автозвук")
+
+            # Rear (Тыл) group: Максимум replaces Стандарт.
+            await _tap_child(harness, "SPL Тыл Стандарт")
+            await _tap_child(harness, "SPL Тыл Максимум")
+            prompt = harness.private_texts(USER)[-1]
+            assert "SPL Автозвук — SPL Тыл Максимум" in prompt
+            assert "SPL Автозвук — SPL Тыл Стандарт" not in prompt
+
+            # Categories from different groups are freely combinable.
+            await _tap_child(harness, "SPL Front Лайт")
+            await _tap_child(harness, "SPL Game 129.99")
+            assert "Выбрано (3 из 4)" in harness.private_texts(USER)[-1]
+
+            # The fourth pick — again its own group — finishes the choice.
+            await _tap_child(harness, "SPL Show Полубронь")
+            texts_ = harness.private_texts(USER)
+            assert any("Ваши категории" in t for t in texts_[-3:]), texts_[-3:]
+
+            await _complete_form(harness, mods=0)
+            app = (await harness.db.for_tenant(harness.tenant.id).list_applications())[0]
+            assert app.direction == (
+                "SPL Автозвук — SPL Тыл Максимум; SPL Автозвук — SPL Front Лайт; "
+                "SPL Автозвук — SPL Game 129.99; SPL Автозвук — SPL Show Полубронь"
+            ), app.direction
         finally:
             await harness.stop()
 
