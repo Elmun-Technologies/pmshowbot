@@ -417,6 +417,7 @@ async def announce_decision_to_chat(
     status: str,
     number: Optional[int] = None,
     moderator: str = "",
+    reason: str = "",
 ) -> None:
     """Mirror a decision into the moderation chat.
 
@@ -451,6 +452,8 @@ async def announce_decision_to_chat(
     line = f"{texts.MODERATION_PANEL_HEADER}\n{decision}"
     if details:
         line += f"\n{details}"
+    if status == STATUS_REJECTED and (reason or "").strip():
+        line += f"\nПричина: {(reason or '').strip()}"
     try:
         await bot.send_message(chat_id, line)
     except Exception:  # noqa: BLE001 - never break the decision itself
@@ -531,14 +534,18 @@ async def deliver_rejection(
     *,
     moderator: str = "",
     announce_in_chat: bool = False,
+    reason: str = "",
 ) -> bool:
     """Notify a rejected participant (and the panel chat when asked).
 
     ``False`` when the participant could not be reached — the moderation chat is
     told, because "the bot never answered me" reports usually start there.
+    ``reason`` is one of ``texts.REJECT_REASONS`` chosen in the admin panel and
+    is appended to the participant's notification verbatim.
     """
     rejected_text = texts.rejected_for_tenant(
-        app.language, config, name=_get_display_name(app), plate=app.plate, direction=app.direction
+        app.language, config, name=_get_display_name(app), plate=app.plate, direction=app.direction,
+        reason=reason,
     )
     delivered = await notify_applicant(bot, app.user_id, rejected_text, app.language)
     if not delivered:
@@ -556,7 +563,7 @@ async def deliver_rejection(
                 logger.debug("Could not report the unreachable participant", exc_info=True)
     if announce_in_chat:
         await announce_decision_to_chat(
-            bot, config, app, status=STATUS_REJECTED, moderator=moderator
+            bot, config, app, status=STATUS_REJECTED, moderator=moderator, reason=reason
         )
     return delivered
 
@@ -594,13 +601,15 @@ async def reject_application(
     moderator: str,
     *,
     announce_in_chat: bool = False,
+    reason: str = "",
 ) -> bool:
     """Reject an application and notify it. True if it was pending."""
     app = await claim_rejection(db, app_id, moderator)
     if app is None:
         return False
     await deliver_rejection(
-        bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat
+        bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat,
+        reason=reason,
     )
     return True
 
@@ -647,6 +656,7 @@ async def deliver_status(
     *,
     moderator: str = "",
     announce_in_chat: bool = False,
+    reason: str = "",
 ) -> None:
     """Deliver an overridden status: notify the participant, ticket when approved."""
     if status == STATUS_APPROVED:
@@ -655,7 +665,8 @@ async def deliver_status(
         )
     elif status == STATUS_REJECTED:
         await deliver_rejection(
-            bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat
+            bot, config, app, moderator=moderator, announce_in_chat=announce_in_chat,
+            reason=reason,
         )
     elif announce_in_chat:
         await announce_decision_to_chat(
@@ -677,6 +688,7 @@ async def set_status(
     moderator: str,
     *,
     announce_in_chat: bool = False,
+    reason: str = "",
 ) -> bool:
     """Admin-panel override: force an application's status regardless of current.
 
@@ -689,6 +701,7 @@ async def set_status(
     if app is None:
         return False
     await deliver_status(
-        bot, config, app, status, moderator=moderator, announce_in_chat=announce_in_chat
+        bot, config, app, status, moderator=moderator, announce_in_chat=announce_in_chat,
+        reason=reason,
     )
     return True

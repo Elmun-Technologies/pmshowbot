@@ -111,7 +111,7 @@ async def _exercise_manager(tmp: str) -> None:
     # answers updates nothing else claimed (bot/handlers/stay_alive.py), and it
     # has to come after every other router.
     for dispatcher in _FakeDispatcher.created:
-        assert len(dispatcher.routers) == 5, [r.name for r in dispatcher.routers]
+        assert len(dispatcher.routers) == 4, [r.name for r in dispatcher.routers]
         assert [router.name for router in dispatcher.routers][-1] == "stay_alive"
         assert dispatcher.routers[0].name == "registration"
     assert {

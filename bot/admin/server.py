@@ -510,6 +510,21 @@ async def _applications(request: web.Request) -> web.Response:
     )
 
 
+def _reject_reason_from_form(data) -> str:
+    """Map the posted reason key onto the exact text sent to the participant.
+
+    Only the two preset keys are accepted; anything else (including free text)
+    yields an empty string so the caller can ask the admin to pick again.
+    """
+    key = str(data.get("reason", "") or "").strip()
+    if key in texts.REJECT_REASONS:
+        return texts.REJECT_REASONS[key]
+    # Tolerate the raw text itself (older forms / direct POSTs).
+    if key in set(texts.REJECT_REASONS.values()):
+        return key
+    return ""
+
+
 async def _application_detail(request: web.Request) -> web.Response:
     db = _db(request)
     lang = _lang(request)
@@ -519,6 +534,7 @@ async def _application_detail(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text=t(lang, "error.app_not_found"))
     msg = request.query.get("msg")
     status_flag = request.query.get("status_change")
+    reject_flag = request.query.get("reject_error")
     return _html(
         request,
         views.application_detail_page(
@@ -530,10 +546,17 @@ async def _application_detail(request: web.Request) -> web.Response:
                 else (t(lang, "error.msg_empty") if msg == "empty" else "")
             ),
             status_changed=status_flag == "ok",
-            status_error=t(lang, "error.status_change") if status_flag == "error" else "",
+            status_error=(
+                t(lang, "detail.reject_reason_required")
+                if status_flag == "reason_required"
+                else (t(lang, "error.status_change") if status_flag == "error" else "")
+            ),
             # The ticket block shows the live state of a resend started from
             # this panel (the redirect no longer carries it in the URL).
             ticket_job=_ticket_job(_ticket_job_key(request, app_id)),
+            reject_error=(
+                t(lang, "detail.reject_reason_required") if reject_flag else ""
+            ),
         ),
     )
 
@@ -564,18 +587,27 @@ async def _approve(request: web.Request) -> web.Response:
 
 
 async def _reject(request: web.Request) -> web.Response:
-    """Reject in SQLite, then deliver behind the redirect (see :func:`_approve`)."""
+    """Reject in SQLite, then deliver behind the redirect (see :func:`_approve`).
+
+    The admin must pick one of the two preset reasons; it is sent to the
+    participant together with the rejection notice.
+    """
     db = _db(request)
     bot = _bot(request)
     config = _config(request)
     lang = _lang(request)
     app_id = _int_or_404(request.match_info["id"])
+    data = await request.post()
+    reason = _reject_reason_from_form(data)
+    if not reason:
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?reject_error=1"))
     moderator = t(lang, "moderation.via_panel")
     app = await decisions.claim_rejection(db, app_id, moderator)
     if app is not None:
         decisions.spawn(
             decisions.deliver_rejection(
-                bot, config, app, moderator=moderator, announce_in_chat=True
+                bot, config, app, moderator=moderator, announce_in_chat=True,
+                reason=reason,
             )
         )
     raise web.HTTPFound(_url(request, f"/application/{app_id}"))
@@ -615,6 +647,9 @@ async def _change_status(request: web.Request) -> web.Response:
     status = str(data.get("status", ""))
     if status not in _VALID_STATUSES or bot is None:
         raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change=error"))
+    reason = _reject_reason_from_form(data) if status == STATUS_REJECTED else ""
+    if status == STATUS_REJECTED and not reason:
+        raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change=reason_required"))
     moderator = t(lang, "moderation.via_panel")
     app = await decisions.claim_status(db, app_id, status, moderator)
     if app is not None:
@@ -622,7 +657,8 @@ async def _change_status(request: web.Request) -> web.Response:
         # panel must not hang on a multi-megabyte upload.
         decisions.spawn(
             decisions.deliver_status(
-                bot, config, app, status, moderator=moderator, announce_in_chat=True
+                bot, config, app, status, moderator=moderator, announce_in_chat=True,
+                reason=reason,
             )
         )
     raise web.HTTPFound(_url(request, f"/application/{app_id}?status_change={'ok' if app is not None else 'error'}"))

@@ -14,15 +14,14 @@ from __future__ import annotations
 
 from aiogram import Router
 
-from . import badge_photo, moderation, mynumber, registration, stay_alive
+from . import moderation, mynumber, registration, stay_alive
 
 
-def create_tenant_routers() -> tuple[Router, Router, Router, Router, Router]:
-    """Return new registration, moderation, badge, number and safety routers."""
+def create_tenant_routers() -> tuple[Router, Router, Router, Router]:
+    """Return new registration, moderation, number and safety routers."""
     return (
         registration.create_router(),
         moderation.create_router(),
-        badge_photo.create_router(),
         mynumber.create_router(),
         stay_alive.create_router(),
     )

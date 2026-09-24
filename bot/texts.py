@@ -684,6 +684,16 @@ def approved_for_tenant(
         return base
 
 
+# Preset rejection reasons the admin picks in the panel when rejecting.
+# Keys are stable form values; values are the exact texts sent to the user.
+REJECT_REASON_BAD_FORM = "Неправильно заполнена заявка"
+REJECT_REASON_BAD_CLASS = "Автомобиль не подходит по классу"
+REJECT_REASONS: dict[str, str] = {
+    "bad_form": REJECT_REASON_BAD_FORM,
+    "bad_class": REJECT_REASON_BAD_CLASS,
+}
+
+
 def _venue_is_parking(venue: str) -> bool:
     """Promotors called SOF EXPO a parking lot. Named halls (INDEX) are not."""
     low = (venue or "").lower()
@@ -692,7 +702,16 @@ def _venue_is_parking(venue: str) -> bool:
     return "expo" in low
 
 
-def rejected_for_tenant(lang: str, tenant: Any, *, name: str = "", plate: str = "", direction: str = "") -> str:
+def _with_reject_reason(base: str, lang: str, reason: str) -> str:
+    """Append the admin-chosen rejection reason to the notification text."""
+    reason = (reason or "").strip()
+    if not reason:
+        return base
+    label = "Sabab" if lang == "uz" else "Причина"
+    return f"{base}\n\n{label}: {reason}"
+
+
+def rejected_for_tenant(lang: str, tenant: Any, *, name: str = "", plate: str = "", direction: str = "", reason: str = "") -> str:
     """Rejection message.
 
     A text written in the panel («Текст при отклонении») wins over everything
@@ -707,25 +726,31 @@ def rejected_for_tenant(lang: str, tenant: Any, *, name: str = "", plate: str = 
       **no** date, time or venue.  That is what removed the "неправильное время
       мероприятия" from the rejection: the empty "Дата для гостей" field in the
       panel is the switch.
+
+    ``reason`` is one of :data:`REJECT_REASONS` chosen in the admin panel; it is
+    appended verbatim so the participant sees why the application was rejected.
     """
     custom = _template(tenant, "rejected", lang)
     if custom:
-        return render_template(
+        base = render_template(
             custom, tenant, lang, name=name, plate=plate, direction=direction_lines(direction)
         )
+        return _with_reject_reason(base, lang, reason)
     gdate = _guest_date(tenant, lang)
     if not gdate:
         if lang == "uz":
-            return (
+            base = (
                 "Assalomu alaykum! Afsuski, siz ro‘yxatdan o‘tmadingiz.\n\n"
                 "Hozircha tadbir faqat ro‘yxatdan o‘tgan ishtirokchilar uchun. "
                 "Qiziqish bildirganingiz uchun rahmat!"
             )
-        return (
+            return _with_reject_reason(base, lang, reason)
+        base = (
             "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
             "Сейчас мероприятие проходит только для зарегистрированных участников. "
             "Спасибо за интерес!"
         )
+        return _with_reject_reason(base, lang, reason)
 
     venue = _venue(tenant, lang)
     if lang == "uz":
@@ -739,7 +764,7 @@ def rejected_for_tenant(lang: str, tenant: Any, *, name: str = "", plate: str = 
                 base += f" <b>{venue}</b> manzilida bo‘lib o‘tadi."
         else:
             base += " bo‘lib o‘tadi."
-        return base
+        return _with_reject_reason(base, lang, reason)
 
     base = "Здравствуйте! К сожалению, вы не прошли регистрацию.\n\n"
     base += "Но мы приглашаем вас посетить наше мероприятие как гостя (без автомобиля)"
@@ -751,7 +776,7 @@ def rejected_for_tenant(lang: str, tenant: Any, *, name: str = "", plate: str = 
             base += f" на площадке <b>{venue}</b>."
     else:
         base += "."
-    return base
+    return _with_reject_reason(base, lang, reason)
 
 
 def registration_closed_for_tenant(lang: str, tenant: Any) -> str:

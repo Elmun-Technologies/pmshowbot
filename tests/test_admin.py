@@ -532,10 +532,24 @@ def test_status_override():
 
         async def run():
             async with TestClient(TestServer(admin_app)) as client:
-                # Pending -> rejected via the override control.
+                # Rejected without a preset reason -> asked to pick one, nothing changes.
                 r = await client.post(
                     f"/application/{app_id}/status",
                     data={"status": "rejected"},
+                    headers=hdr,
+                    allow_redirects=False,
+                )
+                assert r.status == 302
+                assert r.headers["Location"] == (
+                    f"/application/{app_id}?status_change=reason_required"
+                )
+                app = await db.get_application(app_id)
+                assert app.status == "pending"
+
+                # Pending -> rejected via the override control.
+                r = await client.post(
+                    f"/application/{app_id}/status",
+                    data={"status": "rejected", "reason": "bad_form"},
                     headers=hdr,
                     allow_redirects=False,
                 )
@@ -544,6 +558,7 @@ def test_status_override():
                 app = await db.get_application(app_id)
                 assert app.status == "rejected"
                 assert bot.sent  # rejection notice sent
+                assert "Неправильно заполнена заявка" in bot.sent[-1][1]
 
                 # Rejected -> approved: gets a registration number, even
                 # though it was never in "pending".
